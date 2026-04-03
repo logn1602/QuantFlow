@@ -10,8 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
-# ── Database ────────────────────────────────────────────────────────────────
+# ── Database ─────────────────────────────────────────────────────────────────
 DB_HOST     = os.getenv("DB_HOST", "localhost")
 DB_PORT     = int(os.getenv("DB_PORT", 5432))
 DB_NAME     = os.getenv("DB_NAME", "stock_pipeline")
@@ -23,17 +22,18 @@ DATABASE_URL = (
     f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 
-# ── API Keys ─────────────────────────────────────────────────────────────────
+# ── API Keys ──────────────────────────────────────────────────────────────────
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
+NEWS_API_KEY          = os.getenv("NEWS_API_KEY", "")
 
-# ── Tickers ──────────────────────────────────────────────────────────────────
+# ── Tickers ───────────────────────────────────────────────────────────────────
 _raw_tickers = os.getenv("TICKERS", "AAPL,MSFT,GOOGL,NVDA")
 TICKERS: list[str] = [t.strip().upper() for t in _raw_tickers.split(",") if t.strip()]
 
-# ── Scheduler ────────────────────────────────────────────────────────────────
+# ── Scheduler ─────────────────────────────────────────────────────────────────
 FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", 15))
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_DIR   = os.path.join(os.path.dirname(__file__), "logs")
 
@@ -45,6 +45,8 @@ def validate():
         errors.append("DB_PASSWORD is not set in .env")
     if not ALPHA_VANTAGE_API_KEY:
         errors.append("ALPHA_VANTAGE_API_KEY is not set in .env")
+    if not NEWS_API_KEY:
+        errors.append("NEWS_API_KEY is not set in .env")
     if not TICKERS:
         errors.append("TICKERS list is empty in .env")
     if errors:

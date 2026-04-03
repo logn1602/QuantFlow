@@ -1,6 +1,7 @@
 # Data ingestion
-yfinance==0.2.40
+yfinance
 requests==2.31.0
+feedparser
 
 # Database
 psycopg2-binary==2.9.9
@@ -17,16 +18,19 @@ APScheduler==3.10.4
 # Environment
 python-dotenv==1.0.1
 
-# Forecasting (Phase 4 - install when ready)
-# prophet==1.1.5
-# statsmodels==0.14.2
+# Forecasting
+prophet
+statsmodels
+mlflow
 
-# Experiment tracking (Phase 4)
-# mlflow==2.13.0
+# Sentiment analysis
+transformers
+torch
+newsapi-python
 
-# Dashboard (Phase 5)
-# streamlit==1.35.0
-# plotly==5.22.0
+# Dashboard
+streamlit
+plotly
 
-# Alerts (Phase 5)
-# slack-sdk==3.27.2
+# Alerts (Phase 7)
+# slack-sdk
