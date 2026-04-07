@@ -2,7 +2,7 @@
 # Builds a container for GCP Cloud Run deployment
 # Usage: docker build -t quantflow . && docker run -p 8501:8501 quantflow
 
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 # Set working directory
 WORKDIR /app
