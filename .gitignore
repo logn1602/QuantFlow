@@ -29,6 +29,8 @@ Thumbs.db
 
 # MLflow (Phase 4)
 mlruns/
+mlruns_artifacts/
+mlflow.db
 
 # Streamlit (Phase 5)
 .streamlit/secrets.toml
