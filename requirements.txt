@@ -4,7 +4,7 @@ requests==2.31.0
 feedparser
 
 # Database
-psycopg2-binary==2.9.9
+psycopg2-binary
 sqlalchemy==2.0.30
 
 # Data processing
