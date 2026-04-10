@@ -2,13 +2,20 @@
 
 An end-to-end quantitative stock analytics platform combining real-time data ingestion, technical analysis, anomaly detection, multi-model forecasting, and NLP-based news sentiment analysis — visualized through an interactive Streamlit dashboard.
 
-**Stack:** Python · PostgreSQL · yFinance · Alpha Vantage · FinBERT · XGBoost · LightGBM · Prophet · ARIMA · MLflow · Streamlit · APScheduler
+**Stack:** Python · PostgreSQL (Supabase) · yFinance · Alpha Vantage · FinBERT · XGBoost · LightGBM · Prophet · ARIMA · MLflow · Streamlit · APScheduler
 
-[![Python](https://img.shields.io/badge/Python-3.10-blue)](https://www.python.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-blue)](https://www.postgresql.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-red)](https://streamlit.io/)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-quantflow--analytics.streamlit.app-red)](https://quantflow-analytics.streamlit.app)
+[![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Supabase-blue)](https://supabase.com/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-Community%20Cloud-red)](https://streamlit.io/)
 [![MLflow](https://img.shields.io/badge/MLflow-Tracking-orange)](https://mlflow.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+---
+
+## Live Demo
+
+**[quantflow-analytics.streamlit.app](https://quantflow-analytics.streamlit.app)**
 
 ---
 
@@ -16,62 +23,62 @@ An end-to-end quantitative stock analytics platform combining real-time data ing
 
 ```
 yFinance API ──────┐
-                   ├──► PostgreSQL          NewsAPI + RSS Feeds
-Alpha Vantage ─────┘   (raw_prices)    ──► FinBERT Sentiment Analysis
-                              │              (315+ headlines/run)
-                              ▼                      │
-                    Technical Indicators             │
-                    (RSI · MACD · Bollinger)         │
-                              │                      │
-                              ▼                      │
-                    Anomaly Detection                │
-                    (Z-Score · IQR)                  │
-                    │              │                 │
-                    ▼              ▼                 ▼
-              ┌──────────┐  ┌──────────┐  ┌─────────────────────┐
-              │  ARIMA   │  │ Prophet  │  │ XGBoost / LightGBM  │
-              │(price    │  │(price    │  │ (33 features: price  │
-              │ only)    │  │ only)    │  │  indicators + anomaly│
-              └──────────┘  └──────────┘  │  + sentiment scores) │
-                    │              │       └─────────────────────┘
+                   ├──► PostgreSQL (Supabase)    NewsAPI + RSS Feeds
+Alpha Vantage ─────┘      (raw_prices)       ──► FinBERT Sentiment Analysis
+                              │                   (315+ headlines/run)
+                              ▼                          │
+                    Technical Indicators                 │
+                    (RSI · MACD · Bollinger)             │
+                              │                          │
+                              ▼                          │
+                    Anomaly Detection                    │
+                    (Z-Score · IQR)                      │
+                    │              │                     │
+                    ▼              ▼                     ▼
+              ┌──────────┐  ┌──────────┐  ┌─────────────────────────┐
+              │  ARIMA   │  │ Prophet  │  │  XGBoost / LightGBM     │
+              │(price    │  │(price    │  │  (33 features: price +   │
+              │ only)    │  │ only)    │  │  indicators + anomaly +  │
+              └──────────┘  └──────────┘  │  sentiment scores)       │
+                    │              │       └─────────────────────────┘
                     └──────────────┴──────────────┐
                                                   ▼
                                         MLflow Experiment Tracking
                                                   │
                                                   ▼
                                        Streamlit Dashboard
-                                     (5 tabs · 6 live metrics)
+                                  (5 tabs · 6 live metrics · Supabase)
 ```
 
 ---
 
 ## Model Performance
 
-All models evaluated on a 30-day holdout set, trained on 5 years of daily OHLCV data (1,235 rows per ticker).
+All models evaluated on a 30-day holdout set, trained on 5 years of daily OHLCV data (1,240 rows per ticker).
 
 | Model | Features Used | AAPL MAPE | Avg MAPE (8 tickers) |
 |---|---|---|---|
 | ARIMA | Price history only | 3.39% | 3.87% |
 | Prophet | Price history only | 1.80% | 9.64% |
-| XGBoost | 33 engineered features | 1.13% | 1.85% |
-| **LightGBM** | **33 engineered features** | **1.02%** | **1.82%** |
+| XGBoost | 33 engineered features | 1.27% | 1.97% |
+| **LightGBM** | **33 engineered features** | **1.29%** | **1.94%** |
 
-**LightGBM outperforms ARIMA by 58% on average MAPE** by incorporating technical indicators, anomaly Z-scores, and FinBERT sentiment compound scores as features alongside price history.
+**XGBoost + LightGBM outperform ARIMA by ~50% on average MAPE** by incorporating technical indicators, anomaly Z-scores, and FinBERT sentiment compound scores as features alongside price history.
 
-### Per-Ticker MAPE (5-year training data)
+### Per-Ticker MAPE (5-year training, latest run)
 
 | Ticker | ARIMA | Prophet | XGBoost | LightGBM | Winner |
 |---|---|---|---|---|---|
-| AAPL | 3.39% | 1.80% | 1.13% | **1.02%** | LightGBM |
-| MSFT | 3.07% | 21.80% | 1.53% | **1.45%** | LightGBM |
-| GOOGL | 2.57% | 7.27% | **1.95%** | 2.20% | XGBoost |
-| AMZN | 4.00% | 10.82% | 2.27% | **1.87%** | LightGBM |
-| NVDA | 3.66% | 9.95% | 2.14% | **2.21%** | XGBoost |
-| TSLA | 4.67% | 4.72% | 2.29% | **2.16%** | LightGBM |
-| META | 4.84% | 11.11% | **2.01%** | 2.11% | XGBoost |
-| JPM | 4.74% | 9.65% | 1.49% | **1.50%** | XGBoost |
+| AAPL | 6.13% | 1.95% | 1.27% | **1.29%** | XGBoost |
+| MSFT | 3.89% | 22.83% | 1.55% | **1.51%** | LightGBM |
+| GOOGL | 3.60% | 7.29% | 2.88% | **2.46%** | LightGBM |
+| AMZN | 1.88% | 9.26% | **1.91%** | 1.92% | ARIMA |
+| NVDA | 7.40% | 11.97% | **2.10%** | 2.15% | XGBoost |
+| TSLA | 6.71% | 7.11% | 2.58% | **2.55%** | LightGBM |
+| META | 6.12% | 11.39% | **2.36%** | 2.38% | XGBoost |
+| JPM | 2.61% | 8.21% | **1.60%** | 1.79% | XGBoost |
 
-> Prophet's high MAPE on MSFT (21.80%) and META (11.11%) is due to structural price breaks during the 2022–2023 AI boom period — Prophet's seasonality assumptions break down when the underlying trend shifts rapidly.
+> Prophet's high MAPE on MSFT (22.83%) and META (11.39%) is due to structural price breaks during the 2022–2023 AI boom — Prophet's seasonality assumptions break down when the underlying trend shifts rapidly. XGBoost and LightGBM handle these breaks better due to their feature-rich input.
 
 ---
 
@@ -85,23 +92,27 @@ QuantFlow/
 ├── anomaly_detection.py            # Z-score + IQR anomaly detection
 ├── forecasting.py                  # ARIMA + Prophet forecasting
 ├── xgboost_model.py                # XGBoost + LightGBM with feature engineering
+├── run_models.py                   # Combined forecasting pipeline (all 4 models)
 ├── sentiment.py                    # FinBERT news sentiment pipeline
 ├── dashboard.py                    # Streamlit dashboard (5 tabs)
 ├── requirements.txt
+├── runtime.txt                     # Python 3.11 for Streamlit Cloud
+├── Dockerfile                      # GCP Cloud Run ready
+├── Makefile                        # One-command pipeline runner
 ├── .env.example
 ├── .gitignore
 │
 ├── db/
 │   ├── connection.py               # SQLAlchemy + psycopg2 helpers
 │   ├── schema.sql                  # Core tables
-│   └── schema_sentiment.sql       # Sentiment table
+│   └── schema_sentiment.sql        # Sentiment table
 │
 ├── ingestion/
 │   ├── yfinance_fetcher.py         # Yahoo Finance (free, no key)
-│   └── alpha_vantage_fetcher.py   # Alpha Vantage REST API
+│   └── alpha_vantage_fetcher.py    # Alpha Vantage REST API
 │
 ├── scheduler/
-│   └── job_runner.py               # APScheduler — runs every 15 min
+│   └── job_runner.py               # APScheduler — full pipeline automation
 │
 └── utils/
     └── logger.py                   # Shared rotating file logger
@@ -113,13 +124,13 @@ QuantFlow/
 
 | Phase | Description | Output |
 |---|---|---|
-| 1 — Ingestion | Pull 5 years of OHLCV data from yFinance + Alpha Vantage into PostgreSQL, scheduled every 15 min | 10,040+ rows across 8 tickers |
-| 2 — Indicators | Compute RSI (14), MACD (12/26/9), Bollinger Bands (20-period) | 9,880 indicator rows |
-| 3 — Anomalies | Z-score rolling window + IQR method flags unusual price events | 590 anomaly flags |
+| 1 — Ingestion | Pull 5 years of OHLCV data from yFinance + Alpha Vantage into PostgreSQL (Supabase), scheduled every 15 min | 10,040+ rows across 8 tickers |
+| 2 — Indicators | Compute RSI (14), MACD (12/26/9), Bollinger Bands (20-period) | 9,880+ indicator rows |
+| 3 — Anomalies | Z-score rolling window + IQR method flags unusual price events | 590+ anomaly flags |
 | 4 — Forecasting | ARIMA + Prophet 7-day forecasts with MLflow experiment tracking | 112 forecast rows |
-| 5 — Dashboard | Interactive Streamlit app — 5 tabs, 6 live metrics, 4-model comparison | Live app |
+| 5 — Dashboard | Interactive Streamlit app — 5 tabs, 6 live metrics, 4-model comparison, deployed on Streamlit Cloud | Live at quantflow-analytics.streamlit.app |
 | 6 — Sentiment | FinBERT NLP on 315+ headlines/run from NewsAPI + Yahoo Finance RSS | 633+ sentiment rows |
-| Level 2 | XGBoost + LightGBM trained on 33 features, best MAPE 1.02% | 112 ML forecast rows |
+| Level 2 | XGBoost + LightGBM trained on 33 features including sentiment scores, best MAPE 1.27% | 112 ML forecast rows |
 
 ---
 
@@ -129,17 +140,34 @@ QuantFlow/
 |---|---|
 | Price & Bollinger Bands | Candlestick chart with BB overlay, anomaly spike/crash markers |
 | RSI & MACD | Momentum indicators with live overbought/oversold signal interpretation |
-| Forecasts | All 4 models on one chart with confidence bands + side-by-side forecast tables |
+| Forecasts | All 4 models on one chart with confidence bands + side-by-side forecast tables + MAPE comparison |
 | Sentiment | FinBERT gauge, daily compound score chart, color-coded headlines |
-| Market Overview | Sentiment heatmap, anomaly counts, latest prices for all 8 tickers |
+| Market Overview | Sentiment heatmap for all tickers, anomaly counts, latest prices |
+
+---
+
+## Makefile Commands
+
+```bash
+make install      # Install all dependencies
+make setup        # Create DB tables (run once)
+make seed         # Seed 5 years of historical data
+make indicators   # Compute RSI, MACD, Bollinger Bands
+make anomalies    # Run anomaly detection
+make models       # Run ALL 4 models (recommended)
+make sentiment    # Fetch + analyze news headlines
+make dashboard    # Launch Streamlit dashboard
+make scheduler    # Start the live data scheduler
+make all          # Run full pipeline end to end
+```
 
 ---
 
 ## Setup
 
 ### Prerequisites
-- Python 3.10+
-- PostgreSQL 17
+- Python 3.11+
+- PostgreSQL 17 (or Supabase for cloud)
 
 ### 1. Clone the repo
 ```bash
@@ -187,15 +215,14 @@ python seed_db.py
 ```bash
 python indicators.py              # compute RSI, MACD, Bollinger Bands
 python anomaly_detection.py       # detect price anomalies
-python forecasting.py             # ARIMA + Prophet forecasts
-python xgboost_model.py           # XGBoost + LightGBM forecasts
 python sentiment.py               # fetch + analyze news headlines
+python run_models.py              # run all 4 forecasting models
 streamlit run dashboard.py        # launch the dashboard
 ```
 
 ### 7. Start the live scheduler
 ```bash
-python scheduler/job_runner.py    # auto-updates prices every 15 min
+python scheduler/job_runner.py    # auto-updates everything on schedule
 ```
 
 ---
@@ -212,7 +239,17 @@ python scheduler/job_runner.py    # auto-updates prices every 15 min
 mlflow ui
 # Open http://localhost:5000
 ```
-Tracks RMSE, MAE, MAPE, top features, and forecast artifacts for every model run.
+Tracks RMSE, MAE, MAPE, top features, and forecast artifacts for every model run across all 4 models.
+
+---
+
+## Deployment
+
+The live app is deployed on **Streamlit Community Cloud** backed by **Supabase** (managed PostgreSQL).
+
+- **Frontend:** Streamlit Community Cloud (free)
+- **Database:** Supabase PostgreSQL (free tier)
+- **Docker:** `Dockerfile` included for GCP Cloud Run deployment
 
 ---
 
@@ -244,10 +281,10 @@ ORDER BY avg_compound DESC;
 
 | Variable | Description |
 |---|---|
-| `DB_HOST` | Postgres host (default: localhost) |
+| `DB_HOST` | Postgres host |
 | `DB_PORT` | Postgres port (default: 5432) |
-| `DB_NAME` | Database name (default: stock_pipeline) |
-| `DB_USER` | Postgres user (default: postgres) |
+| `DB_NAME` | Database name |
+| `DB_USER` | Postgres user |
 | `DB_PASSWORD` | Postgres password |
 | `ALPHA_VANTAGE_API_KEY` | Free key from alphavantage.co |
 | `NEWS_API_KEY` | Free key from newsapi.org |
@@ -260,4 +297,4 @@ ORDER BY avg_compound DESC;
 ## Author
 
 **Shubh Dave** — MS Data Analytics @ Northeastern University  
-[LinkedIn](https://linkedin.com/in/shubh-dave) · [GitHub](https://github.com/logn1602)
+[LinkedIn](https://linkedin.com/in/shubh-dave) · [GitHub](https://github.com/logn1602) · [Live Demo](https://quantflow-analytics.streamlit.app)
