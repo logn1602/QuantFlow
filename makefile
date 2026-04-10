@@ -2,7 +2,7 @@
 # Run any pipeline stage with a single command.
 # Usage: make <target>
 
-.PHONY: help install setup seed indicators anomalies forecast train sentiment dashboard scheduler all clean
+.PHONY: help install setup seed indicators anomalies models forecast train sentiment dashboard scheduler all clean
 
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
@@ -14,8 +14,9 @@ help:
 	@echo "  make seed         Seed 5 years of historical data"
 	@echo "  make indicators   Compute RSI, MACD, Bollinger Bands"
 	@echo "  make anomalies    Run anomaly detection (Z-score + IQR)"
-	@echo "  make forecast     Run ARIMA + Prophet forecasts"
-	@echo "  make train        Run XGBoost + LightGBM models"
+	@echo "  make models       Run ALL models (ARIMA + Prophet + XGBoost + LightGBM)"
+	@echo "  make forecast     Run ARIMA + Prophet only"
+	@echo "  make train        Run XGBoost + LightGBM only"
 	@echo "  make sentiment    Fetch + analyze news sentiment"
 	@echo "  make dashboard    Launch Streamlit dashboard"
 	@echo "  make scheduler    Start the live data scheduler"
@@ -43,6 +44,11 @@ indicators:
 anomalies:
 	python anomaly_detection.py
 
+# Run all 4 models in one command (recommended)
+models:
+	python run_models.py
+
+# Run individual model families if needed
 forecast:
 	python forecasting.py
 
@@ -66,8 +72,7 @@ all:
 	python indicators.py
 	python anomaly_detection.py
 	python sentiment.py
-	python forecasting.py
-	python xgboost_model.py
+	python run_models.py
 	@echo "Pipeline complete. Launch dashboard with: make dashboard"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
