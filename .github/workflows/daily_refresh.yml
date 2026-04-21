@@ -1,0 +1,93 @@
+name: QuantFlow Daily Data Refresh
+
+on:
+  # Run daily at 22:30 UTC (6:30 PM ET — after market close)
+  schedule:
+    - cron: '30 22 * * 1-5'   # Mon-Fri only (weekdays)
+
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  refresh-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch latest price data
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          TICKERS: AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM
+          LOG_LEVEL: INFO
+        run: |
+          python -c "from ingestion.yfinance_fetcher import fetch_intraday; fetch_intraday()"
+
+      - name: Compute technical indicators
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          TICKERS: AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM
+          LOG_LEVEL: INFO
+        run: python indicators.py
+
+      - name: Detect anomalies
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          TICKERS: AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM
+          LOG_LEVEL: INFO
+        run: python anomaly_detection.py
+
+      - name: Analyze news sentiment
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          TICKERS: AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM
+          LOG_LEVEL: INFO
+        run: python sentiment.py
+
+      - name: Run all 5 forecasting models
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          TICKERS: AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM
+          LOG_LEVEL: INFO
+        run: python run_models.py
+
+      - name: Summary
+        run: |
+          echo "QuantFlow daily refresh complete!"
+          echo "Live dashboard: https://quantflow-analytics.streamlit.app"
