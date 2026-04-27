@@ -2,7 +2,7 @@
 # Run any pipeline stage with a single command.
 # Usage: make <target>
 
-.PHONY: help install setup seed indicators anomalies models forecast train sentiment dashboard scheduler all clean
+.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest dashboard scheduler all clean
 
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
@@ -14,10 +14,12 @@ help:
 	@echo "  make seed         Seed 5 years of historical data"
 	@echo "  make indicators   Compute RSI, MACD, Bollinger Bands"
 	@echo "  make anomalies    Run anomaly detection (Z-score + IQR)"
-	@echo "  make models       Run ALL models (ARIMA + Prophet + XGBoost + LightGBM)"
+	@echo "  make models       Run ALL 5 models (ARIMA + Prophet + XGBoost + LightGBM + Ensemble)"
 	@echo "  make forecast     Run ARIMA + Prophet only"
 	@echo "  make train        Run XGBoost + LightGBM only"
+	@echo "  make ensemble     Run stacking ensemble only"
 	@echo "  make sentiment    Fetch + analyze news sentiment"
+	@echo "  make backtest     Run strategy backtest (run models first)"
 	@echo "  make dashboard    Launch Streamlit dashboard"
 	@echo "  make scheduler    Start the live data scheduler"
 	@echo "  make all          Run full pipeline end to end"
@@ -32,6 +34,7 @@ install:
 setup:
 	psql -U postgres -d stock_pipeline -f db/schema.sql
 	psql -U postgres -d stock_pipeline -f db/schema_sentiment.sql
+	psql -U postgres -d stock_pipeline -f db/schema_backtest.sql
 	@echo "Database tables created."
 
 # ── Pipeline stages ───────────────────────────────────────────────────────────
@@ -55,6 +58,12 @@ forecast:
 train:
 	python xgboost_model.py
 
+ensemble:
+	python ensemble.py
+
+backtest:
+	python backtest.py
+
 sentiment:
 	python sentiment.py
 
@@ -73,6 +82,7 @@ all:
 	python anomaly_detection.py
 	python sentiment.py
 	python run_models.py
+	python backtest.py
 	@echo "Pipeline complete. Launch dashboard with: make dashboard"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────

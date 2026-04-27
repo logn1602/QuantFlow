@@ -156,6 +156,40 @@ def load_sentiment_summary() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def load_backtest_summary() -> pd.DataFrame:
+    engine = get_engine()
+    query = text("""
+        SELECT ticker, total_return, annualized_return, sharpe_ratio,
+               max_drawdown, win_rate, num_trades, benchmark_return, alpha,
+               final_value, run_at::date AS run_date
+        FROM backtest_results
+        ORDER BY alpha DESC
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(query, conn)
+
+
+@st.cache_data(ttl=300)
+def load_backtest_series(ticker: str) -> dict:
+    import json as _json
+    engine = get_engine()
+    query = text("""
+        SELECT daily_values, benchmark_values
+        FROM backtest_results
+        WHERE ticker = :t
+        ORDER BY run_at DESC LIMIT 1
+    """)
+    with engine.connect() as conn:
+        row = conn.execute(query, {"t": ticker}).fetchone()
+    if not row:
+        return {}
+    return {
+        "daily_values":     _json.loads(row[0]),
+        "benchmark_values": _json.loads(row[1]),
+    }
+
+
+@st.cache_data(ttl=300)
 def load_anomaly_summary() -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -418,12 +452,13 @@ with col6:
 st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📈 Price & Bollinger Bands",
     "📉 RSI & MACD",
     "🎯 Forecasts",
     "🗞️ Sentiment",
     "🌍 Market Overview",
+    "📊 Backtest",
 ])
 
 with tab1:
@@ -571,3 +606,104 @@ with tab5:
             pass
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+with tab6:
+    st.subheader("Ensemble Strategy Backtest — 30-Day Holdout")
+    st.caption(
+        "Long/flat strategy: BUY when ensemble predicts price rise, hold cash otherwise. "
+        "1-day holding period · 0.1% transaction cost · compared to buy-and-hold benchmark."
+    )
+
+    bt_summary = load_backtest_summary()
+
+    if bt_summary.empty:
+        st.warning("No backtest results found. Run: `python backtest.py`")
+        st.code("python backtest.py          # all tickers\npython backtest.py --ticker AAPL  # single ticker")
+    else:
+        # ── Cumulative return chart for selected ticker ────────────────────────
+        bt_series = load_backtest_series(ticker)
+        if bt_series:
+            days  = list(range(len(bt_series["daily_values"])))
+            fig_bt = go.Figure()
+            fig_bt.add_trace(go.Scatter(
+                x=days, y=bt_series["daily_values"],
+                name="Ensemble Strategy",
+                line=dict(color="#ffd700", width=3),
+            ))
+            fig_bt.add_trace(go.Scatter(
+                x=days, y=bt_series["benchmark_values"],
+                name="Buy & Hold",
+                line=dict(color="#ffffff", width=2, dash="dash"),
+            ))
+            fig_bt.add_hline(
+                y=10000, line_dash="dot",
+                line_color="rgba(255,255,255,0.2)",
+            )
+            fig_bt.update_layout(
+                title=f"{ticker} — Ensemble Strategy vs Buy & Hold ($10,000 start)",
+                xaxis_title="Trading Day (holdout period)",
+                yaxis_title="Portfolio Value (USD)",
+                template="plotly_dark", height=420,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            )
+            st.plotly_chart(fig_bt, use_container_width=True)
+
+        # ── Top metrics for selected ticker ───────────────────────────────────
+        ticker_row = bt_summary[bt_summary["ticker"] == ticker]
+        if not ticker_row.empty:
+            r = ticker_row.iloc[0]
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            with m1:
+                st.metric("Strategy Return", f"{r['total_return']:+.2f}%")
+            with m2:
+                st.metric("Benchmark Return", f"{r['benchmark_return']:+.2f}%")
+            with m3:
+                alpha_val = r['alpha']
+                st.metric("Alpha", f"{alpha_val:+.2f}%",
+                          delta="outperforming" if alpha_val > 0 else "underperforming")
+            with m4:
+                st.metric("Sharpe Ratio", f"{r['sharpe_ratio']:.3f}")
+            with m5:
+                st.metric("Max Drawdown", f"{r['max_drawdown']:.2f}%")
+            with m6:
+                st.metric("Win Rate", f"{r['win_rate']:.1f}%",
+                          delta=f"{int(r['num_trades'])} trades")
+
+        st.divider()
+
+        # ── Summary table — all tickers ───────────────────────────────────────
+        st.subheader("All Tickers — Performance Summary")
+        display = bt_summary[[
+            "ticker", "total_return", "annualized_return", "sharpe_ratio",
+            "max_drawdown", "win_rate", "num_trades", "benchmark_return", "alpha",
+        ]].copy()
+        display.columns = [
+            "Ticker", "Return %", "Ann. Return %", "Sharpe",
+            "Max DD %", "Win Rate %", "Trades", "Benchmark %", "Alpha %",
+        ]
+
+        # Format numeric columns cleanly
+        for col in ["Return %", "Ann. Return %", "Max DD %", "Benchmark %", "Alpha %"]:
+            display[col] = display[col].map(lambda x: f"{x:+.2f}%")
+        display["Sharpe"]    = display["Sharpe"].map(lambda x: f"{x:.3f}")
+        display["Win Rate %"] = display["Win Rate %"].map(lambda x: f"{x:.1f}%")
+        display["Trades"]    = display["Trades"].astype(int)
+
+        def color_alpha(val):
+            if not isinstance(val, str):
+                return ""
+            color = "#26a69a" if val.startswith("+") else "#ef5350"
+            return f"color: {color}"
+
+        st.dataframe(
+            display.style.applymap(color_alpha, subset=["Alpha %"]),
+            use_container_width=True, hide_index=True,
+        )
+
+        st.divider()
+        st.caption(
+            "Sharpe > 1.0 = good risk-adjusted return · "
+            "Alpha > 0 = strategy beats buy-and-hold · "
+            "Ann. Return extrapolated from 30-day holdout — treat as indicative · "
+            "All metrics on out-of-fold holdout (no look-ahead bias)"
+        )

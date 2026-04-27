@@ -71,55 +71,59 @@ def load_features(ticker: str) -> pd.DataFrame:
     """
     engine = get_engine()
 
-    # Base prices
-    prices = pd.read_sql(text("""
-        SELECT ts::date AS date, open, high, low, close, volume
-        FROM raw_prices
-        WHERE ticker = :t AND source = 'yfinance'
-        ORDER BY ts ASC
-    """), engine, params={"t": ticker})
+    with engine.connect() as conn:
+        # Base prices
+        prices = pd.read_sql(text("""
+            SELECT ts::date AS date, open, high, low, close, volume
+            FROM raw_prices
+            WHERE ticker = :t AND source = 'yfinance'
+            ORDER BY ts ASC
+        """), conn, params={"t": ticker})
 
-    if prices.empty:
-        logger.warning(f"No price data for {ticker}")
-        return pd.DataFrame()
+        if prices.empty:
+            logger.warning(f"No price data for {ticker}")
+            return pd.DataFrame()
+
+        # Technical indicators
+        indicators = pd.read_sql(text("""
+            SELECT ts::date AS date, rsi_14, macd, macd_signal, macd_hist,
+                   bb_upper, bb_middle, bb_lower
+            FROM technical_indicators
+            WHERE ticker = :t
+            ORDER BY ts ASC
+        """), conn, params={"t": ticker})
+
+        # Anomalies
+        anomalies = pd.read_sql(text("""
+            SELECT ts::date AS date, zscore
+            FROM anomalies
+            WHERE ticker = :t
+            ORDER BY ts ASC
+        """), conn, params={"t": ticker})
+
+        # Sentiment — daily average
+        sentiment = pd.read_sql(text("""
+            SELECT
+                published_at::date                  AS date,
+                AVG(compound)                       AS sentiment_compound,
+                COUNT(*) FILTER (WHERE sentiment='positive') AS pos_count,
+                COUNT(*) FILTER (WHERE sentiment='negative') AS neg_count,
+                COUNT(*)                            AS article_count
+            FROM news_sentiment
+            WHERE ticker = :t
+            GROUP BY published_at::date
+            ORDER BY date ASC
+        """), conn, params={"t": ticker})
 
     prices["date"] = pd.to_datetime(prices["date"])
     prices = prices.drop_duplicates("date").sort_values("date").reset_index(drop=True)
 
-    # Technical indicators
-    indicators = pd.read_sql(text("""
-        SELECT ts::date AS date, rsi_14, macd, macd_signal, macd_hist,
-               bb_upper, bb_middle, bb_lower
-        FROM technical_indicators
-        WHERE ticker = :t
-        ORDER BY ts ASC
-    """), engine, params={"t": ticker})
     indicators["date"] = pd.to_datetime(indicators["date"])
     indicators = indicators.drop_duplicates("date")
 
-    # Anomalies
-    anomalies = pd.read_sql(text("""
-        SELECT ts::date AS date, zscore
-        FROM anomalies
-        WHERE ticker = :t
-        ORDER BY ts ASC
-    """), engine, params={"t": ticker})
     anomalies["date"] = pd.to_datetime(anomalies["date"])
     anomalies = anomalies.drop_duplicates("date")
 
-    # Sentiment — daily average
-    sentiment = pd.read_sql(text("""
-        SELECT
-            published_at::date                  AS date,
-            AVG(compound)                       AS sentiment_compound,
-            COUNT(*) FILTER (WHERE sentiment='positive') AS pos_count,
-            COUNT(*) FILTER (WHERE sentiment='negative') AS neg_count,
-            COUNT(*)                            AS article_count
-        FROM news_sentiment
-        WHERE ticker = :t
-        GROUP BY published_at::date
-        ORDER BY date ASC
-    """), engine, params={"t": ticker})
     sentiment["date"] = pd.to_datetime(sentiment["date"])
 
     # Merge everything

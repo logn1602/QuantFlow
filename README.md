@@ -2,7 +2,7 @@
 
 An end-to-end quantitative stock analytics platform combining real-time data ingestion, technical analysis, anomaly detection, multi-model forecasting, and NLP-based news sentiment analysis — visualized through an interactive Streamlit dashboard.
 
-**Stack:** Python · PostgreSQL (Supabase) · yFinance · Alpha Vantage · FinBERT · XGBoost · LightGBM · Prophet · ARIMA · Ridge (scikit-learn) · MLflow · Streamlit · APScheduler
+**Stack:** Python · PostgreSQL (Supabase) · yFinance · Alpha Vantage · FinBERT · XGBoost · LightGBM · Prophet · ARIMA · Ridge (scikit-learn) · MLflow · Streamlit · APScheduler · Backtesting
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-quantflow--analytics.streamlit.app-red)](https://quantflow-analytics.streamlit.app)
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
@@ -146,6 +146,7 @@ QuantFlow/
 | 6 — Sentiment | FinBERT NLP on 315+ headlines/run from NewsAPI + Yahoo Finance RSS | 633+ sentiment rows |
 | Level 2 | XGBoost + LightGBM trained on 33 features including sentiment scores, best MAPE 1.27% | 112 ML forecast rows |
 | Level 3 | Stacking ensemble — Ridge meta-learner trained on 30-day out-of-fold holdout predictions from all 4 base models. Alpha tuned via TimeSeriesSplit CV. Logs learned model weights + improvement % to MLflow | 56 ensemble forecast rows |
+| Phase 7 | Strategy backtesting — simulates a long/flat trading strategy on the 30-day holdout. Metrics: total return, annualised return, Sharpe ratio, max drawdown, win rate, alpha vs buy-and-hold. 0.1% transaction cost. Results logged to MLflow + displayed in dashboard Backtest tab | 1 result row per ticker |
 
 ---
 
@@ -156,6 +157,7 @@ QuantFlow/
 | Price & Bollinger Bands | Candlestick chart with BB overlay, anomaly spike/crash markers |
 | RSI & MACD | Momentum indicators with live overbought/oversold signal interpretation |
 | Forecasts | All 4 base models + stacking ensemble on one chart. Ensemble shown as bold gold line. Side-by-side 7-day tables + MAPE comparison across all 5 models |
+| Backtest | Cumulative return chart (strategy vs buy-and-hold), 6 live performance metrics, full summary table for all tickers with alpha colour-coded |
 | Sentiment | FinBERT gauge, daily compound score chart, color-coded headlines |
 | Market Overview | Sentiment heatmap for all tickers, anomaly counts, latest prices |
 
@@ -232,6 +234,7 @@ python indicators.py              # compute RSI, MACD, Bollinger Bands
 python anomaly_detection.py       # detect price anomalies
 python sentiment.py               # fetch + analyze news headlines
 python run_models.py              # run all 5 models (ARIMA, Prophet, XGBoost, LightGBM, Ensemble)
+python backtest.py                # simulate trading strategy, compute Sharpe ratio + alpha
 streamlit run dashboard.py        # launch the dashboard
 ```
 
