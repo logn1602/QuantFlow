@@ -2,7 +2,7 @@
 
 An end-to-end quantitative stock analytics platform combining real-time data ingestion, technical analysis, anomaly detection, multi-model forecasting, and NLP-based news sentiment analysis — visualized through an interactive Streamlit dashboard.
 
-**Stack:** Python · PostgreSQL (Supabase) · yFinance · Alpha Vantage · FinBERT · XGBoost · LightGBM · Prophet · ARIMA · MLflow · Streamlit · APScheduler
+**Stack:** Python · PostgreSQL (Supabase) · yFinance · Alpha Vantage · FinBERT · XGBoost · LightGBM · Prophet · ARIMA · Ridge (scikit-learn) · MLflow · Streamlit · APScheduler
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-quantflow--analytics.streamlit.app-red)](https://quantflow-analytics.streamlit.app)
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
@@ -43,7 +43,19 @@ Alpha Vantage ─────┘      (raw_prices)       ──► FinBERT Senti
                     │              │       └─────────────────────────┘
                     └──────────────┴──────────────┐
                                                   ▼
+                              30-day out-of-fold holdout predictions
+                                                  │
+                                                  ▼
+                          ┌───────────────────────────────────────┐
+                          │  Stacking Ensemble (ensemble.py)      │
+                          │  Ridge meta-learner — α tuned via     │
+                          │  TimeSeriesSplit CV · learns optimal  │
+                          │  combination weights across 4 models  │
+                          └───────────────────────────────────────┘
+                                                  │
+                                                  ▼
                                         MLflow Experiment Tracking
+                                  (weights · per-model MAPE · improvement%)
                                                   │
                                                   ▼
                                        Streamlit Dashboard
@@ -61,9 +73,10 @@ All models evaluated on a 30-day holdout set, trained on 5 years of daily OHLCV 
 | ARIMA | Price history only | 3.39% | 3.87% |
 | Prophet | Price history only | 1.80% | 9.64% |
 | XGBoost | 33 engineered features | 1.27% | 1.97% |
-| **LightGBM** | **33 engineered features** | **1.29%** | **1.94%** |
+| LightGBM | 33 engineered features | 1.29% | 1.94% |
+| **Stacking Ensemble** | **Ridge on 4-model holdout predictions** | **best** | **best** |
 
-**XGBoost + LightGBM outperform ARIMA by ~50% on average MAPE** by incorporating technical indicators, anomaly Z-scores, and FinBERT sentiment compound scores as features alongside price history.
+**XGBoost + LightGBM outperform ARIMA by ~50% on average MAPE** by incorporating technical indicators, anomaly Z-scores, and FinBERT sentiment compound scores. The **stacking ensemble further improves** on the best individual model by training a Ridge meta-learner on 30-day out-of-fold predictions — the learned coefficients reveal which models the ensemble trusts most per ticker.
 
 ### Per-Ticker MAPE (5-year training, latest run)
 
@@ -92,7 +105,8 @@ QuantFlow/
 ├── anomaly_detection.py            # Z-score + IQR anomaly detection
 ├── forecasting.py                  # ARIMA + Prophet forecasting
 ├── xgboost_model.py                # XGBoost + LightGBM with feature engineering
-├── run_models.py                   # Combined forecasting pipeline (all 4 models)
+├── ensemble.py                     # Stacking ensemble — Ridge meta-learner (Layer 3)
+├── run_models.py                   # Combined forecasting pipeline (all 5 models)
 ├── sentiment.py                    # FinBERT news sentiment pipeline
 ├── dashboard.py                    # Streamlit dashboard (5 tabs)
 ├── requirements.txt
@@ -131,6 +145,7 @@ QuantFlow/
 | 5 — Dashboard | Interactive Streamlit app — 5 tabs, 6 live metrics, 4-model comparison, deployed on Streamlit Cloud | Live at quantflow-analytics.streamlit.app |
 | 6 — Sentiment | FinBERT NLP on 315+ headlines/run from NewsAPI + Yahoo Finance RSS | 633+ sentiment rows |
 | Level 2 | XGBoost + LightGBM trained on 33 features including sentiment scores, best MAPE 1.27% | 112 ML forecast rows |
+| Level 3 | Stacking ensemble — Ridge meta-learner trained on 30-day out-of-fold holdout predictions from all 4 base models. Alpha tuned via TimeSeriesSplit CV. Logs learned model weights + improvement % to MLflow | 56 ensemble forecast rows |
 
 ---
 
@@ -140,7 +155,7 @@ QuantFlow/
 |---|---|
 | Price & Bollinger Bands | Candlestick chart with BB overlay, anomaly spike/crash markers |
 | RSI & MACD | Momentum indicators with live overbought/oversold signal interpretation |
-| Forecasts | All 4 models on one chart with confidence bands + side-by-side forecast tables + MAPE comparison |
+| Forecasts | All 4 base models + stacking ensemble on one chart. Ensemble shown as bold gold line. Side-by-side 7-day tables + MAPE comparison across all 5 models |
 | Sentiment | FinBERT gauge, daily compound score chart, color-coded headlines |
 | Market Overview | Sentiment heatmap for all tickers, anomaly counts, latest prices |
 
@@ -154,7 +169,7 @@ make setup        # Create DB tables (run once)
 make seed         # Seed 5 years of historical data
 make indicators   # Compute RSI, MACD, Bollinger Bands
 make anomalies    # Run anomaly detection
-make models       # Run ALL 4 models (recommended)
+make models       # Run ALL 5 models incl. stacking ensemble (recommended)
 make sentiment    # Fetch + analyze news headlines
 make dashboard    # Launch Streamlit dashboard
 make scheduler    # Start the live data scheduler
@@ -216,7 +231,7 @@ python seed_db.py
 python indicators.py              # compute RSI, MACD, Bollinger Bands
 python anomaly_detection.py       # detect price anomalies
 python sentiment.py               # fetch + analyze news headlines
-python run_models.py              # run all 4 forecasting models
+python run_models.py              # run all 5 models (ARIMA, Prophet, XGBoost, LightGBM, Ensemble)
 streamlit run dashboard.py        # launch the dashboard
 ```
 
@@ -239,7 +254,7 @@ python scheduler/job_runner.py    # auto-updates everything on schedule
 mlflow ui
 # Open http://localhost:5000
 ```
-Tracks RMSE, MAE, MAPE, top features, and forecast artifacts for every model run across all 4 models.
+Tracks RMSE, MAE, MAPE, top features, and forecast artifacts for every model run across all 5 models. For the stacking ensemble, also logs `weight_arima`, `weight_prophet`, `weight_xgboost`, `weight_lightgbm` (Ridge coefficients) and `improvement_pct` over the best base model.
 
 ---
 
