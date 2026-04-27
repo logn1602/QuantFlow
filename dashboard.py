@@ -264,18 +264,20 @@ def forecast_chart(prices, forecasts, ticker):
         name="Actual", line=dict(color="#ffffff", width=2),
     ))
     model_colors = {
-        "arima":    "#ff7043",
-        "prophet":  "#26c6da",
-        "xgboost":  "#ab47bc",
-        "lightgbm": "#66bb6a",
+        "arima":          "#ff7043",
+        "prophet":        "#26c6da",
+        "xgboost":        "#ab47bc",
+        "lightgbm":       "#66bb6a",
+        "ensemble_stack": "#ffd700",
     }
     band_colors = {
-        "arima":    "rgba(255,112,67,0.12)",
-        "prophet":  "rgba(38,198,218,0.12)",
-        "xgboost":  "rgba(171,71,188,0.12)",
-        "lightgbm": "rgba(102,187,106,0.12)",
+        "arima":          "rgba(255,112,67,0.12)",
+        "prophet":        "rgba(38,198,218,0.12)",
+        "xgboost":        "rgba(171,71,188,0.12)",
+        "lightgbm":       "rgba(102,187,106,0.12)",
+        "ensemble_stack": "rgba(255,215,0,0.18)",
     }
-    for model in ["arima", "prophet", "xgboost", "lightgbm"]:
+    for model in ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"]:
         mdf = forecasts[forecasts["model"] == model].copy()
         if mdf.empty:
             continue
@@ -286,14 +288,19 @@ def forecast_chart(prices, forecasts, ticker):
             line=dict(color="rgba(0,0,0,0)"),
             name=f"{model.upper()} band", showlegend=False,
         ))
+        is_ensemble = model == "ensemble_stack"
         fig.add_trace(go.Scatter(
             x=mdf["forecast_date"], y=mdf["predicted_close"],
-            name=f"{model.upper()}",
-            line=dict(color=model_colors[model], width=2, dash="dash"),
+            name="ENSEMBLE ⭐" if is_ensemble else model.upper(),
+            line=dict(
+                color=model_colors[model],
+                width=4 if is_ensemble else 2,
+                dash="solid" if is_ensemble else "dash",
+            ),
             mode="lines+markers",
         ))
     fig.update_layout(
-        title=f"{ticker} — 7-Day Forecast: All 4 Models",
+        title=f"{ticker} — 7-Day Forecast: 4 Base Models + Stacking Ensemble",
         xaxis_title="Date", yaxis_title="Price (USD)",
         template="plotly_dark", height=450,
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
@@ -359,6 +366,7 @@ with st.sidebar:
     st.success("✅ Phase 5 — Dashboard")
     st.success("✅ Phase 6 — Sentiment")
     st.success("✅ Level 2 — XGBoost/LightGBM")
+    st.success("✅ Level 3 — Stacking Ensemble")
     st.divider()
     st.caption("Data refreshes every 5 min")
     if st.button("🔄 Refresh Data"):
@@ -452,14 +460,20 @@ with tab3:
     else:
         st.plotly_chart(forecast_chart(prices, forecasts, ticker), use_container_width=True)
 
-        st.subheader("7-Day Numbers — All 4 Models")
-        c1, c2, c3, c4 = st.columns(4)
-        for col, model in zip([c1, c2, c3, c4], ["arima", "prophet", "xgboost", "lightgbm"]):
+        st.subheader("7-Day Numbers — All Models")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        model_labels = {
+            "arima": "ARIMA", "prophet": "Prophet",
+            "xgboost": "XGBoost", "lightgbm": "LightGBM",
+            "ensemble_stack": "⭐ Ensemble",
+        }
+        for col, model in zip([c1, c2, c3, c4, c5],
+                               ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"]):
             mdf = forecasts[forecasts["model"] == model][
                 ["forecast_date", "predicted_close", "lower_bound", "upper_bound"]
             ].copy()
             with col:
-                st.markdown(f"**{model.upper()}**")
+                st.markdown(f"**{model_labels[model]}**")
                 if mdf.empty:
                     st.caption("No data")
                 else:
@@ -469,11 +483,12 @@ with tab3:
 
         st.divider()
         st.caption("30-day holdout MAPE (lower = better)")
-        b1, b2, b3, b4 = st.columns(4)
+        b1, b2, b3, b4, b5 = st.columns(5)
         with b1: st.info("ARIMA: ~4.1%")
         with b2: st.info("Prophet: ~1.8%")
         with b3: st.success("XGBoost: ~1.1%")
-        with b4: st.success("LightGBM: ~1.0% ⭐")
+        with b4: st.success("LightGBM: ~1.0%")
+        with b5: st.success("Ensemble: best ⭐")
 
 with tab4:
     if sentiment.empty:

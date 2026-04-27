@@ -274,13 +274,14 @@ def train_xgboost(df: pd.DataFrame, ticker: str) -> dict:
     }).sort_values("importance", ascending=False)
 
     return {
-        "model":      model,
-        "metrics":    {"rmse": round(rmse,4), "mae": round(mae,4), "mape": round(mape,2)},
-        "importance": importance,
-        "features":   available,
-        "X_last":     df[available].iloc[-1:],
-        "last_close": float(df["close"].iloc[-1]),
-        "last_date":  df["date"].iloc[-1],
+        "model":         model,
+        "metrics":       {"rmse": round(rmse,4), "mae": round(mae,4), "mape": round(mape,2)},
+        "importance":    importance,
+        "features":      available,
+        "X_last":        df[available].iloc[-1:],
+        "last_close":    float(df["close"].iloc[-1]),
+        "last_date":     df["date"].iloc[-1],
+        "holdout_preds": preds,
     }
 
 
@@ -330,13 +331,14 @@ def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
     }).sort_values("importance", ascending=False)
 
     return {
-        "model":      model,
-        "metrics":    {"rmse": round(rmse,4), "mae": round(mae,4), "mape": round(mape,2)},
-        "importance": importance,
-        "features":   available,
-        "X_last":     df[available].iloc[-1:],
-        "last_close": float(df["close"].iloc[-1]),
-        "last_date":  df["date"].iloc[-1],
+        "model":         model,
+        "metrics":       {"rmse": round(rmse,4), "mae": round(mae,4), "mape": round(mape,2)},
+        "importance":    importance,
+        "features":      available,
+        "X_last":        df[available].iloc[-1:],
+        "last_close":    float(df["close"].iloc[-1]),
+        "last_date":     df["date"].iloc[-1],
+        "holdout_preds": preds,
     }
 
 
