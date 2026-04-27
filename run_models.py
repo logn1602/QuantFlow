@@ -78,6 +78,18 @@ def run(tickers: list[str] = None, clear: bool = True):
     except Exception as e:
         logger.error(f"XGBoost/LightGBM failed: {e}")
 
+    # ── Step 3: Stacking Ensemble ─────────────────────────────────────────────
+    logger.info("=" * 50)
+    logger.info("Step 3 — Stacking Ensemble (Ridge meta-learner)")
+    logger.info("=" * 50)
+    try:
+        from ensemble import run as ensemble_run
+        ensemble_results = ensemble_run(tickers=tickers)
+        for ticker, n in ensemble_results.items():
+            logger.info(f"  {ticker} [ensemble_stack]: {n} rows saved")
+    except Exception as e:
+        logger.error(f"Stacking ensemble failed: {e}")
+
     logger.info("=" * 50)
     logger.info("All models complete. Launch dashboard: streamlit run dashboard.py")
     logger.info("=" * 50)
