@@ -34,3 +34,5 @@ plotly
 
 # ML ensemble
 scikit-learn
+xgboost
+lightgbm
