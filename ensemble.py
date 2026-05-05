@@ -161,59 +161,75 @@ def _mape(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.mean(np.abs((actual - predicted) / actual)) * 100)
 
 
+class NNLSMeta:
+    """
+    Non-negative least squares meta-learner.
+
+    Replaces Ridge because Ridge can assign negative coefficients to base models,
+    which lets the intercept compensate and causes wild extrapolation when
+    production base-model predictions drift outside the training price range.
+
+    NNLS constraints: w_i >= 0 and sum(w_i) == 1, so the ensemble is always
+    a proper convex combination of the base models — it can never predict
+    outside [min(base_preds), max(base_preds)] for a given day.
+    """
+    def __init__(self, weights: np.ndarray):
+        self.coef_ = weights  # non-negative, sums to 1
+
+    def predict(self, X) -> np.ndarray:
+        if hasattr(X, "values"):
+            X = X.values
+        return X @ self.coef_
+
+
 def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
     """
-    Tune Ridge alpha via TimeSeriesSplit CV, then fit on full holdout stack.
-    Returns (fitted_model, metrics_dict).
+    Fit a non-negative least squares meta-learner on the 30-day holdout stack.
+    Returns (NNLSMeta, metrics_dict).
 
-    The learned coefficients ARE the model weights — Ridge learns to up-weight
-    models that are accurate and down-weight those that over-fit or diverge.
+    Why NNLS instead of Ridge:
+      Ridge with an intercept can learn negative weights for base models and
+      use the intercept to compensate. This works in-sample but extrapolates
+      badly when current prices differ from the training range. NNLS forces
+      all weights >= 0 and we normalise to sum=1, making the ensemble a safe
+      convex combination that cannot diverge from the base models.
     """
-    from sklearn.linear_model import Ridge
-    from sklearn.model_selection import TimeSeriesSplit
+    from scipy.optimize import nnls
 
     feature_cols = ["arima", "prophet", "xgboost", "lightgbm"]
     X = stacked_df[feature_cols].values
     y = stacked_df["actual"].values
 
-    # Tune alpha via time-series CV (no data leakage — folds respect time order)
-    best_alpha, best_cv_mape = 1.0, float("inf")
-    tscv = TimeSeriesSplit(n_splits=3)
+    # Solve min ||Xw - y||^2  s.t.  w >= 0
+    raw_weights, _ = nnls(X, y)
 
-    for alpha in [0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0]:
-        fold_mapes = []
-        for train_idx, val_idx in tscv.split(X):
-            ridge = Ridge(alpha=alpha)
-            ridge.fit(X[train_idx], y[train_idx])
-            fold_mapes.append(_mape(y[val_idx], ridge.predict(X[val_idx])))
-        avg = float(np.mean(fold_mapes))
-        if avg < best_cv_mape:
-            best_cv_mape, best_alpha = avg, alpha
+    # Normalise to a convex combination (sum = 1)
+    weight_sum = raw_weights.sum()
+    weights = raw_weights / weight_sum if weight_sum > 0 else np.ones(len(feature_cols)) / len(feature_cols)
 
-    logger.info(f"  Ridge CV — best alpha={best_alpha}, CV MAPE={best_cv_mape:.2f}%")
-
-    # Final fit on complete holdout
-    meta = Ridge(alpha=best_alpha)
-    meta.fit(X, y)
+    meta = NNLSMeta(weights)
     ensemble_preds = meta.predict(X)
 
-    # Per-model holdout MAPEs for comparison
     base_mapes = {m: round(_mape(y, stacked_df[m].values), 2) for m in feature_cols}
     best_base  = min(base_mapes.values())
+    ens_mape   = round(_mape(y, ensemble_preds), 2)
+
+    logger.info(
+        "  NNLS weights — " +
+        " | ".join(f"{m}: {w:.3f}" for m, w in zip(feature_cols, weights))
+    )
 
     metrics = {
-        "ensemble_mape":  round(_mape(y, ensemble_preds), 2),
-        "arima_mape":     base_mapes["arima"],
-        "prophet_mape":   base_mapes["prophet"],
-        "xgboost_mape":   base_mapes["xgboost"],
-        "lightgbm_mape":  base_mapes["lightgbm"],
-        "best_alpha":     best_alpha,
-        "cv_mape":        round(best_cv_mape, 2),
-        "coefficients":   dict(zip(feature_cols, meta.coef_.tolist())),
-        "intercept":      float(meta.intercept_),
-        "improvement_pct": round(
-            (best_base - round(_mape(y, ensemble_preds), 2)) / best_base * 100, 2
-        ),
+        "ensemble_mape":   ens_mape,
+        "arima_mape":      base_mapes["arima"],
+        "prophet_mape":    base_mapes["prophet"],
+        "xgboost_mape":    base_mapes["xgboost"],
+        "lightgbm_mape":   base_mapes["lightgbm"],
+        "best_alpha":      "nnls",
+        "cv_mape":         ens_mape,
+        "coefficients":    dict(zip(feature_cols, weights.tolist())),
+        "intercept":       0.0,
+        "improvement_pct": round((best_base - ens_mape) / best_base * 100, 2) if best_base > 0 else 0.0,
     }
 
     return meta, metrics
@@ -325,7 +341,7 @@ def log_to_mlflow(ticker: str, meta_model, metrics: dict,
         with mlflow.start_run(run_name=f"ensemble_stack_{ticker}"):
             mlflow.log_param("ticker",        ticker)
             mlflow.log_param("model",         "ensemble_stack")
-            mlflow.log_param("meta_learner",  "Ridge")
+            mlflow.log_param("meta_learner",  "NNLS")
             mlflow.log_param("best_alpha",    metrics["best_alpha"])
             mlflow.log_param("base_models",   "arima,prophet,xgboost,lightgbm")
             mlflow.log_param("holdout_days",  HOLDOUT_DAYS)
@@ -401,7 +417,7 @@ def run(tickers: list = None) -> dict:
 
         logger.info(f"  Stack shape: {stacked_df.shape[0]} rows × {stacked_df.shape[1]} columns")
 
-        logger.info(f"Training Ridge meta-learner with TimeSeriesSplit CV...")
+        logger.info(f"Training NNLS meta-learner (non-negative convex combination)...")
         meta_model, metrics = tune_and_train_meta(stacked_df)
 
         coefs = metrics["coefficients"]

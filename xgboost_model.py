@@ -176,10 +176,12 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df["is_anomaly"]   = (df["zscore"].abs() >= 2.0).astype(int)
 
     # ── Sentiment features ───────────────────────────────────────────────────
-    df["sentiment_compound"] = df["sentiment_compound"].fillna(0)
-    df["pos_count"]          = df["pos_count"].fillna(0)
-    df["neg_count"]          = df["neg_count"].fillna(0)
-    df["article_count"]      = df["article_count"].fillna(0)
+    # ffill first so days with no news inherit the last known sentiment,
+    # rather than defaulting to 0 (neutral) which dilutes the signal.
+    df["sentiment_compound"] = df["sentiment_compound"].ffill().fillna(0)
+    df["pos_count"]          = df["pos_count"].ffill().fillna(0)
+    df["neg_count"]          = df["neg_count"].ffill().fillna(0)
+    df["article_count"]      = df["article_count"].ffill().fillna(0)
 
     # Rolling sentiment (3-day average)
     df["sentiment_3d"] = df["sentiment_compound"].rolling(3).mean().fillna(0)
@@ -348,23 +350,33 @@ def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
 
 # ── Forecasting ───────────────────────────────────────────────────────────────
 
-def generate_forecast(result: dict, model_name: str, ticker: str) -> pd.DataFrame:
+def generate_forecast(result: dict, model_name: str, ticker: str,
+                      price_history: list = None) -> pd.DataFrame:
     """
     Generate 7-day forecast using the trained model.
-    Uses last known feature vector, rolling forward each day.
+
+    Each step rolls the full feature vector forward using the predicted price:
+      - Lag features (1/2/3/5/10) cascade from the rolling price buffer
+      - Returns (1d/5d) recomputed from the buffer
+      - Rolling mean/std (5/10/20) recomputed from the buffer
+      - Bollinger position and width derived from updated rolling stats
+      - Exogenous features (RSI, MACD, sentiment, anomaly, volume) stay frozen
+        at their last known values — we cannot extrapolate them forward.
+
+    price_history: full list of historical closes used to seed lag/rolling calcs.
     """
     if not result:
         return pd.DataFrame()
 
     model     = result["model"]
-    X_last    = result["X_last"].copy()
+    current_X = result["X_last"].copy()
     last_date = result["last_date"]
-    last_close = result["last_close"]
+
+    # Seed the rolling buffer with the last 30 actual closes so all windows
+    # (up to rolling_mean_20 + lag_10) have enough history from day one.
+    buf = list(price_history[-30:]) if price_history else [result["last_close"]]
 
     forecasts = []
-    current_close = last_close
-    current_X     = X_last.copy()
-
     future_dates = pd.bdate_range(
         start=pd.Timestamp(last_date) + pd.Timedelta(days=1),
         periods=FORECAST_DAYS
@@ -373,7 +385,6 @@ def generate_forecast(result: dict, model_name: str, ticker: str) -> pd.DataFram
     for forecast_date in future_dates:
         pred = float(model.predict(current_X)[0])
 
-        # Simple confidence interval: ± 2% for XGB (wider than ARIMA)
         forecasts.append({
             "ticker":          ticker,
             "model":           model_name,
@@ -383,18 +394,47 @@ def generate_forecast(result: dict, model_name: str, ticker: str) -> pd.DataFram
             "upper_bound":     pred * 1.02,
         })
 
-        # Roll forward: update lag features for next prediction
-        if "close_lag_1" in current_X.columns:
-            for lag in [10, 5, 3, 2]:
-                col_curr = f"close_lag_{lag}"
-                col_prev = f"close_lag_{lag-1}" if lag > 1 else None
-                if col_curr in current_X.columns:
-                    if col_prev and col_prev in current_X.columns:
-                        current_X[col_curr] = current_X[col_prev].values
-                    else:
-                        current_X[col_curr] = current_close
-            current_X["close_lag_1"] = current_close
-            current_close = pred
+        # Append prediction to buffer, then recompute all price-derived features
+        buf.append(pred)
+        prices = np.array(buf)
+
+        # Lag features — each lag reads the correct historical position
+        for lag in [1, 2, 3, 5, 10]:
+            col = f"close_lag_{lag}"
+            if col in current_X.columns and len(prices) > lag:
+                current_X[col] = prices[-(lag + 1)]
+
+        # Returns
+        if "return_1d" in current_X.columns and len(prices) >= 2:
+            current_X["return_1d"] = (prices[-1] - prices[-2]) / prices[-2]
+        if "return_5d" in current_X.columns and len(prices) >= 6:
+            current_X["return_5d"] = (prices[-1] - prices[-6]) / prices[-6]
+
+        # Rolling mean and std
+        for window in [5, 10, 20]:
+            if len(prices) >= window:
+                w_prices = prices[-window:]
+                mean_col = f"rolling_mean_{window}"
+                std_col  = f"rolling_std_{window}"
+                if mean_col in current_X.columns:
+                    current_X[mean_col] = float(np.mean(w_prices))
+                if std_col in current_X.columns:
+                    current_X[std_col] = float(np.std(w_prices, ddof=1)) if len(w_prices) > 1 else 0.0
+
+        # Bollinger Band position and width (derived from updated rolling_mean/std_20)
+        if "rolling_mean_20" in current_X.columns and "rolling_std_20" in current_X.columns:
+            mean20 = float(current_X["rolling_mean_20"].values[0])
+            std20  = float(current_X["rolling_std_20"].values[0])
+            bb_upper = mean20 + 2 * std20
+            bb_lower = mean20 - 2 * std20
+            bb_range = bb_upper - bb_lower
+            if "bb_position" in current_X.columns and bb_range > 0:
+                current_X["bb_position"] = float(np.clip((pred - bb_lower) / bb_range, 0, 1))
+            if "bb_width" in current_X.columns and mean20 > 0:
+                current_X["bb_width"] = bb_range / mean20
+
+        # RSI, MACD, volume, sentiment, anomaly stay frozen — exogenous signals
+        # that cannot be extrapolated from price alone.
 
     return pd.DataFrame(forecasts)
 
@@ -550,24 +590,25 @@ def run(tickers: list[str] = None) -> dict:
 
         ticker_results = {}
 
+        price_buf = list(df["close"].values)
+
         # XGBoost
         xgb_result = train_xgboost(df, ticker)
         if xgb_result:
-            xgb_forecast = generate_forecast(xgb_result, "xgboost", ticker)
+            xgb_forecast = generate_forecast(xgb_result, "xgboost", ticker, price_buf)
             n = save_forecasts(xgb_forecast)
             log_mlflow(ticker, "xgboost", xgb_result["metrics"],
                       xgb_result["importance"], xgb_forecast)
             ticker_results["xgboost"] = n
             logger.info(f"  XGBoost: {n} forecast rows saved")
 
-            # Print top 5 features
             top5 = xgb_result["importance"].head(5)
             logger.info(f"  Top features: {', '.join(top5['feature'].tolist())}")
 
         # LightGBM
         lgb_result = train_lightgbm(df, ticker)
         if lgb_result:
-            lgb_forecast = generate_forecast(lgb_result, "lightgbm", ticker)
+            lgb_forecast = generate_forecast(lgb_result, "lightgbm", ticker, price_buf)
             n = save_forecasts(lgb_forecast)
             log_mlflow(ticker, "lightgbm", lgb_result["metrics"],
                       lgb_result["importance"], lgb_forecast)
