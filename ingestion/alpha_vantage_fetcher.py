@@ -7,7 +7,8 @@ Free tier: 25 requests/day, 15-min interval data available.
 Docs: https://www.alphavantage.co/documentation/
 """
 
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import time

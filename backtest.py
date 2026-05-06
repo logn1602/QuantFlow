@@ -254,7 +254,7 @@ def run_backtest(ticker: str) -> dict:
     """
     End-to-end backtest for one ticker:
       1. Collect 30-day out-of-fold holdout predictions from all 4 base models
-      2. Train Ridge meta-learner → generate ensemble predictions
+      2. Train NNLS meta-learner → generate ensemble predictions
       3. Simulate long/flat trading strategy
       4. Compute + save metrics
     """
@@ -273,7 +273,7 @@ def run_backtest(ticker: str) -> dict:
         return {}
 
     # Step 2: Meta-learner + ensemble predictions
-    logger.info("Training Ridge meta-learner...")
+    logger.info("Training NNLS meta-learner...")
     meta_model, meta_metrics = tune_and_train_meta(stacked_df)
     feature_cols   = ["arima", "prophet", "xgboost", "lightgbm"]
     ensemble_preds = meta_model.predict(stacked_df[feature_cols].values)

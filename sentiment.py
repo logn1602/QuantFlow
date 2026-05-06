@@ -20,7 +20,6 @@ Usage:
     python sentiment.py --ticker AAPL      # one ticker only
     python sentiment.py --show AAPL        # print latest sentiment for AAPL
     python sentiment.py --summary          # market-wide sentiment overview
-    python sentiment.py --analyze          # rerun FinBERT on unscored rows
 """
 
 import sys
