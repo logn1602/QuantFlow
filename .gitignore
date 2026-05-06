@@ -34,3 +34,6 @@ mlflow.db
 
 # Streamlit (Phase 5)
 .streamlit/secrets.toml
+
+# Claude Code
+.claude/worktrees/

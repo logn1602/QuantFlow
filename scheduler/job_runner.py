@@ -9,8 +9,10 @@ Jobs:
   - Technical indicators   : every 15 min (after price fetch)
   - Anomaly detection      : every hour
   - Sentiment analysis     : every 6 hours (4x per day)
-  - XGBoost / LightGBM     : daily at market close (4:45 PM ET)
   - ARIMA / Prophet        : daily at market close (4:30 PM ET)
+  - XGBoost / LightGBM     : daily at market close (4:45 PM ET)
+  - Stacking Ensemble      : daily after base models (5:00 PM ET)
+  - Backtesting            : daily after ensemble (5:15 PM ET)
 
 Usage:
     python scheduler/job_runner.py
@@ -110,6 +112,36 @@ def run_xgboost_job():
         logger.error(f"XGBoost job failed: {e}")
 
 
+def run_ensemble_job():
+    """Stacking ensemble — runs after ARIMA/Prophet + XGBoost/LightGBM are done."""
+    logger.info("--- Stacking Ensemble job started ---")
+    try:
+        from ensemble import run as ensemble_run
+        results = ensemble_run()
+        for ticker, n in results.items():
+            logger.info(f"  {ticker} [ensemble_stack]: {n} rows saved")
+        logger.info("--- Ensemble job done ---")
+    except Exception as e:
+        logger.error(f"Ensemble job failed: {e}")
+
+
+def run_backtest_job():
+    """Backtesting — runs after ensemble forecasts are ready."""
+    logger.info("--- Backtest job started ---")
+    try:
+        from backtest import run as backtest_run
+        results = backtest_run()
+        for ticker, m in results.items():
+            if m:
+                logger.info(
+                    f"  {ticker}: return={m['total_return']:+.2f}% | "
+                    f"alpha={m['alpha']:+.2f}% | sharpe={m['sharpe_ratio']:.3f}"
+                )
+        logger.info("--- Backtest job done ---")
+    except Exception as e:
+        logger.error(f"Backtest job failed: {e}")
+
+
 # ── Scheduler setup ───────────────────────────────────────────────────────────
 
 def start():
@@ -184,6 +216,24 @@ def start():
         replace_existing=True,
     )
 
+    # ── Daily at 5:00 PM ET: Stacking Ensemble ────────────────────────────────
+    # Runs after all 4 base models have completed
+    scheduler.add_job(
+        run_ensemble_job,
+        trigger=CronTrigger(hour=17, minute=0, timezone="America/New_York"),
+        id="ensemble",
+        replace_existing=True,
+    )
+
+    # ── Daily at 5:15 PM ET: Backtesting ─────────────────────────────────────
+    # Runs after ensemble forecasts are saved
+    scheduler.add_job(
+        run_backtest_job,
+        trigger=CronTrigger(hour=17, minute=15, timezone="America/New_York"),
+        id="backtest",
+        replace_existing=True,
+    )
+
     logger.info("QuantFlow scheduler started. Jobs:")
     logger.info(f"  Price ingestion  : every {FETCH_INTERVAL_MINUTES} min")
     logger.info(f"  Indicators       : every {FETCH_INTERVAL_MINUTES} min")
@@ -191,6 +241,8 @@ def start():
     logger.info(f"  Sentiment        : every 6 hours")
     logger.info(f"  ARIMA/Prophet    : daily at 4:30 PM ET")
     logger.info(f"  XGBoost/LightGBM : daily at 4:45 PM ET")
+    logger.info(f"  Stacking Ensemble: daily at 5:00 PM ET")
+    logger.info(f"  Backtesting      : daily at 5:15 PM ET")
     logger.info("Press Ctrl+C to stop.")
 
     # Run immediately on start
