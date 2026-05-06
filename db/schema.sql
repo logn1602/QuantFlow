@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS anomalies (
     close       NUMERIC(12, 4),
     zscore      NUMERIC(8, 4),
     flag        VARCHAR(10)     NOT NULL,        -- 'HIGH' or 'LOW'
-    inserted_at TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+    inserted_at TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+
+    UNIQUE (ticker, ts)
 );
 
 CREATE INDEX IF NOT EXISTS idx_anomalies_ticker_ts
@@ -66,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_anomalies_ticker_ts
 CREATE TABLE IF NOT EXISTS forecasts (
     id             BIGSERIAL PRIMARY KEY,
     ticker         VARCHAR(10)    NOT NULL,
-    model          VARCHAR(30)    NOT NULL,       -- 'arima' or 'prophet'
+    model          VARCHAR(30)    NOT NULL,       -- 'arima', 'prophet', 'xgboost', 'lightgbm', 'ensemble_stack'
     forecast_date  DATE           NOT NULL,       -- the date being predicted
     predicted_close NUMERIC(12, 4),
     lower_bound    NUMERIC(12, 4),
