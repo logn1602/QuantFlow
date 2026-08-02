@@ -37,3 +37,4 @@ mlflow.db
 
 # Claude Code
 .claude/worktrees/
+.gstack/
