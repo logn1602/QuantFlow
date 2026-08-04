@@ -46,9 +46,10 @@ from utils.logger import get_logger
 
 logger = get_logger("ensemble")
 
-HOLDOUT_DAYS  = 30
-FORECAST_DAYS = 7
-MLFLOW_EXP    = "stock_forecasting"
+HOLDOUT_DAYS     = 30
+FORECAST_DAYS    = 7
+META_WARMUP_DAYS = 10   # days used to fit the first meta-learner
+MLFLOW_EXP       = "stock_forecasting"
 
 
 # ── Holdout prediction helpers ────────────────────────────────────────────────
@@ -183,6 +184,60 @@ class NNLSMeta:
         return X @ self.coef_
 
 
+def _fit_nnls(X, y) -> NNLSMeta:
+    """
+    Solve min ||Xw - y||^2 s.t. w >= 0, then normalise to a convex combination.
+
+    Shared by the out-of-fold loop and the final production fit so both use
+    one implementation of the meta-learner.
+    """
+    from scipy.optimize import nnls
+
+    if hasattr(X, "values"):
+        X = X.values
+    if hasattr(y, "values"):
+        y = y.values
+
+    n_features     = X.shape[1]
+    raw_weights, _ = nnls(X, y)
+
+    weight_sum = raw_weights.sum()
+    weights    = (raw_weights / weight_sum if weight_sum > 0
+                  else np.ones(n_features) / n_features)
+    return NNLSMeta(weights)
+
+
+def out_of_fold_meta_predictions(stacked_df: pd.DataFrame,
+                                 warmup: int = META_WARMUP_DAYS) -> tuple:
+    """
+    Expanding-window out-of-fold ensemble predictions.
+
+    For each day i in [warmup, len(stacked_df)):
+      fit NNLS on days [0, i)  ->  predict day i
+    The prediction for day i never sees day i's actual, so the resulting
+    MAPE is an honest estimate of ensemble performance.
+
+    Returns (oof_preds, actuals) — both length len(stacked_df) - warmup.
+    """
+    feature_cols = ["arima", "prophet", "xgboost", "lightgbm"]
+    X = stacked_df[feature_cols].values
+    y = stacked_df["actual"].values
+
+    if len(stacked_df) <= warmup:
+        logger.warning(
+            f"  Stack has {len(stacked_df)} rows, warmup is {warmup} — "
+            f"no out-of-fold days available"
+        )
+        return np.array([]), np.array([])
+
+    oof_preds = np.empty(len(stacked_df) - warmup, dtype=float)
+    for j, i in enumerate(range(warmup, len(stacked_df))):
+        meta         = _fit_nnls(X[:i], y[:i])
+        oof_preds[j] = float(meta.predict(X[i:i + 1])[0])
+
+    return oof_preds, y[warmup:]
+
+
 def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
     """
     Fit a non-negative least squares meta-learner on the 30-day holdout stack.
@@ -194,31 +249,52 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
       badly when current prices differ from the training range. NNLS forces
       all weights >= 0 and we normalise to sum=1, making the ensemble a safe
       convex combination that cannot diverge from the base models.
-    """
-    from scipy.optimize import nnls
 
+    Reported metrics are out-of-fold: each evaluation day is predicted by a
+    meta-learner fitted only on days before it. Base-model MAPEs are scored
+    over that same window so the comparison is like-for-like, and
+    improvement_pct is free to go negative when the ensemble genuinely loses.
+
+    The returned model is fitted on ALL holdout days — that is the model used
+    to generate the forward 7-day forecast.
+    """
     feature_cols = ["arima", "prophet", "xgboost", "lightgbm"]
     X = stacked_df[feature_cols].values
     y = stacked_df["actual"].values
 
-    # Solve min ||Xw - y||^2  s.t.  w >= 0
-    raw_weights, _ = nnls(X, y)
+    # ── Honest evaluation: out-of-fold predictions ────────────────────────────
+    oof_preds, oof_actuals = out_of_fold_meta_predictions(stacked_df)
+    eval_days = len(oof_actuals)
+    warmup    = len(stacked_df) - eval_days
 
-    # Normalise to a convex combination (sum = 1)
-    weight_sum = raw_weights.sum()
-    weights = raw_weights / weight_sum if weight_sum > 0 else np.ones(len(feature_cols)) / len(feature_cols)
+    if eval_days > 0:
+        # Base models MUST be scored on the same window as the OOF ensemble.
+        base_mapes = {m: round(_mape(oof_actuals, stacked_df[m].values[warmup:]), 2)
+                      for m in feature_cols}
+        best_base = min(base_mapes.values())
+        ens_mape  = round(_mape(oof_actuals, oof_preds), 2)
+        improvement = (round((best_base - ens_mape) / best_base * 100, 2)
+                       if best_base > 0 else 0.0)
+    else:
+        base_mapes  = {m: None for m in feature_cols}
+        best_base   = None
+        ens_mape    = None
+        improvement = None
 
-    meta = NNLSMeta(weights)
-    ensemble_preds = meta.predict(X)
-
-    base_mapes = {m: round(_mape(y, stacked_df[m].values), 2) for m in feature_cols}
-    best_base  = min(base_mapes.values())
-    ens_mape   = round(_mape(y, ensemble_preds), 2)
+    # ── Production fit: all holdout days, used for the forward forecast ───────
+    meta    = _fit_nnls(X, y)
+    weights = meta.coef_
 
     logger.info(
         "  NNLS weights — " +
         " | ".join(f"{m}: {w:.3f}" for m, w in zip(feature_cols, weights))
     )
+    if eval_days > 0:
+        verdict = "beats" if improvement > 0 else "does NOT beat"
+        logger.info(
+            f"  Out-of-fold over {eval_days} days: ensemble {ens_mape}% "
+            f"{verdict} best base {best_base}% ({improvement:+.2f}%)"
+        )
 
     metrics = {
         "ensemble_mape":   ens_mape,
@@ -226,11 +302,13 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
         "prophet_mape":    base_mapes["prophet"],
         "xgboost_mape":    base_mapes["xgboost"],
         "lightgbm_mape":   base_mapes["lightgbm"],
-        "best_alpha":      "nnls",
-        "cv_mape":         ens_mape,
+        "meta_learner":    "nnls_convex",
+        "oof_mape":        ens_mape,
+        "eval_days":       eval_days,
+        "warmup_days":     warmup,
         "coefficients":    dict(zip(feature_cols, weights.tolist())),
         "intercept":       0.0,
-        "improvement_pct": round((best_base - ens_mape) / best_base * 100, 2) if best_base > 0 else 0.0,
+        "improvement_pct": improvement,
     }
 
     return meta, metrics
@@ -342,23 +420,23 @@ def log_to_mlflow(ticker: str, meta_model, metrics: dict,
         with mlflow.start_run(run_name=f"ensemble_stack_{ticker}"):
             mlflow.log_param("ticker",        ticker)
             mlflow.log_param("model",         "ensemble_stack")
-            mlflow.log_param("meta_learner",  "NNLS")
-            mlflow.log_param("best_alpha",    metrics["best_alpha"])
+            mlflow.log_param("meta_learner",  metrics["meta_learner"])
             mlflow.log_param("base_models",   "arima,prophet,xgboost,lightgbm")
             mlflow.log_param("holdout_days",  HOLDOUT_DAYS)
+            mlflow.log_param("warmup_days",   metrics["warmup_days"])
             mlflow.log_param("forecast_days", FORECAST_DAYS)
 
             # Learned model weights — key insight for recruiters reviewing MLflow
             for model_name, coef in metrics["coefficients"].items():
                 mlflow.log_param(f"weight_{model_name}", round(coef, 4))
 
-            mlflow.log_metric("ensemble_mape",   metrics["ensemble_mape"])
-            mlflow.log_metric("arima_mape",      metrics["arima_mape"])
-            mlflow.log_metric("prophet_mape",    metrics["prophet_mape"])
-            mlflow.log_metric("xgboost_mape",    metrics["xgboost_mape"])
-            mlflow.log_metric("lightgbm_mape",   metrics["lightgbm_mape"])
-            mlflow.log_metric("improvement_pct", metrics["improvement_pct"])
-            mlflow.log_metric("cv_mape",         metrics["cv_mape"])
+            # eval_days is always meaningful; the MAPEs are None if the stack
+            # was too short to leave any out-of-fold days.
+            mlflow.log_metric("eval_days", metrics["eval_days"])
+            for key in ("ensemble_mape", "oof_mape", "arima_mape", "prophet_mape",
+                        "xgboost_mape", "lightgbm_mape", "improvement_pct"):
+                if metrics[key] is not None:
+                    mlflow.log_metric(key, metrics[key])
 
             os.makedirs("mlruns_artifacts", exist_ok=True)
             stack_path    = f"mlruns_artifacts/ensemble_stack_{ticker}_holdout.csv"
@@ -426,20 +504,24 @@ def run(tickers: list = None) -> dict:
             f"  Weights — ARIMA: {coefs['arima']:.3f} | Prophet: {coefs['prophet']:.3f} | "
             f"XGBoost: {coefs['xgboost']:.3f} | LightGBM: {coefs['lightgbm']:.3f}"
         )
-        logger.info(
-            f"  MAPE — Ensemble: {metrics['ensemble_mape']}% vs "
-            f"best base: {min(metrics['arima_mape'], metrics['prophet_mape'], metrics['xgboost_mape'], metrics['lightgbm_mape'])}% "
-            f"(+{metrics['improvement_pct']}% improvement)"
-        )
+        if metrics["eval_days"] > 0:
+            base_best = min(metrics["arima_mape"], metrics["prophet_mape"],
+                            metrics["xgboost_mape"], metrics["lightgbm_mape"])
+            logger.info(
+                f"  MAPE (out-of-fold, {metrics['eval_days']} days) — "
+                f"Ensemble: {metrics['ensemble_mape']}% vs "
+                f"best base: {base_best}% "
+                f"({metrics['improvement_pct']:+.2f}% vs best base)"
+            )
+        else:
+            logger.warning(f"  {ticker}: no out-of-fold days — MAPE not measured")
 
-        # NOTE: ensemble_mape is currently IN-SAMPLE — the meta-learner is fitted
-        # and scored on the same 30 holdout days. Persisting it anyway so the
-        # dashboard plumbing is in place; Phase 3 replaces it with an
-        # out-of-fold estimate.
+        # Store the out-of-fold MAPE against the evaluation window it was
+        # measured on, not the full 30-day holdout.
         save_model_metrics(
             ticker, "ensemble_stack",
             {"mape": metrics["ensemble_mape"]},
-            HOLDOUT_DAYS,
+            metrics["eval_days"],
         )
 
         logger.info(f"Generating 7-day ensemble forecast...")

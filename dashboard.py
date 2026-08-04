@@ -174,7 +174,7 @@ def load_backtest_summary() -> pd.DataFrame:
     query = text("""
         SELECT ticker, total_return, annualized_return, sharpe_ratio,
                max_drawdown, win_rate, num_trades, benchmark_return, alpha,
-               final_value, run_at::date AS run_date
+               final_value, holdout_days, run_at::date AS run_date
         FROM backtest_results
         ORDER BY alpha DESC
     """)
@@ -643,13 +643,21 @@ with tab5:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 with tab6:
-    st.subheader("Ensemble Strategy Backtest — 30-Day Holdout")
+    bt_summary = load_backtest_summary()
+
+    # Window length is whatever the backtest actually evaluated on — the
+    # out-of-fold window, which is shorter than the 30-day holdout.
+    _windows = sorted({int(d) for d in bt_summary["holdout_days"].dropna()}) \
+        if not bt_summary.empty else []
+    if len(_windows) == 1:
+        st.subheader(f"Ensemble Strategy Backtest — {_windows[0]}-Day Out-of-Fold Window")
+    else:
+        st.subheader("Ensemble Strategy Backtest — Out-of-Fold Window")
+
     st.caption(
         "Long/flat strategy: BUY when ensemble predicts price rise, hold cash otherwise. "
         "1-day holding period · 0.1% transaction cost · compared to buy-and-hold benchmark."
     )
-
-    bt_summary = load_backtest_summary()
 
     if bt_summary.empty:
         st.warning("No backtest results found. Run: `python backtest.py`")
@@ -736,9 +744,12 @@ with tab6:
         )
 
         st.divider()
+        _win_txt = f"{_windows[0]}-day" if len(_windows) == 1 else "the"
         st.caption(
             "Sharpe > 1.0 = good risk-adjusted return · "
             "Alpha > 0 = strategy beats buy-and-hold · "
-            "Ann. Return extrapolated from 30-day holdout — treat as indicative · "
-            "All metrics on out-of-fold holdout (no look-ahead bias)"
+            f"Ann. Return extrapolated from {_win_txt} out-of-fold window "
+            "(×252/n) — treat as indicative · "
+            "Base models and the ensemble meta-learner are both evaluated "
+            "out-of-fold, so no prediction saw its own actual"
         )
