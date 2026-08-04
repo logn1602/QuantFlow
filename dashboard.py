@@ -99,15 +99,21 @@ def load_anomalies(ticker: str, days: int = 180) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_forecasts(ticker: str) -> pd.DataFrame:
     engine = get_engine()
+    # Show only the most recent run per model. Averaging across runs blended
+    # every forecast ever made for a date into one meaningless number.
     query = text("""
-        SELECT model, forecast_date,
-               AVG(predicted_close) AS predicted_close,
-               AVG(lower_bound)     AS lower_bound,
-               AVG(upper_bound)     AS upper_bound
-        FROM forecasts
-        WHERE ticker = :ticker
-        GROUP BY model, forecast_date
-        ORDER BY model, forecast_date
+        SELECT f.model, f.forecast_date, f.predicted_close,
+               f.lower_bound, f.upper_bound
+        FROM forecasts f
+        JOIN (
+            SELECT model, MAX(run_at) AS run_at
+            FROM forecasts
+            WHERE ticker = :ticker
+            GROUP BY model
+        ) latest
+          ON f.model = latest.model AND f.run_at = latest.run_at
+        WHERE f.ticker = :ticker
+        ORDER BY f.model, f.forecast_date
     """)
     with engine.connect() as conn:
         df = pd.read_sql(query, conn, params={"ticker": ticker})

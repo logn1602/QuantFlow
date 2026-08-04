@@ -28,11 +28,42 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
-from config import FETCH_INTERVAL_MINUTES
-from db.connection import test_connection
+from sqlalchemy import text
+
+from config import FETCH_INTERVAL_MINUTES, TICKERS
+from db.connection import get_engine, test_connection
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _clear_model_forecasts(models: list[str], tickers: list[str] = None):
+    """Delete prior forecast rows for the given models so the scheduler
+    doesn't accumulate one row per run per forecast_date.
+
+    Only the models this job is about to rewrite are cleared, so a failing
+    job never blanks another model's forecasts. If the job then crashes
+    mid-run the dashboard shows nothing for these models until the next
+    run — missing is better than silently averaged with stale predictions.
+    """
+    tickers = tickers or TICKERS
+    engine  = get_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                DELETE FROM forecasts
+                WHERE ticker = ANY(:tickers) AND model = ANY(:models)
+            """),
+            {"tickers": tickers, "models": models}
+        )
+        deleted = result.rowcount
+    logger.info(
+        f"  Cleared {deleted} prior forecast rows for "
+        f"{', '.join(models)} across {len(tickers)} tickers"
+    )
+    return deleted
 
 
 # ── Job functions ─────────────────────────────────────────────────────────────
@@ -96,6 +127,7 @@ def run_forecasting_job():
     logger.info("--- ARIMA/Prophet forecasting job started ---")
     try:
         from forecasting import run as forecasting_run
+        _clear_model_forecasts(["arima", "prophet"])
         results = forecasting_run()
         logger.info(f"--- Forecasting job done: {results} ---")
     except Exception as e:
@@ -106,6 +138,7 @@ def run_xgboost_job():
     logger.info("--- XGBoost/LightGBM job started ---")
     try:
         from xgboost_model import run as xgb_run
+        _clear_model_forecasts(["xgboost", "lightgbm"])
         results = xgb_run()
         logger.info(f"--- XGBoost job done: {results} ---")
     except Exception as e:
@@ -117,6 +150,7 @@ def run_ensemble_job():
     logger.info("--- Stacking Ensemble job started ---")
     try:
         from ensemble import run as ensemble_run
+        _clear_model_forecasts(["ensemble_stack"])
         results = ensemble_run()
         for ticker, n in results.items():
             logger.info(f"  {ticker} [ensemble_stack]: {n} rows saved")
