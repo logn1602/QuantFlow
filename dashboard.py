@@ -25,6 +25,7 @@ from plotly.subplots import make_subplots
 from sqlalchemy import text
 
 from db.connection import get_engine
+from db.metrics import load_latest_metrics
 from config import TICKERS
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -112,6 +113,12 @@ def load_forecasts(ticker: str) -> pd.DataFrame:
         df = pd.read_sql(query, conn, params={"ticker": ticker})
     df["forecast_date"] = pd.to_datetime(df["forecast_date"])
     return df
+
+
+@st.cache_data(ttl=300)
+def load_metrics(ticker: str) -> dict:
+    """Latest holdout metrics per model, straight from model_metrics."""
+    return load_latest_metrics(ticker)
 
 
 @st.cache_data(ttl=300)
@@ -517,13 +524,35 @@ with tab3:
                     st.dataframe(mdf, use_container_width=True, hide_index=True)
 
         st.divider()
-        st.caption("30-day holdout MAPE (lower = better)")
-        b1, b2, b3, b4, b5 = st.columns(5)
-        with b1: st.info("ARIMA: ~4.1%")
-        with b2: st.info("Prophet: ~1.8%")
-        with b3: st.success("XGBoost: ~1.1%")
-        with b4: st.success("LightGBM: ~1.0%")
-        with b5: st.success("Ensemble: best ⭐")
+        metrics = load_metrics(ticker)
+
+        if not metrics:
+            st.info("No metrics recorded yet. Run: python run_models.py")
+        else:
+            # One caption if every model shares an evaluation window, otherwise
+            # each column states its own (Phase 3 shortens the ensemble's).
+            windows = {m["holdout_days"] for m in metrics.values()
+                       if m["holdout_days"] is not None}
+            if len(windows) == 1:
+                st.caption(f"{windows.pop()}-day holdout MAPE — {ticker} (lower = better)")
+            else:
+                st.caption(f"Holdout MAPE — {ticker} (lower = better)")
+
+            b1, b2, b3, b4, b5 = st.columns(5)
+            for col, model in zip([b1, b2, b3, b4, b5],
+                                   ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"]):
+                label = model_labels[model]
+                m     = metrics.get(model)
+                with col:
+                    if not m or m["mape"] is None:
+                        st.info(f"{label}: —")
+                        st.caption("not yet measured")
+                    else:
+                        text_ = f"{label}: {m['mape']:.2f}%"
+                        if m["mape"] < 2.0: st.success(text_)
+                        else:               st.info(text_)
+                        st.caption(f"{m['holdout_days']}d · measured "
+                                   f"{pd.Timestamp(m['run_at']).date()}")
 
 with tab4:
     if sentiment.empty:

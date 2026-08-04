@@ -35,6 +35,7 @@ setup:
 	psql -U postgres -d stock_pipeline -f db/schema.sql
 	psql -U postgres -d stock_pipeline -f db/schema_sentiment.sql
 	psql -U postgres -d stock_pipeline -f db/schema_backtest.sql
+	psql -U postgres -d stock_pipeline -f db/schema_metrics.sql
 	@echo "Database tables created."
 
 # ── Pipeline stages ───────────────────────────────────────────────────────────

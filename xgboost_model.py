@@ -53,6 +53,7 @@ from datetime import datetime, timedelta
 
 from config import TICKERS
 from db.connection import get_engine
+from db.metrics import save_model_metrics
 from utils.logger import get_logger
 
 logger = get_logger("xgboost_model")
@@ -599,6 +600,7 @@ def run(tickers: list[str] = None) -> dict:
             n = save_forecasts(xgb_forecast)
             log_mlflow(ticker, "xgboost", xgb_result["metrics"],
                       xgb_result["importance"], xgb_forecast)
+            save_model_metrics(ticker, "xgboost", xgb_result["metrics"], HOLDOUT_DAYS)
             ticker_results["xgboost"] = n
             logger.info(f"  XGBoost: {n} forecast rows saved")
 
@@ -612,6 +614,7 @@ def run(tickers: list[str] = None) -> dict:
             n = save_forecasts(lgb_forecast)
             log_mlflow(ticker, "lightgbm", lgb_result["metrics"],
                       lgb_result["importance"], lgb_forecast)
+            save_model_metrics(ticker, "lightgbm", lgb_result["metrics"], HOLDOUT_DAYS)
             ticker_results["lightgbm"] = n
             logger.info(f"  LightGBM: {n} forecast rows saved")
 

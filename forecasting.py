@@ -36,6 +36,7 @@ from sqlalchemy import text
 sys.path.insert(0, os.path.dirname(__file__))
 from config import TICKERS
 from db.connection import get_engine
+from db.metrics import save_model_metrics
 from utils.logger import get_logger
 
 logger = get_logger("forecasting")
@@ -83,13 +84,16 @@ def compute_metrics(actual: pd.Series, predicted: pd.Series) -> dict:
 
 # ── ARIMA ─────────────────────────────────────────────────────────────────────
 
-def run_arima(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
-    """Fit ARIMA and generate 7-day forecast with confidence intervals."""
+def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
+    """
+    Fit ARIMA and generate 7-day forecast with confidence intervals.
+    Returns (forecast_df, holdout_metrics). Metrics are {} on failure.
+    """
     from statsmodels.tsa.arima.model import ARIMA
 
     if len(df) < HOLDOUT_DAYS + 30:
         logger.warning(f"{ticker}: Not enough data for ARIMA")
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
     train   = df.iloc[:-HOLDOUT_DAYS]
     holdout = df.iloc[-HOLDOUT_DAYS:]
@@ -126,26 +130,29 @@ def run_arima(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         })
 
         _log_mlflow(ticker, "arima", metrics, forecast_df)
-        return forecast_df
+        return forecast_df, metrics
 
     except Exception as e:
         logger.error(f"ARIMA failed for {ticker}: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
 
 # ── Prophet ───────────────────────────────────────────────────────────────────
 
-def run_prophet(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
-    """Fit Prophet and generate 7-day forecast with uncertainty intervals."""
+def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
+    """
+    Fit Prophet and generate 7-day forecast with uncertainty intervals.
+    Returns (forecast_df, holdout_metrics). Metrics are {} on failure.
+    """
     try:
         from prophet import Prophet
     except ImportError:
         logger.error("Prophet not installed. Run: pip install prophet")
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
     if len(df) < HOLDOUT_DAYS + 30:
         logger.warning(f"{ticker}: Not enough data for Prophet")
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
     train   = df.iloc[:-HOLDOUT_DAYS].copy()
     holdout = df.iloc[-HOLDOUT_DAYS:].copy()
@@ -196,11 +203,11 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         })
 
         _log_mlflow(ticker, "prophet", metrics, forecast_df)
-        return forecast_df
+        return forecast_df, metrics
 
     except Exception as e:
         logger.error(f"Prophet failed for {ticker}: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
 
 # ── MLflow logging ────────────────────────────────────────────────────────────
@@ -346,15 +353,17 @@ def run(tickers: list[str] = None, models: list[str] = None) -> dict:
 
         if "arima" in models:
             logger.info(f"  Fitting ARIMA for {ticker}...")
-            arima_forecast = run_arima(df, ticker)
+            arima_forecast, arima_metrics = run_arima(df, ticker)
             n = save_forecasts(arima_forecast)
+            save_model_metrics(ticker, "arima", arima_metrics, HOLDOUT_DAYS)
             ticker_results["arima"] = n
             logger.info(f"  ARIMA: {n} forecast rows saved")
 
         if "prophet" in models:
             logger.info(f"  Fitting Prophet for {ticker}...")
-            prophet_forecast = run_prophet(df, ticker)
+            prophet_forecast, prophet_metrics = run_prophet(df, ticker)
             n = save_forecasts(prophet_forecast)
+            save_model_metrics(ticker, "prophet", prophet_metrics, HOLDOUT_DAYS)
             ticker_results["prophet"] = n
             logger.info(f"  Prophet: {n} forecast rows saved")
 

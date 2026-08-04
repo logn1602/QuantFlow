@@ -41,6 +41,7 @@ from sqlalchemy import text
 
 from config import TICKERS
 from db.connection import get_engine
+from db.metrics import save_model_metrics
 from utils.logger import get_logger
 
 logger = get_logger("ensemble")
@@ -429,6 +430,16 @@ def run(tickers: list = None) -> dict:
             f"  MAPE — Ensemble: {metrics['ensemble_mape']}% vs "
             f"best base: {min(metrics['arima_mape'], metrics['prophet_mape'], metrics['xgboost_mape'], metrics['lightgbm_mape'])}% "
             f"(+{metrics['improvement_pct']}% improvement)"
+        )
+
+        # NOTE: ensemble_mape is currently IN-SAMPLE — the meta-learner is fitted
+        # and scored on the same 30 holdout days. Persisting it anyway so the
+        # dashboard plumbing is in place; Phase 3 replaces it with an
+        # out-of-fold estimate.
+        save_model_metrics(
+            ticker, "ensemble_stack",
+            {"mape": metrics["ensemble_mape"]},
+            HOLDOUT_DAYS,
         )
 
         logger.info(f"Generating 7-day ensemble forecast...")
