@@ -2,7 +2,7 @@
 # Run any pipeline stage with a single command.
 # Usage: make <target>
 
-.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest dashboard scheduler all clean
+.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest dashboard scheduler test all clean
 
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
@@ -22,6 +22,7 @@ help:
 	@echo "  make backtest     Run strategy backtest (run models first)"
 	@echo "  make dashboard    Launch Streamlit dashboard"
 	@echo "  make scheduler    Start the live data scheduler"
+	@echo "  make test         Run the offline test suite (no DB needed)"
 	@echo "  make all          Run full pipeline end to end"
 	@echo "  make clean        Remove logs and MLflow artifacts"
 	@echo "  ─────────────────────────────────────────────"
@@ -67,6 +68,11 @@ backtest:
 
 sentiment:
 	python sentiment.py
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+# Offline only: no database, no network, no model training.
+test:
+	pytest -q
 
 # ── Dashboard + scheduler ─────────────────────────────────────────────────────
 dashboard:

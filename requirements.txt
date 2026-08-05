@@ -36,3 +36,6 @@ plotly
 scikit-learn
 xgboost
 lightgbm
+
+# Testing
+pytest

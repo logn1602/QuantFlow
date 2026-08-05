@@ -58,9 +58,10 @@ logger = get_logger("backtest")
 
 HOLDOUT_DAYS    = 30
 INITIAL_CAPITAL = 10_000.0
-TRANSACTION_COST = 0.001       # 0.1% per trade
-RISK_FREE_RATE   = 0.045       # 4.5% annualised (US T-bill, 2024–2026)
-MLFLOW_EXP       = "stock_forecasting"
+TRANSACTION_COST  = 0.001      # 0.1% per trade
+RISK_FREE_RATE    = 0.045      # 4.5% annualised (US T-bill, 2024–2026)
+ZERO_VARIANCE_TOL = 1e-12      # below this, treat return variance as zero
+MLFLOW_EXP        = "stock_forecasting"
 
 
 # ── Core simulation ───────────────────────────────────────────────────────────
@@ -133,9 +134,17 @@ def compute_metrics(sim: dict) -> dict:
     bench_annual      = float(((bv[-1] / INITIAL_CAPITAL) ** (252 / n) - 1) * 100)
 
     # Sharpe ratio (annualised)
-    rf_daily = RISK_FREE_RATE / 252
-    excess   = sr - rf_daily
-    sharpe   = float(excess.mean() / excess.std() * np.sqrt(252)) if excess.std() > 0 else 0.0
+    # A constant return series has no variance and no meaningful Sharpe. Test
+    # against a tolerance rather than > 0: subtracting rf_daily from identical
+    # returns can leave ~1e-19 of floating-point residue, which a bare > 0
+    # check lets through and which then divides into an absurd Sharpe
+    # (0.001/day yielded ~1.2e17). Real daily-return variance is many orders of
+    # magnitude above ZERO_VARIANCE_TOL, so nothing genuine is suppressed.
+    rf_daily  = RISK_FREE_RATE / 252
+    excess    = sr - rf_daily
+    excess_sd = float(excess.std())
+    sharpe    = (float(excess.mean() / excess_sd * np.sqrt(252))
+                 if excess_sd > ZERO_VARIANCE_TOL else 0.0)
 
     # Max drawdown
     peak     = np.maximum.accumulate(dv)
