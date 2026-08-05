@@ -107,19 +107,25 @@ QuantFlow/
 ├── xgboost_model.py                # XGBoost + LightGBM with feature engineering
 ├── ensemble.py                     # Stacking ensemble — Ridge meta-learner (Layer 3)
 ├── run_models.py                   # Combined forecasting pipeline (all 5 models)
+├── backtest.py                     # Long/flat strategy backtest on out-of-fold predictions
 ├── sentiment.py                    # FinBERT news sentiment pipeline
 ├── dashboard.py                    # Streamlit dashboard (5 tabs)
+├── conftest.py                     # Puts the repo root on sys.path for pytest
 ├── requirements.txt
 ├── runtime.txt                     # Python 3.11 for Streamlit Cloud
 ├── Dockerfile                      # GCP Cloud Run ready
 ├── Makefile                        # One-command pipeline runner
-├── .env.example
+├── LICENSE                         # MIT
+├── .env.example                    # Environment template — copy to .env
 ├── .gitignore
 │
 ├── db/
 │   ├── connection.py               # SQLAlchemy + psycopg2 helpers
+│   ├── metrics.py                  # Reads/writes model_metrics for the dashboard
 │   ├── schema.sql                  # Core tables
-│   └── schema_sentiment.sql        # Sentiment table
+│   ├── schema_sentiment.sql        # Sentiment table
+│   ├── schema_backtest.sql         # Backtest results table
+│   └── schema_metrics.sql          # Per-run model metrics table
 │
 ├── ingestion/
 │   ├── yfinance_fetcher.py         # Yahoo Finance (free, no key)
@@ -128,8 +134,18 @@ QuantFlow/
 ├── scheduler/
 │   └── job_runner.py               # APScheduler — full pipeline automation
 │
-└── utils/
-    └── logger.py                   # Shared rotating file logger
+├── tests/                          # Offline pytest suite (no DB, no network)
+│   ├── test_backtest.py            # simulate_strategy + compute_metrics
+│   ├── test_ensemble.py            # NNLS meta-learner + out-of-fold guarantees
+│   ├── test_features.py            # Feature engineering + leakage checks
+│   └── test_config.py              # Ticker parsing + config validation
+│
+├── utils/
+│   └── logger.py                   # Shared rotating file logger
+│
+└── .github/
+    └── workflows/
+        └── daily_refresh.yml       # Daily CI data refresh (weekdays, 22:30 UTC)
 ```
 
 ---
@@ -173,6 +189,8 @@ make indicators   # Compute RSI, MACD, Bollinger Bands
 make anomalies    # Run anomaly detection
 make models       # Run ALL 5 models incl. stacking ensemble (recommended)
 make sentiment    # Fetch + analyze news headlines
+make backtest     # Simulate the trading strategy (run models first)
+make test         # Run the offline test suite (no DB needed)
 make dashboard    # Launch Streamlit dashboard
 make scheduler    # Start the live data scheduler
 make all          # Run full pipeline end to end
@@ -210,7 +228,12 @@ pip install -r requirements.txt
 psql -U postgres -c "CREATE DATABASE stock_pipeline;"
 psql -U postgres -d stock_pipeline -f db/schema.sql
 psql -U postgres -d stock_pipeline -f db/schema_sentiment.sql
+psql -U postgres -d stock_pipeline -f db/schema_backtest.sql
+psql -U postgres -d stock_pipeline -f db/schema_metrics.sql
 ```
+All four schema files are required. Skipping `schema_backtest.sql` breaks the
+Backtest tab; skipping `schema_metrics.sql` leaves the Forecasts tab with no
+MAPE figures. Once the database exists, `make setup` runs the same four files.
 
 ### 4. Configure environment
 ```bash
