@@ -11,7 +11,7 @@ help:
 	@echo "  ─────────────────────────────────────────────"
 	@echo "  make install      Install all dependencies"
 	@echo "  make setup        Create DB tables (run once)"
-	@echo "  make seed         Seed 5 years of historical data"
+	@echo "  make seed         Seed 2 years of historical data"
 	@echo "  make indicators   Compute RSI, MACD, Bollinger Bands"
 	@echo "  make anomalies    Run anomaly detection (Z-score + IQR)"
 	@echo "  make models       Run ALL 5 models (ARIMA + Prophet + XGBoost + LightGBM + Ensemble)"

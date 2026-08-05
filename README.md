@@ -2,7 +2,7 @@
 
 An end-to-end quantitative stock analytics platform combining real-time data ingestion, technical analysis, anomaly detection, multi-model forecasting, and NLP-based news sentiment analysis — visualized through an interactive Streamlit dashboard.
 
-**Stack:** Python · PostgreSQL (Supabase) · yFinance · Alpha Vantage · FinBERT · XGBoost · LightGBM · Prophet · ARIMA · Ridge (scikit-learn) · MLflow · Streamlit · APScheduler · Backtesting
+**Stack:** Python · PostgreSQL (Supabase) · yFinance · Alpha Vantage · FinBERT · XGBoost · LightGBM · Prophet · ARIMA · NNLS stacking (SciPy) · MLflow · Streamlit · APScheduler · Backtesting
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-quantflow--analytics.streamlit.app-red)](https://quantflow-analytics.streamlit.app)
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
@@ -25,7 +25,7 @@ An end-to-end quantitative stock analytics platform combining real-time data ing
 yFinance API ──────┐
                    ├──► PostgreSQL (Supabase)    NewsAPI + RSS Feeds
 Alpha Vantage ─────┘      (raw_prices)       ──► FinBERT Sentiment Analysis
-                              │                   (315+ headlines/run)
+                              │                  (~290 headlines/run)
                               ▼                          │
                     Technical Indicators                 │
                     (RSI · MACD · Bollinger)             │
@@ -48,50 +48,100 @@ Alpha Vantage ─────┘      (raw_prices)       ──► FinBERT Senti
                                                   ▼
                           ┌───────────────────────────────────────┐
                           │  Stacking Ensemble (ensemble.py)      │
-                          │  Ridge meta-learner — α tuned via     │
-                          │  TimeSeriesSplit CV · learns optimal  │
-                          │  combination weights across 4 models  │
+                          │  NNLS meta-learner — weights >= 0     │
+                          │  summing to 1 (convex combination).   │
+                          │  Scored out-of-fold via an expanding  │
+                          │  window, so no day sees its own actual│
                           └───────────────────────────────────────┘
                                                   │
                                                   ▼
                                         MLflow Experiment Tracking
-                                  (weights · per-model MAPE · improvement%)
+                              (weights · per-model MAPE · oof_mape · eval_days)
                                                   │
                                                   ▼
                                        Streamlit Dashboard
-                                  (5 tabs · 6 live metrics · Supabase)
+                                  (6 tabs · 6 live metrics · Supabase)
 ```
 
 ---
 
 ## Model Performance
 
-All models evaluated on a 30-day holdout set, trained on 5 years of daily OHLCV data (1,240 rows per ticker).
+> **All figures below were measured on 2026-08-04** by running `python run_models.py`
+> across all 8 tickers and reading the `model_metrics` table. They shift as new
+> market data arrives — regenerate rather than trusting a stale copy.
+
+Base models train on the daily close series assembled by `forecasting.load_prices`,
+which collapses intraday bars to one close per date: **579 daily closes per ticker**,
+spanning 2024-04-10 to 2026-08-04. The last 30 days are held out for evaluation.
+
+### Base models — 30-day holdout
 
 | Model | Features Used | AAPL MAPE | Avg MAPE (8 tickers) |
 |---|---|---|---|
-| ARIMA | Price history only | 3.39% | 3.87% |
-| Prophet | Price history only | 1.80% | 9.64% |
-| XGBoost | 33 engineered features | 1.27% | 1.97% |
-| LightGBM | 33 engineered features | 1.29% | 1.94% |
-| **Stacking Ensemble** | **Ridge on 4-model holdout predictions** | **best** | **best** |
+| ARIMA | Price history only | 5.68% | 5.48% |
+| Prophet | Price history only | 6.92% | 12.86% |
+| XGBoost | 33 engineered features | **4.23%** | **3.07%** |
+| LightGBM | 33 engineered features | 4.83% | 3.20% |
 
-**XGBoost + LightGBM outperform ARIMA by ~50% on average MAPE** by incorporating technical indicators, anomaly Z-scores, and FinBERT sentiment compound scores. The **stacking ensemble further improves** on the best individual model by training a Ridge meta-learner on 30-day out-of-fold predictions — the learned coefficients reveal which models the ensemble trusts most per ticker.
+**XGBoost and LightGBM beat ARIMA by ~42% on average MAPE** (3.07% and 3.20% vs
+5.48%) by incorporating technical indicators, anomaly Z-scores, and FinBERT
+sentiment compound scores. XGBoost wins outright on 6 of 8 tickers.
 
-### Per-Ticker MAPE (5-year training, latest run)
+### Stacking ensemble — does it help?
+
+Mostly no, and the honest number says so.
+
+The ensemble is evaluated **out-of-fold**: for each day, an NNLS meta-learner is
+fitted only on the days before it, so no prediction ever sees its own actual.
+Fitting the first meta-learner consumes a 10-day warmup, leaving a **20-day**
+evaluation window. Base models are re-scored on that same 20 days so the
+comparison is like-for-like.
+
+| Ticker | Eval window | Best base model (same window) | Ensemble (out-of-fold) | vs best base |
+|---|---|---|---|---|
+| AAPL | 20 days | Prophet 5.19% | **2.83%** | **+45.47%** |
+| META | 20 days | XGBoost 2.87% | 3.10% | −8.01% |
+| JPM | 20 days | Prophet 2.79% | 3.55% | −27.24% |
+| MSFT | 20 days | LightGBM 3.12% | 6.30% | −101.92% |
+| TSLA | 20 days | XGBoost 2.58% | 5.37% | −108.14% |
+| GOOGL | 20 days | LightGBM 2.31% | 5.29% | −129.00% |
+| NVDA | 20 days | XGBoost 2.10% | 8.59% | −309.05% |
+| AMZN | 20 days | LightGBM 2.32% | 11.44% | −393.10% |
+
+**The ensemble beats the best single base model on 1 of 8 tickers (AAPL).** Mean
+out-of-fold ensemble MAPE is 5.81%, against best-base figures clustered around
+2–3%.
+
+Earlier versions of this README claimed the ensemble was "best" on every ticker.
+That claim came from scoring the meta-learner on the same 30 days it was fitted
+on, which cannot lose by construction. With the leak removed, a convex
+combination that must keep all weights ≥ 0 gets dragged toward whichever base
+models are noisy on a given ticker, and 20 evaluation days is too few for the
+weights to settle. The ensemble is retained because it is genuinely useful on
+AAPL and because its weights are a readable diagnostic of which model the data
+favours — not because it is a general improvement.
+
+### Per-ticker base-model MAPE (30-day holdout)
 
 | Ticker | ARIMA | Prophet | XGBoost | LightGBM | Winner |
 |---|---|---|---|---|---|
-| AAPL | 6.13% | 1.95% | 1.27% | **1.29%** | XGBoost |
-| MSFT | 3.89% | 22.83% | 1.55% | **1.51%** | LightGBM |
-| GOOGL | 3.60% | 7.29% | 2.88% | **2.46%** | LightGBM |
-| AMZN | 1.88% | 9.26% | **1.91%** | 1.92% | ARIMA |
-| NVDA | 7.40% | 11.97% | **2.10%** | 2.15% | XGBoost |
-| TSLA | 6.71% | 7.11% | 2.58% | **2.55%** | LightGBM |
-| META | 6.12% | 11.39% | **2.36%** | 2.38% | XGBoost |
-| JPM | 2.61% | 8.21% | **1.60%** | 1.79% | XGBoost |
+| AAPL | 5.68% | 6.92% | **4.23%** | 4.83% | XGBoost |
+| MSFT | 4.52% | 12.81% | 2.89% | **2.64%** | LightGBM |
+| GOOGL | 3.66% | 15.14% | **2.28%** | 2.38% | XGBoost |
+| AMZN | 3.62% | 16.72% | **2.26%** | 2.30% | XGBoost |
+| NVDA | 5.46% | 18.23% | **2.18%** | 2.58% | XGBoost |
+| TSLA | 11.07% | 21.35% | **2.60%** | 2.79% | XGBoost |
+| META | 6.27% | 9.32% | **2.98%** | 3.13% | XGBoost |
+| JPM | 3.56% | **2.40%** | 5.14% | 4.94% | Prophet |
 
-> Prophet's high MAPE on MSFT (22.83%) and META (11.39%) is due to structural price breaks during the 2022–2023 AI boom — Prophet's seasonality assumptions break down when the underlying trend shifts rapidly. XGBoost and LightGBM handle these breaks better due to their feature-rich input.
+> Prophet is the weakest model on 7 of 8 tickers, worst on TSLA (21.35%), NVDA
+> (18.23%) and AMZN (16.72%) — its additive trend-plus-seasonality assumption
+> degrades when a stock re-rates sharply, which these did over the sample. The
+> exception is JPM, where Prophet is the single best model (2.40%): a slower,
+> more mean-reverting series is exactly what it is built for. The gradient
+> boosters, which get indicators and sentiment as features, are more robust to
+> those breaks but lose to Prophet when there is no break to exploit.
 
 ---
 
@@ -105,11 +155,11 @@ QuantFlow/
 ├── anomaly_detection.py            # Z-score + IQR anomaly detection
 ├── forecasting.py                  # ARIMA + Prophet forecasting
 ├── xgboost_model.py                # XGBoost + LightGBM with feature engineering
-├── ensemble.py                     # Stacking ensemble — Ridge meta-learner (Layer 3)
+├── ensemble.py                     # Stacking ensemble — NNLS meta-learner (Layer 3)
 ├── run_models.py                   # Combined forecasting pipeline (all 5 models)
 ├── backtest.py                     # Long/flat strategy backtest on out-of-fold predictions
 ├── sentiment.py                    # FinBERT news sentiment pipeline
-├── dashboard.py                    # Streamlit dashboard (5 tabs)
+├── dashboard.py                    # Streamlit dashboard (6 tabs)
 ├── conftest.py                     # Puts the repo root on sys.path for pytest
 ├── requirements.txt
 ├── runtime.txt                     # Python 3.11 for Streamlit Cloud
@@ -125,7 +175,9 @@ QuantFlow/
 │   ├── schema.sql                  # Core tables
 │   ├── schema_sentiment.sql        # Sentiment table
 │   ├── schema_backtest.sql         # Backtest results table
-│   └── schema_metrics.sql          # Per-run model metrics table
+│   ├── schema_metrics.sql          # Per-run model metrics table
+│   └── migrations/
+│       └── 001_dedupe_anomalies.sql  # One-time: dedupe anomalies + add UNIQUE
 │
 ├── ingestion/
 │   ├── yfinance_fetcher.py         # Yahoo Finance (free, no key)
@@ -152,17 +204,39 @@ QuantFlow/
 
 ## Pipeline Phases
 
+Row counts measured 2026-08-04. Ingestion is cumulative, so the price, indicator
+and sentiment counts grow every day; the forecast counts are rewritten each run.
+
 | Phase | Description | Output |
 |---|---|---|
-| 1 — Ingestion | Pull 5 years of OHLCV data from yFinance + Alpha Vantage into PostgreSQL (Supabase), scheduled every 15 min | 10,040+ rows across 8 tickers |
-| 2 — Indicators | Compute RSI (14), MACD (12/26/9), Bollinger Bands (20-period) | 9,880+ indicator rows |
-| 3 — Anomalies | Z-score rolling window + IQR method flags unusual price events | 590+ anomaly flags |
-| 4 — Forecasting | ARIMA + Prophet 7-day forecasts with MLflow experiment tracking | 112 forecast rows |
-| 5 — Dashboard | Interactive Streamlit app — 5 tabs, 6 live metrics, 4-model comparison, deployed on Streamlit Cloud | Live at quantflow-analytics.streamlit.app |
-| 6 — Sentiment | FinBERT NLP on 315+ headlines/run from NewsAPI + Yahoo Finance RSS | 633+ sentiment rows |
-| Level 2 | XGBoost + LightGBM trained on 33 features including sentiment scores, best MAPE 1.27% | 112 ML forecast rows |
-| Level 3 | Stacking ensemble — Ridge meta-learner trained on 30-day out-of-fold holdout predictions from all 4 base models. Alpha tuned via TimeSeriesSplit CV. Logs learned model weights + improvement % to MLflow | 56 ensemble forecast rows |
-| Phase 7 | Strategy backtesting — simulates a long/flat trading strategy on the 30-day holdout. Metrics: total return, annualised return, Sharpe ratio, max drawdown, win rate, alpha vs buy-and-hold. 0.1% transaction cost. Results logged to MLflow + displayed in dashboard Backtest tab | 1 result row per ticker |
+| 1 — Ingestion | Pull OHLCV bars from yFinance + Alpha Vantage into PostgreSQL (Supabase), scheduled every 15 min | 21,032 rows across 8 tickers (2,529 per ticker from yFinance, ~26 intraday bars per trading day, collapsed to 579 daily closes for modelling) |
+| 2 — Indicators | Compute RSI (14), MACD (12/26/9), Bollinger Bands (20-period) | 20,032 indicator rows |
+| 3 — Anomalies | Z-score rolling window + IQR method flags unusual price events | 4,993 distinct (ticker, timestamp) flags — see the note below on duplicate rows |
+| 4 — Forecasting | ARIMA + Prophet 7-day forecasts with MLflow experiment tracking | 112 forecast rows (7 days × 2 models × 8 tickers) |
+| 5 — Dashboard | Interactive Streamlit app — 6 tabs, 6 live metrics, 5-model comparison, deployed on Streamlit Cloud | Live at quantflow-analytics.streamlit.app |
+| 6 — Sentiment | FinBERT NLP on ~290 headlines per run from NewsAPI + Yahoo Finance RSS | 22,558 sentiment rows (16,754 distinct headlines) |
+| Level 2 | XGBoost + LightGBM trained on 33 features including sentiment scores, best MAPE 2.18% (NVDA) | 112 ML forecast rows |
+| Level 3 | Stacking ensemble — NNLS meta-learner (weights ≥ 0 summing to 1) over the 4 base models' 30-day holdout predictions, scored out-of-fold on a 20-day window. Logs learned weights, `oof_mape`, `eval_days` and `improvement_pct` to MLflow | 48 ensemble forecast rows (6 usable forecast dates × 8 tickers) |
+| Phase 7 | Strategy backtesting — long/flat strategy simulated on the 20-day out-of-fold window. Metrics: total return, annualised return, Sharpe ratio, max drawdown, win rate, alpha vs buy-and-hold. 0.1% transaction cost. Results logged to MLflow + displayed in dashboard Backtest tab | 1 result row per ticker (8 rows) |
+
+> **Duplicated anomaly rows — fixed in code, migration pending.** The live
+> `anomalies` table holds 269,350 rows for only 4,993 distinct `(ticker, ts)`
+> pairs — ~54 copies of each flag (max 82). Root cause: the table carries only
+> `PRIMARY KEY (id)`. The `UNIQUE (ticker, ts)` in `db/schema.sql` was never
+> applied, because the table already existed when that clause was added and
+> `CREATE TABLE IF NOT EXISTS` cannot retrofit a constraint. With no unique
+> index, the bare `ON CONFLICT DO NOTHING` in `save_anomalies` had nothing to
+> detect, so every run appended a full copy.
+>
+> `save_anomalies` now replaces each ticker's flags inside one transaction
+> instead of appending, which is correct regardless of constraint state and
+> keeps the freshest estimates — the rolling Z-score and IQR fences are
+> recomputed as history grows, so 2,300 keys legitimately differ between
+> copies. Run `db/migrations/001_dedupe_anomalies.sql` once to collapse the
+> existing duplicates (keeping the newest row per key) and add the missing
+> constraint. Fresh installs are unaffected: `schema.sql` creates the
+> constraint correctly. Until the migration runs, dashboard anomaly counts stay
+> inflated; the flagged timestamps are correct either way.
 
 ---
 
@@ -184,7 +258,7 @@ QuantFlow/
 ```bash
 make install      # Install all dependencies
 make setup        # Create DB tables (run once)
-make seed         # Seed 5 years of historical data
+make seed         # Seed 2 years of historical data
 make indicators   # Compute RSI, MACD, Bollinger Bands
 make anomalies    # Run anomaly detection
 make models       # Run ALL 5 models incl. stacking ensemble (recommended)
@@ -246,7 +320,7 @@ ALPHA_VANTAGE_API_KEY=your_key    # free at alphavantage.co
 NEWS_API_KEY=your_key             # free at newsapi.org
 ```
 
-### 5. Seed 5 years of historical data (run once)
+### 5. Seed 2 years of historical data (run once)
 ```bash
 python seed_db.py
 ```
@@ -280,7 +354,21 @@ python scheduler/job_runner.py    # auto-updates everything on schedule
 mlflow ui
 # Open http://localhost:5000
 ```
-Tracks RMSE, MAE, MAPE, top features, and forecast artifacts for every model run across all 5 models. For the stacking ensemble, also logs `weight_arima`, `weight_prophet`, `weight_xgboost`, `weight_lightgbm` (Ridge coefficients) and `improvement_pct` over the best base model.
+Tracks RMSE, MAE, MAPE, top features, and forecast artifacts for every model run across all 5 models.
+
+For the stacking ensemble it also logs:
+
+| Key | Meaning |
+|---|---|
+| `weight_arima`, `weight_prophet`, `weight_xgboost`, `weight_lightgbm` | The learned NNLS weights — non-negative, summing to 1 |
+| `oof_mape` | Out-of-fold ensemble MAPE (the honest number) |
+| `eval_days` | Length of the out-of-fold evaluation window (20) |
+| `arima_mape`, `prophet_mape`, `xgboost_mape`, `lightgbm_mape` | Base-model MAPE over that *same* window, for a like-for-like comparison |
+| `improvement_pct` | Ensemble vs best base model on that window. Negative when the ensemble loses, which is most tickers |
+| `meta_learner` | `nnls_convex` |
+| `warmup_days` | Days consumed fitting the first meta-learner (10) |
+
+MLflow writes to a local `mlflow.db`, which the deployed Streamlit app cannot read — that is why the dashboard reads its MAPE figures from the `model_metrics` table in Postgres instead.
 
 ---
 

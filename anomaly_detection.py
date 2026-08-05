@@ -150,37 +150,60 @@ def detect_iqr_anomalies(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
 def save_anomalies(df: pd.DataFrame) -> int:
     """
-    Insert anomaly rows into the anomalies table.
+    Replace the stored anomaly flags for every ticker present in df.
     Returns number of rows inserted.
+
+    Why replace rather than append: each run recomputes the full series from
+    scratch, and both detectors are history-dependent — the rolling Z-score
+    window and the IQR fences shift as new prices arrive — so re-running
+    produces a slightly different zscore for the same timestamp. The newest
+    estimate is the one computed from the most data, so it wins.
+
+    This deliberately does not depend on a UNIQUE (ticker, ts) constraint.
+    The live table carries only PRIMARY KEY (id): it was created before the
+    UNIQUE clause was added to db/schema.sql, and CREATE TABLE IF NOT EXISTS
+    cannot retrofit a constraint. The previous `ON CONFLICT DO NOTHING` had no
+    unique index to detect, so it never fired and every run appended another
+    full copy of the flags. See db/migrations/001_dedupe_anomalies.sql.
+
+    The delete and the inserts share one transaction, so a failure part-way
+    rolls back the delete too: the table is either fully replaced or left
+    exactly as it was, never half-written.
     """
     if df.empty:
         return 0
 
-    engine = get_engine()
+    engine   = get_engine()
     inserted = 0
+    tickers  = sorted({str(t) for t in df["ticker"]})
 
     with engine.begin() as conn:
+        deleted = conn.execute(
+            text("DELETE FROM anomalies WHERE ticker = ANY(:tickers)"),
+            {"tickers": tickers},
+        ).rowcount
+        if deleted:
+            logger.info(f"  Cleared {deleted} prior anomaly rows for "
+                        f"{', '.join(tickers)}")
+
         for ts, row in df.iterrows():
-            try:
-                conn.execute(
-                    text("""
-                        INSERT INTO anomalies
-                            (ticker, ts, close, zscore, flag)
-                        VALUES
-                            (:ticker, :ts, :close, :zscore, :flag)
-                        ON CONFLICT DO NOTHING
-                    """),
-                    {
-                        "ticker": row["ticker"],
-                        "ts":     ts,
-                        "close":  round(float(row["close"]),  4),
-                        "zscore": round(float(row["zscore"]), 4),
-                        "flag":   row["flag"],
-                    }
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped: {e}")
+            conn.execute(
+                text("""
+                    INSERT INTO anomalies
+                        (ticker, ts, close, zscore, flag)
+                    VALUES
+                        (:ticker, :ts, :close, :zscore, :flag)
+                    ON CONFLICT DO NOTHING
+                """),
+                {
+                    "ticker": row["ticker"],
+                    "ts":     ts,
+                    "close":  round(float(row["close"]),  4),
+                    "zscore": round(float(row["zscore"]), 4),
+                    "flag":   row["flag"],
+                }
+            )
+            inserted += 1
 
     return inserted
 

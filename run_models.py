@@ -98,7 +98,7 @@ def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]
 
     # ── Step 3: Stacking Ensemble ─────────────────────────────────────────────
     logger.info("=" * 50)
-    logger.info("Step 3 — Stacking Ensemble (Ridge meta-learner)")
+    logger.info("Step 3 — Stacking Ensemble (NNLS meta-learner)")
     logger.info("=" * 50)
     try:
         from ensemble import run as ensemble_run

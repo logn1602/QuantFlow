@@ -3,21 +3,34 @@ ensemble.py
 -----------
 Level 3 — Stacking Ensemble
 
-Trains a Ridge regression meta-learner on out-of-fold holdout predictions from
-ARIMA, Prophet, XGBoost, and LightGBM. The meta-learner learns data-driven
-optimal combination weights, consistently outperforming any single base model.
+Trains a non-negative least squares (NNLS) meta-learner on out-of-fold holdout
+predictions from ARIMA, Prophet, XGBoost, and LightGBM. The meta-learner learns
+data-driven combination weights per ticker.
+
+NNLS replaced Ridge because Ridge can assign negative coefficients to base
+models and lean on the intercept to compensate — fine in-sample, but it
+extrapolates badly once live predictions drift outside the training price
+range. NNLS constrains weights to w_i >= 0 summing to 1, so the ensemble is
+always a convex combination and can never predict outside the range of its
+base models. See the NNLSMeta docstring for the full rationale.
+
+Whether the ensemble beats the best single base model is measured, not
+assumed — see out_of_fold_meta_predictions. It does not always win.
 
 Architecture:
   Layer 1 (base models):  ARIMA · Prophet · XGBoost · LightGBM
          ↓  30-day out-of-fold holdout predictions
-  Layer 2 (meta-learner): Ridge regression (α tuned via TimeSeriesSplit CV)
-         ↓  learned optimal linear combination
+  Layer 2 (meta-learner): NNLS convex combination, evaluated with an
+                          expanding-window out-of-fold loop
+         ↓  learned non-negative weights summing to 1
   Output: 7-day stacked ensemble forecast
 
 MLflow tracks:
-  - Meta-learner coefficients (effective model weights)
-  - Ensemble MAPE vs each base model MAPE
-  - Percentage improvement over best individual model
+  - weight_* params (the learned per-model weights)
+  - oof_mape — honest out-of-fold ensemble MAPE
+  - eval_days — length of the out-of-fold evaluation window
+  - Per-base-model MAPE over that same window
+  - improvement_pct over the best base model (negative when the ensemble loses)
   - Full forecast + holdout stack artifacts
 
 Usage:
@@ -320,7 +333,10 @@ def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     """
     Load 7-day base model forecasts from DB and apply meta-learner to produce
     ensemble predictions. Confidence intervals are propagated as a weighted
-    average of base model bounds, using absolute Ridge coefficients as weights.
+    average of base model bounds, using the NNLS weights. Those weights are
+    already non-negative and sum to 1, so normalising |w| is a no-op here —
+    it is kept because it makes the CI propagation independent of how the
+    meta-learner was fitted.
     """
     engine = get_engine()
     query = text("""
