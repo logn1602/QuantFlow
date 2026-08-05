@@ -67,6 +67,15 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] = None):
 
 
 # ── Job functions ─────────────────────────────────────────────────────────────
+#
+# Failure policy — deliberately different from the CLI entry points.
+#
+# run_models.py and backtest.py exit non-zero on failure so CI goes red. The
+# scheduler must NOT: it is a long-running process, and a transient failure
+# (network blip, rate limit, market holiday) has to leave the remaining jobs
+# scheduled rather than killing the daemon. So every job swallows its
+# exception, but logs it with logger.exception so the full traceback lands in
+# logs/pipeline.log instead of a one-line message with no context.
 
 def run_yfinance_job():
     logger.info("--- yFinance intraday job started ---")
@@ -76,7 +85,7 @@ def run_yfinance_job():
         total = sum(results.values())
         logger.info(f"--- yFinance job done: {total} rows inserted ---")
     except Exception as e:
-        logger.error(f"yFinance job failed: {e}")
+        logger.exception(f"yFinance job failed: {type(e).__name__}: {e}")
 
 
 def run_alpha_vantage_job():
@@ -87,7 +96,7 @@ def run_alpha_vantage_job():
         total = sum(results.values())
         logger.info(f"--- Alpha Vantage job done: {total} rows inserted ---")
     except Exception as e:
-        logger.error(f"Alpha Vantage job failed: {e}")
+        logger.exception(f"Alpha Vantage job failed: {type(e).__name__}: {e}")
 
 
 def run_indicators_job():
@@ -98,7 +107,7 @@ def run_indicators_job():
         total = sum(results.values())
         logger.info(f"--- Indicators job done: {total} rows saved ---")
     except Exception as e:
-        logger.error(f"Indicators job failed: {e}")
+        logger.exception(f"Indicators job failed: {type(e).__name__}: {e}")
 
 
 def run_anomaly_job():
@@ -109,7 +118,7 @@ def run_anomaly_job():
         total = sum(results.values())
         logger.info(f"--- Anomaly job done: {total} anomalies flagged ---")
     except Exception as e:
-        logger.error(f"Anomaly job failed: {e}")
+        logger.exception(f"Anomaly job failed: {type(e).__name__}: {e}")
 
 
 def run_sentiment_job():
@@ -120,7 +129,7 @@ def run_sentiment_job():
         total = sum(results.values())
         logger.info(f"--- Sentiment job done: {total} rows saved ---")
     except Exception as e:
-        logger.error(f"Sentiment job failed: {e}")
+        logger.exception(f"Sentiment job failed: {type(e).__name__}: {e}")
 
 
 def run_forecasting_job():
@@ -131,7 +140,7 @@ def run_forecasting_job():
         results = forecasting_run()
         logger.info(f"--- Forecasting job done: {results} ---")
     except Exception as e:
-        logger.error(f"Forecasting job failed: {e}")
+        logger.exception(f"Forecasting job failed: {type(e).__name__}: {e}")
 
 
 def run_xgboost_job():
@@ -142,7 +151,7 @@ def run_xgboost_job():
         results = xgb_run()
         logger.info(f"--- XGBoost job done: {results} ---")
     except Exception as e:
-        logger.error(f"XGBoost job failed: {e}")
+        logger.exception(f"XGBoost job failed: {type(e).__name__}: {e}")
 
 
 def run_ensemble_job():
@@ -156,7 +165,7 @@ def run_ensemble_job():
             logger.info(f"  {ticker} [ensemble_stack]: {n} rows saved")
         logger.info("--- Ensemble job done ---")
     except Exception as e:
-        logger.error(f"Ensemble job failed: {e}")
+        logger.exception(f"Ensemble job failed: {type(e).__name__}: {e}")
 
 
 def run_backtest_job():
@@ -173,7 +182,7 @@ def run_backtest_job():
                 )
         logger.info("--- Backtest job done ---")
     except Exception as e:
-        logger.error(f"Backtest job failed: {e}")
+        logger.exception(f"Backtest job failed: {type(e).__name__}: {e}")
 
 
 # ── Scheduler setup ───────────────────────────────────────────────────────────

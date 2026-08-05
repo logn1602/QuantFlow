@@ -40,18 +40,31 @@ def clear_forecasts(tickers: list[str] = None):
     logger.info(f"Cleared old forecasts for: {', '.join(tickers)}")
 
 
-def run(tickers: list[str] = None, clear: bool = True):
+def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]:
     """
-    Run all 4 forecasting models in sequence.
+    Run all 5 forecasting models in sequence.
+
     Args:
         tickers: list of tickers. Defaults to config.TICKERS
         clear:   whether to clear old forecasts before retraining
+
+    Returns:
+        (results, failed_steps) — each step stays individually wrapped so one
+        model family failing does not stop the others, but the failures are
+        reported back so the caller can set a real exit code instead of
+        exiting 0 on a total failure.
     """
     tickers = tickers or TICKERS
+    results = {}
+    failed  = []
 
     if clear:
         logger.info("Clearing old forecasts...")
-        clear_forecasts(tickers)
+        try:
+            clear_forecasts(tickers)
+        except Exception as e:
+            logger.exception(f"Clearing forecasts failed: {type(e).__name__}: {e}")
+            failed.append("clear_forecasts")
 
     # ── Step 1: ARIMA + Prophet ───────────────────────────────────────────────
     logger.info("=" * 50)
@@ -63,8 +76,10 @@ def run(tickers: list[str] = None, clear: bool = True):
         for ticker, model_results in forecast_results.items():
             for model, n in model_results.items():
                 logger.info(f"  {ticker} [{model}]: {n} rows saved")
+        results["forecasting"] = forecast_results
     except Exception as e:
-        logger.error(f"ARIMA/Prophet failed: {e}")
+        logger.exception(f"ARIMA/Prophet failed: {type(e).__name__}: {e}")
+        failed.append("arima_prophet")
 
     # ── Step 2: XGBoost + LightGBM ───────────────────────────────────────────
     logger.info("=" * 50)
@@ -76,8 +91,10 @@ def run(tickers: list[str] = None, clear: bool = True):
         for ticker, model_results in xgb_results.items():
             for model, n in model_results.items():
                 logger.info(f"  {ticker} [{model}]: {n} rows saved")
+        results["xgboost_lightgbm"] = xgb_results
     except Exception as e:
-        logger.error(f"XGBoost/LightGBM failed: {e}")
+        logger.exception(f"XGBoost/LightGBM failed: {type(e).__name__}: {e}")
+        failed.append("xgboost_lightgbm")
 
     # ── Step 3: Stacking Ensemble ─────────────────────────────────────────────
     logger.info("=" * 50)
@@ -88,12 +105,20 @@ def run(tickers: list[str] = None, clear: bool = True):
         ensemble_results = ensemble_run(tickers=tickers)
         for ticker, n in ensemble_results.items():
             logger.info(f"  {ticker} [ensemble_stack]: {n} rows saved")
+        results["ensemble"] = ensemble_results
     except Exception as e:
-        logger.error(f"Stacking ensemble failed: {e}")
+        logger.exception(f"Stacking ensemble failed: {type(e).__name__}: {e}")
+        failed.append("ensemble")
 
     logger.info("=" * 50)
-    logger.info("All models complete. Launch dashboard: streamlit run dashboard.py")
+    if failed:
+        logger.error(f"Pipeline finished with {len(failed)} failed step(s): "
+                     f"{', '.join(failed)}")
+    else:
+        logger.info("All models complete. Launch dashboard: streamlit run dashboard.py")
     logger.info("=" * 50)
+
+    return results, failed
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -112,4 +137,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     tickers = [args.ticker.upper()] if args.ticker else None
-    run(tickers=tickers, clear=args.clear)
+    results, failed = run(tickers=tickers, clear=args.clear)
+
+    # Any failed step is a failed run. Previously every exception was swallowed
+    # and the process still exited 0, so a total failure showed up as a green
+    # CI run.
+    if failed:
+        print("\n--- PIPELINE FAILED ---", file=sys.stderr)
+        for step in failed:
+            print(f"  FAILED: {step}", file=sys.stderr)
+        print(f"{len(failed)} step(s) failed — see the log above for tracebacks.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    print("\nAll pipeline steps completed successfully.")

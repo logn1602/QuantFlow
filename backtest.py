@@ -368,7 +368,7 @@ def run(tickers: list = None) -> dict:
         try:
             all_results[ticker] = run_backtest(ticker)
         except Exception as e:
-            logger.error(f"{ticker}: backtest failed — {e}")
+            logger.exception(f"{ticker}: backtest failed — {type(e).__name__}: {e}")
             all_results[ticker] = {}
     return all_results
 
@@ -431,4 +431,20 @@ if __name__ == "__main__":
                     f"alpha={m['alpha']:+.2f}% | sharpe={m['sharpe_ratio']:.3f} | "
                     f"win={m['win_rate']:.1f}%"
                 )
+
+        # Exit rule: fail only when EVERY ticker failed. A single ticker with
+        # thin history should not red-flag the whole daily refresh, but a total
+        # failure must not be reported as success.
+        succeeded = [t for t, m in results.items() if m]
+        empty     = [t for t, m in results.items() if not m]
+
+        if empty:
+            print(f"\nWARNING: no results for {', '.join(empty)}", file=sys.stderr)
+
+        if results and not succeeded:
+            print("\n--- BACKTEST FAILED ---", file=sys.stderr)
+            print(f"All {len(results)} ticker(s) failed — see the log above.",
+                  file=sys.stderr)
+            sys.exit(1)
+
         print("\nTo see full table:  python backtest.py --show")
