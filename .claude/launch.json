@@ -1,0 +1,21 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "venv-311/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "dashboard.py",
+        "--server.port=8501",
+        "--server.address=127.0.0.1",
+        "--server.headless=true",
+        "--browser.gatherUsageStats=false"
+      ],
+      "port": 8501,
+      "url": "http://127.0.0.1:8501"
+    }
+  ]
+}
