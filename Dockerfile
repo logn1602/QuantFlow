@@ -2,7 +2,10 @@
 # Builds a container for GCP Cloud Run deployment
 # Usage: docker build -t quantflow . && docker run -p 8501:8501 quantflow
 
-FROM python:3.12.7-slim
+# 3.11 everywhere: runtime.txt (Streamlit Cloud), the CI workflow, and the
+# README prerequisites all target 3.11. No dependency requires 3.12 — the
+# highest floor across the requirements is >=3.10.
+FROM python:3.11.15-slim
 
 # Set working directory
 WORKDIR /app
