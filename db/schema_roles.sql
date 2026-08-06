@@ -1,0 +1,49 @@
+-- ============================================================
+-- schema_roles.sql
+--
+-- A read-only role for the public Streamlit dashboard.
+--
+-- Why: dashboard.py calls the same get_engine() as the ingestion and model
+-- jobs, so the deployed app holds a read-write credential it only ever reads
+-- with. No injection path reaches it today — the ticker comes from a
+-- server-side selectbox over config.TICKERS and is parameter-bound, and the
+-- lookback is a bounded st.slider int, also parameter-bound — so this is
+-- blast-radius reduction, not a fix for an exploitable defect.
+--
+-- EVERY STATEMENT BELOW IS COMMENTED OUT ON PURPOSE.
+--
+-- Role DDL is the repo owner's operation, not something a script should run:
+-- getting it wrong locks the live dashboard out of the database, and the
+-- password below must be replaced with a real secret first. Read it, adapt
+-- it, run it by hand against Supabase, then point the Streamlit deployment's
+-- DB_USER / DB_PASSWORD at the new role.
+--
+-- Note for Supabase: roles are cluster-wide, and the connection pooler expects
+-- the username in the form <role>.<project-ref>. Check the pooler's connection
+-- string in Project Settings > Database after creating the role.
+-- ============================================================
+
+-- -- 1. Create the role. Replace the password before running.
+-- CREATE ROLE quantflow_readonly LOGIN PASSWORD 'replace_me_with_a_real_secret';
+--
+-- -- 2. Let it reach the database and the public schema, nothing more.
+-- GRANT CONNECT ON DATABASE postgres TO quantflow_readonly;
+-- GRANT USAGE   ON SCHEMA public     TO quantflow_readonly;
+--
+-- -- 3. Read-only on everything that exists now.
+-- GRANT SELECT ON ALL TABLES IN SCHEMA public TO quantflow_readonly;
+--
+-- -- 4. And on anything added later, so a new table does not silently
+-- --    break the dashboard. Must be run as the role that creates tables.
+-- ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--     GRANT SELECT ON TABLES TO quantflow_readonly;
+--
+-- -- 5. Belt and braces: make sure no write path was inherited.
+-- REVOKE INSERT, UPDATE, DELETE, TRUNCATE
+--     ON ALL TABLES IN SCHEMA public FROM quantflow_readonly;
+--
+-- -- 6. Verify. Expect only SELECT for this role.
+-- SELECT table_name, privilege_type
+-- FROM information_schema.role_table_grants
+-- WHERE grantee = 'quantflow_readonly'
+-- ORDER BY table_name, privilege_type;

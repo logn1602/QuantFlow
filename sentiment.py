@@ -42,6 +42,21 @@ from utils.logger import get_logger
 
 logger = get_logger("sentiment")
 
+# ── FinBERT model ─────────────────────────────────────────────────────────────
+# Pinned to an exact commit for REPRODUCIBILITY, not security. The RCE angle
+# people usually cite for unpinned models does not apply here: trust_remote_code
+# is unset and torch is >= 2.6, so weights load with weights_only=True.
+#
+# The real risk is quieter. Sentiment scores feed 6 of the 33 XGBoost features,
+# so an upstream reweight of this checkpoint would silently shift every feature
+# vector and therefore the MAPE figures this project publishes — with nothing in
+# the repo changing. Pinning means a model change is a visible, deliberate diff.
+#
+# Resolved from the HF API on 2026-08-05; the checkpoint itself dates to
+# 2023-05-23. Update deliberately after re-measuring.
+FINBERT_MODEL    = "ProsusAI/finbert"
+FINBERT_REVISION = "4556d13015211d73dccd3fdd39d39232506f3e43"
+
 # ── RSS feed URLs per ticker ──────────────────────────────────────────────────
 RSS_FEEDS = {
     "AAPL":  [
@@ -97,8 +112,9 @@ def get_finbert():
             from transformers import pipeline
             _finbert_pipeline = pipeline(
                 "text-classification",
-                model="ProsusAI/finbert",
-                tokenizer="ProsusAI/finbert",
+                model=FINBERT_MODEL,
+                tokenizer=FINBERT_MODEL,
+                revision=FINBERT_REVISION,
                 top_k=None,          # return all 3 class scores
                 device=-1,           # CPU (use 0 for GPU if available)
                 truncation=True,

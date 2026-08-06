@@ -372,6 +372,55 @@ MLflow writes to a local `mlflow.db`, which the deployed Streamlit app cannot re
 
 ---
 
+## Database TLS
+
+The database is a public Supabase endpoint reached from three places — a
+laptop, a GitHub Actions runner, and Streamlit Cloud — so the connection is
+explicitly encrypted rather than left to libpq's defaults.
+
+**What ships:** `DB_SSLMODE=require`. Verified active on both connection paths
+(`get_engine` and `get_conn`): TLS 1.3, `TLS_AES_256_GCM_SHA384`, 256-bit.
+
+`require` was chosen over libpq's default `prefer` because `prefer` falls back
+to **cleartext silently** — no exception, no log line — if the peer ever
+declines TLS. It was chosen over `verify-full` because Supabase signs its
+pooler certificate with a private CA:
+
+```
+subject: CN=*.pooler.supabase.com, O=Supabase Inc
+issuer:  CN=Supabase Intermediate 2021 CA, O=Supabase Inc
+```
+
+That CA is in neither the system trust store nor certifi's bundle, so
+`verify-full` fails out of the box with `certificate verify failed`.
+
+### Upgrading to verify-full (recommended)
+
+`require` encrypts but does not authenticate the peer, so it does not stop an
+active man-in-the-middle. To close that:
+
+1. Supabase dashboard → **Project Settings → Database → SSL Configuration** →
+   download the CA certificate.
+2. Save it outside the repo, then set both variables:
+
+```bash
+DB_SSLMODE=verify-full
+DB_SSLROOTCERT=/absolute/path/to/prod-ca-2021.crt
+```
+
+3. Confirm it works before deploying:
+
+```bash
+python -c "from db.connection import test_connection; print(test_connection())"
+```
+
+**If you set these locally, set them in GitHub Actions secrets and Streamlit
+Cloud too.** The certificate file has to exist on each host, which is why
+`verify-full` is not the shipped default — a path that exists on your laptop
+does not exist on a CI runner.
+
+---
+
 ## Deployment
 
 The live app is deployed on **Streamlit Community Cloud** backed by **Supabase** (managed PostgreSQL).
@@ -415,6 +464,8 @@ ORDER BY avg_compound DESC;
 | `DB_NAME` | Database name |
 | `DB_USER` | Postgres user |
 | `DB_PASSWORD` | Postgres password |
+| `DB_SSLMODE` | TLS mode for the DB connection (default: `require`) |
+| `DB_SSLROOTCERT` | CA bundle path, only needed for `verify-ca` / `verify-full` |
 | `ALPHA_VANTAGE_API_KEY` | Free key from alphavantage.co |
 | `NEWS_API_KEY` | Free key from newsapi.org |
 | `TICKERS` | Comma-separated e.g. `AAPL,MSFT,NVDA` |

@@ -50,15 +50,15 @@ st.markdown("""
 @st.cache_data(ttl=300)
 def load_prices(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
-    query = text(f"""
+    query = text("""
         SELECT ts::date AS date, open, high, low, close, volume
         FROM raw_prices
         WHERE ticker = :ticker AND source = 'yfinance'
-          AND ts >= NOW() - INTERVAL '{days} days'
+          AND ts >= NOW() - INTERVAL '1 day' * :days
         ORDER BY ts ASC
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker})
+        df = pd.read_sql(query, conn, params={"ticker": ticker, "days": days})
     df["date"] = pd.to_datetime(df["date"])
     return df
 
@@ -66,16 +66,16 @@ def load_prices(ticker: str, days: int = 180) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
-    query = text(f"""
+    query = text("""
         SELECT ts::date AS date, rsi_14, macd, macd_signal, macd_hist,
                bb_upper, bb_middle, bb_lower
         FROM technical_indicators
         WHERE ticker = :ticker
-          AND ts >= NOW() - INTERVAL '{days} days'
+          AND ts >= NOW() - INTERVAL '1 day' * :days
         ORDER BY ts ASC
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker})
+        df = pd.read_sql(query, conn, params={"ticker": ticker, "days": days})
     df["date"] = pd.to_datetime(df["date"])
     return df
 
@@ -83,15 +83,15 @@ def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_anomalies(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
-    query = text(f"""
+    query = text("""
         SELECT ts::date AS date, close, zscore, flag
         FROM anomalies
         WHERE ticker = :ticker
-          AND ts >= NOW() - INTERVAL '{days} days'
+          AND ts >= NOW() - INTERVAL '1 day' * :days
         ORDER BY ts ASC
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker})
+        df = pd.read_sql(query, conn, params={"ticker": ticker, "days": days})
     df["date"] = pd.to_datetime(df["date"])
     return df
 
@@ -130,7 +130,7 @@ def load_metrics(ticker: str) -> dict:
 @st.cache_data(ttl=300)
 def load_sentiment(ticker: str, days: int = 7) -> pd.DataFrame:
     engine = get_engine()
-    query = text(f"""
+    query = text("""
         SELECT
             published_at::date              AS date,
             LEFT(headline, 80)              AS headline,
@@ -139,11 +139,11 @@ def load_sentiment(ticker: str, days: int = 7) -> pd.DataFrame:
             source
         FROM news_sentiment
         WHERE ticker = :ticker
-          AND published_at >= NOW() - INTERVAL '{days} days'
+          AND published_at >= NOW() - INTERVAL '1 day' * :days
         ORDER BY published_at DESC
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker})
+        df = pd.read_sql(query, conn, params={"ticker": ticker, "days": days})
     df["date"] = pd.to_datetime(df["date"])
     return df
 

@@ -14,7 +14,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from config import DATABASE_URL
+from config import DATABASE_URL, DB_SSLMODE, DB_SSLROOTCERT
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,25 +22,35 @@ logger = get_logger(__name__)
 _engine = None
 
 
+def _ssl_args() -> dict:
+    """libpq TLS parameters shared by both connection paths."""
+    args = {"sslmode": DB_SSLMODE}
+    if DB_SSLROOTCERT:
+        args["sslrootcert"] = DB_SSLROOTCERT
+    return args
+
+
 def get_engine():
     """Return a singleton SQLAlchemy engine."""
     global _engine
     if _engine is None:
-        _engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+        _engine = create_engine(
+            DATABASE_URL,
+            pool_pre_ping=True,
+            connect_args=_ssl_args(),
+        )
     return _engine
 
 
 def get_conn():
-    """Return a raw psycopg2 connection. Caller is responsible for closing it."""
-    from urllib.parse import urlparse
-    u = urlparse(DATABASE_URL)
-    return psycopg2.connect(
-        host=u.hostname,
-        port=u.port or 5432,
-        dbname=u.path.lstrip("/"),
-        user=u.username,
-        password=u.password,
-    )
+    """Return a raw psycopg2 connection. Caller is responsible for closing it.
+
+    Hands the DSN to libpq intact rather than rebuilding it from urlparse
+    fields. The old version passed only host/port/dbname/user/password, so any
+    query string on DATABASE_URL — '?sslmode=verify-full', say — was dropped
+    with no error, leaving this path silently weaker than get_engine().
+    """
+    return psycopg2.connect(DATABASE_URL, **_ssl_args())
 
 
 def test_connection() -> bool:

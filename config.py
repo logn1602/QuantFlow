@@ -17,6 +17,19 @@ DB_NAME     = os.getenv("DB_NAME", "stock_pipeline")
 DB_USER     = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
+# TLS. Default 'require' rather than libpq's 'prefer': prefer falls back to
+# cleartext silently — no error, no log line — if the peer declines TLS, and
+# the database is a public endpoint reached from a laptop, a GitHub Actions
+# runner and Streamlit Cloud.
+#
+# 'require' encrypts but does NOT verify the peer's certificate. 'verify-full'
+# does, and is the recommended upgrade, but Supabase issues its pooler cert
+# from a private CA ("Supabase Intermediate 2021 CA") that is in neither the
+# system trust store nor certifi, so it needs DB_SSLROOTCERT pointing at
+# Supabase's CA file. See the TLS section in the README.
+DB_SSLMODE     = os.getenv("DB_SSLMODE", "require")
+DB_SSLROOTCERT = os.getenv("DB_SSLROOTCERT", "")
+
 DATABASE_URL = (
     f"postgresql://{DB_USER}:{DB_PASSWORD}"
     f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
