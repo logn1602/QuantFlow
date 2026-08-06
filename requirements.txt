@@ -1,41 +1,59 @@
+# QuantFlow dependencies
+#
+# Policy: `>=` floors are set at the versions verified working in the project
+# venv (Python 3.11.9). Floors stop silent downward drift — a `pip install` of
+# one package once resolved pandas back to 1.5.3, which segfaulted LightGBM's
+# C extension. A few packages are hard-pinned where the exact version is
+# load-bearing rather than merely a minimum.
+
 # Data ingestion
-yfinance
-requests==2.31.0
-feedparser
+yfinance>=1.5.2
+requests>=2.32.4          # 2.31.0 carries CVE-2024-35195 / CVE-2024-47081
+feedparser>=6.0.14
 
 # Database
-psycopg2-binary>=2.9.9
+psycopg2-binary>=2.9.12
 sqlalchemy==2.0.30
 
 # Data processing
+# pandas and numpy are hard-pinned: LightGBM and XGBoost link against numpy's
+# ABI, and a pandas downgrade has already been observed to crash LightGBM.
 pandas==2.2.2
 numpy==1.26.4
-ta
+ta>=0.11.0
 
 # Scheduling
 APScheduler==3.10.4
 
 # Environment
-python-dotenv==1.0.1
+python-dotenv>=1.2.2      # 1.0.1 carries PYSEC-2026-2270
+
+# Accepted risk: cryptography 49.x carries PYSEC-2026-3552 (fixed in 50.0.0),
+# but mlflow — latest is 3.15.1 — caps it at <50, so the fix is unreachable
+# until upstream loosens that. cryptography is transitive (via mlflow and
+# google-auth) and never imported by this project. pip-audit in CI will keep
+# reporting it; that is why the audit step is continue-on-error. Re-check when
+# a new mlflow ships.
 
 # Forecasting
-prophet
-statsmodels
-mlflow
+prophet>=1.3.0
+statsmodels>=0.14.6
+mlflow>=3.15.1
 
 # Sentiment analysis
-transformers
-torch
-newsapi-python
+transformers>=5.14.1
+torch>=2.13.0
+newsapi-python>=0.2.7
 
 # Dashboard
-streamlit
-plotly
+streamlit>=1.61.0         # dashboard.py uses st.divider(), added in 1.23
+plotly>=6.9.0
 
 # ML ensemble
-scikit-learn
-xgboost
-lightgbm
+scikit-learn>=1.9.0
+scipy>=1.17.1             # direct import: ensemble.py uses scipy.optimize.nnls
+xgboost>=3.2.0
+lightgbm>=4.7.0
 
 # Testing
-pytest
+pytest>=9.1.1

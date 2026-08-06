@@ -54,6 +54,19 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+      # pip-audit cannot run on the maintainer's Windows box (pandas 2.2.2 has
+      # no wheel there and its sdist needs a Visual Studio toolchain), so this
+      # is the only place the dependency set gets audited at all.
+      #
+      # continue-on-error while the baseline is unknown: a fresh upstream
+      # advisory should surface in the log, not silently block the daily data
+      # refresh. Tighten to a hard failure once the baseline is clean.
+      - name: Audit dependencies
+        run: |
+          pip install pip-audit
+          pip-audit --requirement requirements.txt
+        continue-on-error: true
+
       - name: Fetch latest price data
         env:
           # yfinance needs no key. ALPHA_VANTAGE_API_KEY is kept here because
