@@ -8,10 +8,14 @@ Runs the full forecasting pipeline in one command:
 
 Clears stale forecasts before retraining to keep data clean.
 
+Clearing stale forecasts is the DEFAULT — every run recomputes the full
+forecast set, so keeping the old rows would leave the dashboard averaging
+across runs.
+
 Usage:
     python run_models.py                  # all tickers, all models
     python run_models.py --ticker AAPL    # one ticker only
-    python run_models.py --clear          # clear old forecasts first
+    python run_models.py --no-clear       # keep existing forecasts (rarely wanted)
 """
 
 import sys
@@ -19,6 +23,7 @@ import os
 import argparse
 sys.path.insert(0, os.path.dirname(__file__))
 
+import config
 from config import TICKERS
 from db.connection import get_engine
 from utils.logger import get_logger
@@ -126,15 +131,19 @@ def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run all forecasting models")
     parser.add_argument("--ticker", type=str, help="Single ticker e.g. AAPL")
+    # Clearing is the default, so there is no --clear flag: the old one was a
+    # no-op (store_true with default=True can only ever be True) and implied
+    # clearing was opt-in when it never was.
     parser.add_argument(
-        "--clear", action="store_true", default=True,
-        help="Clear old forecasts before retraining (default: True)"
-    )
-    parser.add_argument(
-        "--no-clear", action="store_false", dest="clear",
-        help="Keep existing forecasts and only add new ones"
+        "--no-clear", action="store_false", dest="clear", default=True,
+        help="Keep existing forecasts instead of replacing them (rarely wanted)"
     )
     args = parser.parse_args()
+
+    # Fail fast on missing config rather than surfacing it as an auth error
+    # deep inside a model job.
+    config.validate()
+    config.require_or_exit()
 
     tickers = [args.ticker.upper()] if args.ticker else None
     results, failed = run(tickers=tickers, clear=args.clear)

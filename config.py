@@ -6,6 +6,7 @@ read os.environ directly in your scripts.
 """
 
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -52,7 +53,13 @@ LOG_DIR   = os.path.join(os.path.dirname(__file__), "logs")
 
 
 def validate():
-    """Call once at startup to catch missing config early."""
+    """
+    Call once at startup to catch missing config early.
+
+    Returns True only when every variable is set, including the optional API
+    keys. A False result is informational — use require_or_exit() for the
+    subset the pipeline genuinely cannot run without.
+    """
     errors = []
     if not DB_PASSWORD:
         errors.append("DB_PASSWORD is not set in .env")
@@ -66,3 +73,37 @@ def validate():
         for e in errors:
             print(f"[config] WARNING: {e}")
     return len(errors) == 0
+
+
+def require_or_exit():
+    """
+    Hard gate for CLI entry points: exit non-zero if a variable the pipeline
+    cannot function without is missing.
+
+    Deliberately narrower than validate(). Only two things are fatal:
+
+      DB_PASSWORD  every stage reads or writes Postgres, so without it nothing
+                   can run and the failure is otherwise a confusing
+                   authentication error deep in a model job.
+      TICKERS      an empty list means every loop body is skipped and the
+                   pipeline "succeeds" having done nothing.
+
+    The API keys are NOT fatal. Alpha Vantage is unused by the default
+    ingestion path, and sentiment.py already degrades to the RSS feed with a
+    warning when NEWS_API_KEY is absent — killing the whole run for that would
+    be worse than the missing data.
+    """
+    # Plain ASCII: these go to stderr on Windows consoles and CI logs alike,
+    # where a non-UTF-8 code page turns an em dash into mojibake.
+    fatal = []
+    if not DB_PASSWORD:
+        fatal.append("DB_PASSWORD is not set - cannot reach the database")
+    if not TICKERS:
+        fatal.append("TICKERS is empty - there is nothing to process")
+
+    if fatal:
+        for f in fatal:
+            print(f"[config] FATAL: {f}", file=sys.stderr)
+        print("[config] Fix your .env (see .env.example) and retry.",
+              file=sys.stderr)
+        sys.exit(1)

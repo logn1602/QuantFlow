@@ -2,7 +2,7 @@
 # Run any pipeline stage with a single command.
 # Usage: make <target>
 
-.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest dashboard scheduler test all clean
+.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest dashboard scheduler test all clean clean-dry
 
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
@@ -24,7 +24,8 @@ help:
 	@echo "  make scheduler    Start the live data scheduler"
 	@echo "  make test         Run the offline test suite (no DB needed)"
 	@echo "  make all          Run full pipeline end to end"
-	@echo "  make clean        Remove logs and MLflow artifacts"
+	@echo "  make clean        Remove logs and caches (keeps mlflow.db)"
+	@echo "  make clean-dry    Preview what clean would remove"
 	@echo "  ─────────────────────────────────────────────"
 	@echo ""
 
@@ -93,7 +94,11 @@ all:
 	@echo "Pipeline complete. Launch dashboard with: make dashboard"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
+# Delegates to a Python script so this works on Windows too. The old target
+# shelled out to find/rm, which do not exist in PowerShell.
+# Keeps mlflow.db by default — see scripts/clean.py --mlflow.
 clean:
-	find . -name "*.log" -delete
-	rm -rf mlruns_artifacts/
-	@echo "Cleaned logs and artifacts."
+	python scripts/clean.py
+
+clean-dry:
+	python scripts/clean.py --dry-run

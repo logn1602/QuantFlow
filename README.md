@@ -268,7 +268,12 @@ make test         # Run the offline test suite (no DB needed)
 make dashboard    # Launch Streamlit dashboard
 make scheduler    # Start the live data scheduler
 make all          # Run full pipeline end to end
+make clean-dry    # Preview what clean would remove
+make clean        # Remove logs and caches (keeps mlflow.db)
 ```
+
+`make forecast`, `make train` and `make ensemble` run individual model families
+if you need them; `make models` is the recommended path.
 
 ---
 

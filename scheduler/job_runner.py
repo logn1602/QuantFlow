@@ -30,6 +30,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from sqlalchemy import text
 
+import config
 from config import FETCH_INTERVAL_MINUTES, TICKERS
 from db.connection import get_engine, test_connection
 from utils.logger import get_logger
@@ -188,6 +189,12 @@ def run_backtest_job():
 # ── Scheduler setup ───────────────────────────────────────────────────────────
 
 def start():
+    # Config first, then connectivity. A long-running daemon started with a
+    # broken .env should die immediately rather than log a failure every
+    # 15 minutes forever.
+    config.validate()
+    config.require_or_exit()
+
     if not test_connection():
         logger.error("Cannot reach database. Check your .env DB settings. Exiting.")
         sys.exit(1)
