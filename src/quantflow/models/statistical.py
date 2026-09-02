@@ -27,7 +27,6 @@ import argparse
 import os
 import warnings
 
-import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
@@ -36,6 +35,8 @@ from quantflow.db.connection import get_engine
 from quantflow.db.forecasts import save_forecasts
 from quantflow.db.metrics import save_model_metrics
 from quantflow.db.prices import load_daily_close as load_prices
+from quantflow.evaluation.metrics import regression_metrics
+from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
 from quantflow.utils.logger import get_logger
 
 warnings.filterwarnings("ignore")
@@ -43,7 +44,6 @@ warnings.filterwarnings("ignore")
 logger = get_logger("forecasting")
 
 FORECAST_DAYS = 7
-HOLDOUT_DAYS = 30
 ARIMA_ORDER = (5, 1, 0)
 MLFLOW_EXP = "stock_forecasting"
 
@@ -54,13 +54,7 @@ MLFLOW_EXP = "stock_forecasting"
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
 
-def compute_metrics(actual: pd.Series, predicted: pd.Series) -> dict:
-    actual = actual.values
-    predicted = predicted.values
-    rmse = float(np.sqrt(np.mean((actual - predicted) ** 2)))
-    mae = float(np.mean(np.abs(actual - predicted)))
-    mape = float(np.mean(np.abs((actual - predicted) / actual)) * 100)
-    return {"rmse": round(rmse, 4), "mae": round(mae, 4), "mape": round(mape, 2)}
+compute_metrics = regression_metrics
 
 
 # ── ARIMA ─────────────────────────────────────────────────────────────────────
@@ -77,8 +71,7 @@ def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         logger.warning(f"{ticker}: Not enough data for ARIMA")
         return pd.DataFrame(), {}
 
-    train = df.iloc[:-HOLDOUT_DAYS]
-    holdout = df.iloc[-HOLDOUT_DAYS:]
+    train, holdout = train_holdout_split(df)
 
     try:
         model = ARIMA(train["y"].values, order=ARIMA_ORDER)
@@ -139,8 +132,7 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         logger.warning(f"{ticker}: Not enough data for Prophet")
         return pd.DataFrame(), {}
 
-    train = df.iloc[:-HOLDOUT_DAYS].copy()
-    holdout = df.iloc[-HOLDOUT_DAYS:].copy()
+    train, holdout = train_holdout_split(df, copy=True)
 
     try:
         model = Prophet(

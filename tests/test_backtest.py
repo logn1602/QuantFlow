@@ -8,7 +8,7 @@ compute_metrics. No DB, no network.
 import numpy as np
 import pytest
 
-from backtest import (
+from quantflow.evaluation.backtest import (
     INITIAL_CAPITAL,
     TRANSACTION_COST,
     compute_metrics,

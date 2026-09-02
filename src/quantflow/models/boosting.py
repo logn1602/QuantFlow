@@ -24,6 +24,8 @@ from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
 from quantflow.db.forecasts import save_forecasts
 from quantflow.db.metrics import save_model_metrics
+from quantflow.evaluation.metrics import regression_metrics
+from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
 from quantflow.features.engineering import (
     engineer_features,
     get_feature_cols,
@@ -36,7 +38,6 @@ warnings.filterwarnings("ignore")
 logger = get_logger("boosting")
 
 FORECAST_DAYS = 7
-HOLDOUT_DAYS = 30
 MLFLOW_EXP = "stock_forecasting"
 
 
@@ -59,8 +60,7 @@ def train_xgboost(df: pd.DataFrame, ticker: str) -> dict:
     df[available] = df[available].fillna(0)
 
     # Train/holdout split
-    train = df.iloc[:-HOLDOUT_DAYS].copy()
-    holdout = df.iloc[-HOLDOUT_DAYS:].copy()
+    train, holdout = train_holdout_split(df, copy=True)
 
     X_train = train[available]
     y_train = train["target_price"]
@@ -81,12 +81,10 @@ def train_xgboost(df: pd.DataFrame, ticker: str) -> dict:
 
     # Evaluate on holdout
     preds = model.predict(X_hold)
-    rmse = float(np.sqrt(np.mean((y_hold.values - preds) ** 2)))
-    mae = float(np.mean(np.abs(y_hold.values - preds)))
-    mape = float(np.mean(np.abs((y_hold.values - preds) / y_hold.values)) * 100)
+    scores = regression_metrics(y_hold, preds)
 
     logger.info(
-        f"  XGBoost {ticker} holdout — RMSE: {round(rmse, 4)} | MAE: {round(mae, 4)} | MAPE: {round(mape, 2)}%"
+        f"  XGBoost {ticker} holdout — RMSE: {scores['rmse']} | MAE: {scores['mae']} | MAPE: {scores['mape']}%"
     )
 
     # Feature importance
@@ -99,11 +97,7 @@ def train_xgboost(df: pd.DataFrame, ticker: str) -> dict:
 
     return {
         "model": model,
-        "metrics": {
-            "rmse": round(rmse, 4),
-            "mae": round(mae, 4),
-            "mape": round(mape, 2),
-        },
+        "metrics": scores,
         "importance": importance,
         "features": available,
         "X_last": df[available].iloc[-1:],
@@ -127,8 +121,7 @@ def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
     available = [c for c in feature_cols if c in df.columns]
     df[available] = df[available].fillna(0)
 
-    train = df.iloc[:-HOLDOUT_DAYS].copy()
-    holdout = df.iloc[-HOLDOUT_DAYS:].copy()
+    train, holdout = train_holdout_split(df, copy=True)
 
     X_train = train[available]
     y_train = train["target_price"]
@@ -147,12 +140,10 @@ def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
     model.fit(X_train, y_train)
 
     preds = model.predict(X_hold)
-    rmse = float(np.sqrt(np.mean((y_hold.values - preds) ** 2)))
-    mae = float(np.mean(np.abs(y_hold.values - preds)))
-    mape = float(np.mean(np.abs((y_hold.values - preds) / y_hold.values)) * 100)
+    scores = regression_metrics(y_hold, preds)
 
     logger.info(
-        f"  LightGBM {ticker} holdout — RMSE: {round(rmse, 4)} | MAE: {round(mae, 4)} | MAPE: {round(mape, 2)}%"
+        f"  LightGBM {ticker} holdout — RMSE: {scores['rmse']} | MAE: {scores['mae']} | MAPE: {scores['mape']}%"
     )
 
     importance = pd.DataFrame(
@@ -164,11 +155,7 @@ def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
 
     return {
         "model": model,
-        "metrics": {
-            "rmse": round(rmse, 4),
-            "mae": round(mae, 4),
-            "mape": round(mape, 2),
-        },
+        "metrics": scores,
         "importance": importance,
         "features": available,
         "X_last": df[available].iloc[-1:],

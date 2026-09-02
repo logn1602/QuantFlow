@@ -94,7 +94,7 @@ jobs:
         run: python run_models.py
 
       - name: Run strategy backtest
-        run: python backtest.py
+        run: python -m quantflow.evaluation.backtest
 
       - name: Summary
         run: |

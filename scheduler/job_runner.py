@@ -174,7 +174,7 @@ def run_backtest_job():
     """Backtesting — runs after ensemble forecasts are ready."""
     logger.info("--- Backtest job started ---")
     try:
-        from backtest import run as backtest_run
+        from quantflow.evaluation.backtest import run as backtest_run
 
         results = backtest_run()
         for ticker, m in results.items():

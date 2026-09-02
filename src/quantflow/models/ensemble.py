@@ -52,15 +52,24 @@ from quantflow.db.connection import get_engine
 from quantflow.db.forecasts import save_forecasts
 from quantflow.db.metrics import save_model_metrics
 from quantflow.db.prices import load_daily_close as load_prices
+from quantflow.evaluation.metrics import mape as _mape
+from quantflow.evaluation.out_of_fold import (
+    DEFAULT_WARMUP_DAYS,
+    expanding_window_predictions,
+)
+from quantflow.evaluation.splits import HOLDOUT_DAYS
 from quantflow.utils.logger import get_logger
 
 warnings.filterwarnings("ignore")
 
 logger = get_logger("ensemble")
 
-HOLDOUT_DAYS = 30
 FORECAST_DAYS = 7
-META_WARMUP_DAYS = 10  # days used to fit the first meta-learner
+META_WARMUP_DAYS = DEFAULT_WARMUP_DAYS
+
+# Column order of the stacked holdout frame. The meta-learner's weight
+# vector is positional, so this order is load-bearing.
+BASE_MODELS = ["arima", "prophet", "xgboost", "lightgbm"]
 MLFLOW_EXP = "stock_forecasting"
 
 
@@ -180,10 +189,6 @@ def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
 # ── Meta-learner ──────────────────────────────────────────────────────────────
 
 
-def _mape(actual: np.ndarray, predicted: np.ndarray) -> float:
-    return float(np.mean(np.abs((actual - predicted) / actual)) * 100)
-
-
 class NNLSMeta:
     """
     Non-negative least squares meta-learner.
@@ -233,33 +238,17 @@ def _fit_nnls(X, y) -> NNLSMeta:
 def out_of_fold_meta_predictions(
     stacked_df: pd.DataFrame, warmup: int = META_WARMUP_DAYS
 ) -> tuple:
-    """
-    Expanding-window out-of-fold ensemble predictions.
+    """Out-of-fold ensemble predictions over an expanding window.
 
-    For each day i in [warmup, len(stacked_df)):
-      fit NNLS on days [0, i)  ->  predict day i
-    The prediction for day i never sees day i's actual, so the resulting
-    MAPE is an honest estimate of ensemble performance.
+    A thin binding of the generic loop in quantflow.evaluation.out_of_fold to
+    this project's NNLS meta-learner. The loop itself, and the reasoning for
+    why the ensemble must be scored this way, live there.
 
     Returns (oof_preds, actuals) — both length len(stacked_df) - warmup.
     """
-    feature_cols = ["arima", "prophet", "xgboost", "lightgbm"]
-    X = stacked_df[feature_cols].values
-    y = stacked_df["actual"].values
-
-    if len(stacked_df) <= warmup:
-        logger.warning(
-            f"  Stack has {len(stacked_df)} rows, warmup is {warmup} — "
-            f"no out-of-fold days available"
-        )
-        return np.array([]), np.array([])
-
-    oof_preds = np.empty(len(stacked_df) - warmup, dtype=float)
-    for j, i in enumerate(range(warmup, len(stacked_df))):
-        meta = _fit_nnls(X[:i], y[:i])
-        oof_preds[j] = float(meta.predict(X[i : i + 1])[0])
-
-    return oof_preds, y[warmup:]
+    return expanding_window_predictions(
+        stacked_df, BASE_MODELS, _fit_nnls, warmup=warmup
+    )
 
 
 def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
@@ -282,7 +271,7 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
     The returned model is fitted on ALL holdout days — that is the model used
     to generate the forward 7-day forecast.
     """
-    feature_cols = ["arima", "prophet", "xgboost", "lightgbm"]
+    feature_cols = BASE_MODELS
     X = stacked_df[feature_cols].values
     y = stacked_df["actual"].values
 
@@ -374,7 +363,7 @@ def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     lower = df.pivot(index="forecast_date", columns="model", values="lower_bound")
     upper = df.pivot(index="forecast_date", columns="model", values="upper_bound")
 
-    required = ["arima", "prophet", "xgboost", "lightgbm"]
+    required = BASE_MODELS
     pivot = pivot.reindex(columns=required).dropna()
     lower = lower.reindex(columns=required).reindex(pivot.index).fillna(0)
     upper = upper.reindex(columns=required).reindex(pivot.index).fillna(0)
