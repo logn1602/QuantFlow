@@ -71,7 +71,7 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     logger.info("Step 1 — ARIMA + Prophet")
     logger.info("=" * 50)
     try:
-        from forecasting import run as forecast_run
+        from quantflow.models.statistical import run as forecast_run
 
         forecast_results = forecast_run(tickers=tickers)
         for ticker, model_results in forecast_results.items():
@@ -87,7 +87,7 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     logger.info("Step 2 — XGBoost + LightGBM")
     logger.info("=" * 50)
     try:
-        from xgboost_model import run as xgb_run
+        from quantflow.models.boosting import run as xgb_run
 
         xgb_results = xgb_run(tickers=tickers)
         for ticker, model_results in xgb_results.items():
@@ -103,7 +103,7 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     logger.info("Step 3 — Stacking Ensemble (NNLS meta-learner)")
     logger.info("=" * 50)
     try:
-        from ensemble import run as ensemble_run
+        from quantflow.models.ensemble import run as ensemble_run
 
         ensemble_results = ensemble_run(tickers=tickers)
         for ticker, n in ensemble_results.items():

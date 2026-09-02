@@ -25,25 +25,20 @@ Usage:
 
 import argparse
 import os
-import sys
 import warnings
 
+import numpy as np
+import pandas as pd
+from sqlalchemy import text
+
+from quantflow.config import TICKERS
+from quantflow.db.connection import get_engine
+from quantflow.db.forecasts import save_forecasts
+from quantflow.db.metrics import save_model_metrics
+from quantflow.db.prices import load_daily_close as load_prices
+from quantflow.utils.logger import get_logger
+
 warnings.filterwarnings("ignore")
-
-# The imports below sit after the sys.path bootstrap above and therefore trip
-# E402. Each carries a targeted suppression rather than a config-wide ignore.
-# The src/ layout removes the bootstrap, and these all come out with it.
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from sqlalchemy import text  # noqa: E402
-
-sys.path.insert(0, os.path.dirname(__file__))
-from quantflow.config import TICKERS  # noqa: E402
-from quantflow.db.connection import get_engine  # noqa: E402
-from quantflow.db.forecasts import save_forecasts  # noqa: E402
-from quantflow.db.metrics import save_model_metrics  # noqa: E402
-from quantflow.db.prices import load_daily_close as load_prices  # noqa: E402
-from quantflow.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("forecasting")
 

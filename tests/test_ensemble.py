@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ensemble import (
+from quantflow.models.ensemble import (
     META_WARMUP_DAYS,
     NNLSMeta,
     _fit_nnls,

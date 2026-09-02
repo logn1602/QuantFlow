@@ -56,13 +56,13 @@ models:
 
 # Run individual model families if needed
 forecast:
-	python forecasting.py
+	python -m quantflow.models.statistical
 
 train:
-	python xgboost_model.py
+	python -m quantflow.models.boosting
 
 ensemble:
-	python ensemble.py
+	python -m quantflow.models.ensemble
 
 backtest:
 	python backtest.py

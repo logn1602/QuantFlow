@@ -1,7 +1,7 @@
 """
 tests/test_features.py
 ----------------------
-Covers xgboost_model.engineer_features and get_feature_cols.
+Covers quantflow.features.engineering.
 
 The leakage test perturbs future rows and asserts no earlier feature value
 moves — that is what "no future leakage" in the docstring actually means.
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from xgboost_model import engineer_features, get_feature_cols
+from quantflow.features.engineering import engineer_features, get_feature_cols
 
 N_ROWS = 80
 

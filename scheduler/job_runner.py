@@ -134,7 +134,7 @@ def run_sentiment_job():
 def run_forecasting_job():
     logger.info("--- ARIMA/Prophet forecasting job started ---")
     try:
-        from forecasting import run as forecasting_run
+        from quantflow.models.statistical import run as forecasting_run
 
         _clear_model_forecasts(["arima", "prophet"])
         results = forecasting_run()
@@ -146,7 +146,7 @@ def run_forecasting_job():
 def run_xgboost_job():
     logger.info("--- XGBoost/LightGBM job started ---")
     try:
-        from xgboost_model import run as xgb_run
+        from quantflow.models.boosting import run as xgb_run
 
         _clear_model_forecasts(["xgboost", "lightgbm"])
         results = xgb_run()
@@ -159,7 +159,7 @@ def run_ensemble_job():
     """Stacking ensemble — runs after ARIMA/Prophet + XGBoost/LightGBM are done."""
     logger.info("--- Stacking Ensemble job started ---")
     try:
-        from ensemble import run as ensemble_run
+        from quantflow.models.ensemble import run as ensemble_run
 
         _clear_model_forecasts(["ensemble_stack"])
         results = ensemble_run()

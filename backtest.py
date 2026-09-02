@@ -298,10 +298,10 @@ def run_backtest(ticker: str) -> dict:
       3. Simulate long/flat trading strategy on those predictions only
       4. Compute + save metrics
     """
-    from ensemble import (
+    from quantflow.models.ensemble import (
         HOLDOUT_DAYS as STACK_HOLDOUT_DAYS,
     )
-    from ensemble import (
+    from quantflow.models.ensemble import (
         collect_holdout_stacks,
         out_of_fold_meta_predictions,
         tune_and_train_meta,
