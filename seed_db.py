@@ -8,14 +8,15 @@ Usage:
     python seed_db.py
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 
-from db.connection import test_connection
-from ingestion.yfinance_fetcher import fetch_historical
-from ingestion.alpha_vantage_fetcher import fetch_daily
 from config import TICKERS
+from db.connection import test_connection
+from ingestion.alpha_vantage_fetcher import fetch_daily
+from ingestion.yfinance_fetcher import fetch_historical
 from utils.logger import get_logger
 
 logger = get_logger("seed_db")
@@ -44,7 +45,9 @@ def main():
 
     total_yf = sum(yf_results.values())
     total_av = sum(av_results.values())
-    logger.info(f"Seed complete. yFinance: {total_yf} rows | Alpha Vantage: {total_av} rows")
+    logger.info(
+        f"Seed complete. yFinance: {total_yf} rows | Alpha Vantage: {total_av} rows"
+    )
     logger.info("You can now run: python scheduler/job_runner.py")
 
 

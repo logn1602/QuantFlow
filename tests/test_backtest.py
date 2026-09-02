@@ -9,12 +9,14 @@ import numpy as np
 import pytest
 
 from backtest import (
-    INITIAL_CAPITAL, TRANSACTION_COST,
-    compute_metrics, simulate_strategy,
+    INITIAL_CAPITAL,
+    TRANSACTION_COST,
+    compute_metrics,
+    simulate_strategy,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _preds_for(signals, prev_prices):
     """Build ensemble_preds that produce exactly the requested signals.
@@ -32,11 +34,12 @@ def _rising(n=10, start=100.0, step=1.0):
 
 # ── simulate_strategy ─────────────────────────────────────────────────────────
 
+
 def test_rising_market_always_long_gives_positive_return():
-    prices        = _rising(n=10)
-    prev_prices   = prices[:-1]
+    prices = _rising(n=10)
+    prev_prices = prices[:-1]
     actual_prices = prices[1:]
-    preds         = _preds_for([1] * 10, prev_prices)
+    preds = _preds_for([1] * 10, prev_prices)
 
     sim = simulate_strategy(prev_prices, actual_prices, preds)
 
@@ -46,10 +49,10 @@ def test_rising_market_always_long_gives_positive_return():
 
 
 def test_always_flat_returns_exactly_zero_and_no_trades():
-    prices        = _rising(n=10)
-    prev_prices   = prices[:-1]
+    prices = _rising(n=10)
+    prev_prices = prices[:-1]
     actual_prices = prices[1:]
-    preds         = _preds_for([0] * 10, prev_prices)
+    preds = _preds_for([0] * 10, prev_prices)
 
     sim = simulate_strategy(prev_prices, actual_prices, preds)
 
@@ -66,28 +69,32 @@ def test_always_flat_returns_exactly_zero_and_no_trades():
 def test_num_trades_counts_only_zero_to_one_transitions():
     # 0->1 at index 0, stays long, exits, re-enters at index 4, and one more
     # entry at index 7  =>  exactly 3 entries.
-    signals       = [1, 1, 0, 0, 1, 0, 0, 1, 1, 0]
-    prices        = _rising(n=10)
-    prev_prices   = prices[:-1]
+    signals = [1, 1, 0, 0, 1, 0, 0, 1, 1, 0]
+    prices = _rising(n=10)
+    prev_prices = prices[:-1]
     actual_prices = prices[1:]
 
-    sim = simulate_strategy(prev_prices, actual_prices, _preds_for(signals, prev_prices))
+    sim = simulate_strategy(
+        prev_prices, actual_prices, _preds_for(signals, prev_prices)
+    )
 
     assert sim["signals"] == signals
     assert sim["num_trades"] == 3
 
 
 def test_transaction_cost_charged_on_entry_days_only():
-    signals       = [1, 1, 0, 1]
-    prices        = _rising(n=4)
-    prev_prices   = prices[:-1]
+    signals = [1, 1, 0, 1]
+    prices = _rising(n=4)
+    prev_prices = prices[:-1]
     actual_prices = prices[1:]
 
-    sim = simulate_strategy(prev_prices, actual_prices, _preds_for(signals, prev_prices))
+    sim = simulate_strategy(
+        prev_prices, actual_prices, _preds_for(signals, prev_prices)
+    )
 
     daily_returns = (actual_prices - prev_prices) / prev_prices
-    gross         = np.asarray(signals) * daily_returns
-    charged       = gross - np.asarray(sim["strategy_returns"])
+    gross = np.asarray(signals) * daily_returns
+    charged = gross - np.asarray(sim["strategy_returns"])
 
     # Entries are at index 0 (0->1) and index 3 (0->1). Index 1 holds, so no
     # new cost; index 2 is flat.
@@ -96,10 +103,10 @@ def test_transaction_cost_charged_on_entry_days_only():
 
 
 def test_holding_long_across_days_is_charged_once():
-    prices        = _rising(n=5)
-    prev_prices   = prices[:-1]
+    prices = _rising(n=5)
+    prev_prices = prices[:-1]
     actual_prices = prices[1:]
-    preds         = _preds_for([1] * 5, prev_prices)
+    preds = _preds_for([1] * 5, prev_prices)
 
     sim = simulate_strategy(prev_prices, actual_prices, preds)
 
@@ -108,36 +115,43 @@ def test_holding_long_across_days_is_charged_once():
 
 # ── compute_metrics ───────────────────────────────────────────────────────────
 
+
 def _sim_from_returns(strategy_returns, benchmark_returns=None):
     """Build the minimal sim dict compute_metrics consumes."""
     sr = np.asarray(strategy_returns, dtype=float)
-    br = np.asarray(benchmark_returns if benchmark_returns is not None
-                    else strategy_returns, dtype=float)
+    br = np.asarray(
+        benchmark_returns if benchmark_returns is not None else strategy_returns,
+        dtype=float,
+    )
     return {
-        "strategy_returns":  sr,
+        "strategy_returns": sr,
         "benchmark_returns": br,
-        "daily_values":      np.concatenate(
-            [[INITIAL_CAPITAL], INITIAL_CAPITAL * np.cumprod(1 + sr)]).tolist(),
-        "benchmark_values":  np.concatenate(
-            [[INITIAL_CAPITAL], INITIAL_CAPITAL * np.cumprod(1 + br)]).tolist(),
-        "win_rate":          0.0,
-        "num_trades":        0,
+        "daily_values": np.concatenate(
+            [[INITIAL_CAPITAL], INITIAL_CAPITAL * np.cumprod(1 + sr)]
+        ).tolist(),
+        "benchmark_values": np.concatenate(
+            [[INITIAL_CAPITAL], INITIAL_CAPITAL * np.cumprod(1 + br)]
+        ).tolist(),
+        "win_rate": 0.0,
+        "num_trades": 0,
     }
 
 
 def test_total_return_matches_hand_computed_value():
     # +10% then +10% compounds to +21%, not +20%.
     sim = _sim_from_returns([0.10, 0.10])
-    m   = compute_metrics(sim)
+    m = compute_metrics(sim)
 
     assert m["total_return"] == pytest.approx(21.0, abs=1e-9)
     assert m["final_value"] == pytest.approx(INITIAL_CAPITAL * 1.21, abs=1e-6)
 
 
 def test_max_drawdown_is_never_positive():
-    for returns in ([0.05, 0.05, 0.05],          # monotonic up
-                    [-0.05, 0.02, -0.03],        # choppy
-                    [0.0, 0.0, 0.0]):            # flat
+    for returns in (
+        [0.05, 0.05, 0.05],  # monotonic up
+        [-0.05, 0.02, -0.03],  # choppy
+        [0.0, 0.0, 0.0],
+    ):  # flat
         m = compute_metrics(_sim_from_returns(returns))
         assert m["max_drawdown"] <= 0.0
 
@@ -175,16 +189,17 @@ def test_sharpe_is_still_computed_for_genuinely_small_variance():
 
 def test_alpha_is_annualised_difference_vs_benchmark():
     sim = _sim_from_returns([0.02, 0.02], benchmark_returns=[0.01, 0.01])
-    m   = compute_metrics(sim)
+    m = compute_metrics(sim)
 
     assert m["alpha"] == pytest.approx(
-        m["annualised_return"] - _bench_annual(sim), abs=0.01)
+        m["annualised_return"] - _bench_annual(sim), abs=0.01
+    )
     assert m["alpha"] > 0
 
 
 def _bench_annual(sim):
     bv = np.asarray(sim["benchmark_values"])
-    n  = len(sim["strategy_returns"])
+    n = len(sim["strategy_returns"])
     return float(((bv[-1] / INITIAL_CAPITAL) ** (252 / n) - 1) * 100)
 
 

@@ -23,31 +23,36 @@ Usage:
     python forecasting.py --compare AAPL    # compare ARIMA vs Prophet for AAPL
 """
 
-import sys
-import os
 import argparse
+import os
+import sys
 import warnings
+
 warnings.filterwarnings("ignore")
 
-import pandas as pd
-import numpy as np
-from sqlalchemy import text
+# The imports below sit after the sys.path bootstrap above and therefore trip
+# E402. Each carries a targeted suppression rather than a config-wide ignore.
+# The src/ layout removes the bootstrap, and these all come out with it.
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import TICKERS
-from db.connection import get_engine
-from db.metrics import save_model_metrics
-from utils.logger import get_logger
+from config import TICKERS  # noqa: E402
+from db.connection import get_engine  # noqa: E402
+from db.metrics import save_model_metrics  # noqa: E402
+from utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("forecasting")
 
 FORECAST_DAYS = 7
-HOLDOUT_DAYS  = 30
-ARIMA_ORDER   = (5, 1, 0)
-MLFLOW_EXP    = "stock_forecasting"
+HOLDOUT_DAYS = 30
+ARIMA_ORDER = (5, 1, 0)
+MLFLOW_EXP = "stock_forecasting"
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
+
 
 def load_prices(ticker: str, source: str = "yfinance") -> pd.DataFrame:
     """Load daily close prices sorted oldest to newest. Strips timestamp."""
@@ -66,23 +71,25 @@ def load_prices(ticker: str, source: str = "yfinance") -> pd.DataFrame:
         return df
 
     df["ds"] = pd.to_datetime(df["ds"]).dt.normalize()
-    df["y"]  = df["y"].astype(float)
+    df["y"] = df["y"].astype(float)
     df = df.drop_duplicates(subset="ds").sort_values("ds").reset_index(drop=True)
     return df
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
+
 def compute_metrics(actual: pd.Series, predicted: pd.Series) -> dict:
-    actual    = actual.values
+    actual = actual.values
     predicted = predicted.values
     rmse = float(np.sqrt(np.mean((actual - predicted) ** 2)))
-    mae  = float(np.mean(np.abs(actual - predicted)))
+    mae = float(np.mean(np.abs(actual - predicted)))
     mape = float(np.mean(np.abs((actual - predicted) / actual)) * 100)
     return {"rmse": round(rmse, 4), "mae": round(mae, 4), "mape": round(mape, 2)}
 
 
 # ── ARIMA ─────────────────────────────────────────────────────────────────────
+
 
 def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
     """
@@ -95,11 +102,11 @@ def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         logger.warning(f"{ticker}: Not enough data for ARIMA")
         return pd.DataFrame(), {}
 
-    train   = df.iloc[:-HOLDOUT_DAYS]
+    train = df.iloc[:-HOLDOUT_DAYS]
     holdout = df.iloc[-HOLDOUT_DAYS:]
 
     try:
-        model  = ARIMA(train["y"].values, order=ARIMA_ORDER)
+        model = ARIMA(train["y"].values, order=ARIMA_ORDER)
         fitted = model.fit()
         holdout_preds = fitted.forecast(steps=HOLDOUT_DAYS)
         metrics = compute_metrics(holdout["y"], pd.Series(holdout_preds))
@@ -108,26 +115,28 @@ def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
             f"RMSE: {metrics['rmse']} | MAE: {metrics['mae']} | MAPE: {metrics['mape']}%"
         )
 
-        full_model  = ARIMA(df["y"].values, order=ARIMA_ORDER)
+        full_model = ARIMA(df["y"].values, order=ARIMA_ORDER)
         full_fitted = full_model.fit()
 
         forecast_result = full_fitted.get_forecast(steps=FORECAST_DAYS)
-        forecast_mean   = forecast_result.predicted_mean
-        conf_int        = forecast_result.conf_int(alpha=0.05)
+        forecast_mean = forecast_result.predicted_mean
+        conf_int = forecast_result.conf_int(alpha=0.05)
 
-        last_date    = df["ds"].iloc[-1]
+        last_date = df["ds"].iloc[-1]
         future_dates = pd.bdate_range(
             start=last_date + pd.Timedelta(days=1), periods=FORECAST_DAYS
         )
 
-        forecast_df = pd.DataFrame({
-            "ds":              [d.date() for d in future_dates],
-            "predicted_close": forecast_mean,
-            "lower_bound":     conf_int[:, 0],
-            "upper_bound":     conf_int[:, 1],
-            "model":           "arima",
-            "ticker":          ticker,
-        })
+        forecast_df = pd.DataFrame(
+            {
+                "ds": [d.date() for d in future_dates],
+                "predicted_close": forecast_mean,
+                "lower_bound": conf_int[:, 0],
+                "upper_bound": conf_int[:, 1],
+                "model": "arima",
+                "ticker": ticker,
+            }
+        )
 
         _log_mlflow(ticker, "arima", metrics, forecast_df)
         return forecast_df, metrics
@@ -138,6 +147,7 @@ def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
 
 
 # ── Prophet ───────────────────────────────────────────────────────────────────
+
 
 def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
     """
@@ -154,7 +164,7 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         logger.warning(f"{ticker}: Not enough data for Prophet")
         return pd.DataFrame(), {}
 
-    train   = df.iloc[:-HOLDOUT_DAYS].copy()
+    train = df.iloc[:-HOLDOUT_DAYS].copy()
     holdout = df.iloc[-HOLDOUT_DAYS:].copy()
 
     try:
@@ -167,9 +177,9 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         )
         model.fit(train)
 
-        holdout_future   = model.make_future_dataframe(periods=HOLDOUT_DAYS, freq="B")
+        holdout_future = model.make_future_dataframe(periods=HOLDOUT_DAYS, freq="B")
         holdout_forecast = model.predict(holdout_future)
-        holdout_preds    = holdout_forecast["yhat"].iloc[-HOLDOUT_DAYS:]
+        holdout_preds = holdout_forecast["yhat"].iloc[-HOLDOUT_DAYS:]
         metrics = compute_metrics(
             holdout["y"].reset_index(drop=True),
             holdout_preds.reset_index(drop=True),
@@ -188,19 +198,21 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         )
         full_model.fit(df)
 
-        future   = full_model.make_future_dataframe(periods=FORECAST_DAYS, freq="B")
+        future = full_model.make_future_dataframe(periods=FORECAST_DAYS, freq="B")
         forecast = full_model.predict(future)
 
         forecast_future = forecast[forecast["ds"] > df["ds"].max()].head(FORECAST_DAYS)
 
-        forecast_df = pd.DataFrame({
-            "ds":              [pd.Timestamp(d).date() for d in forecast_future["ds"]],
-            "predicted_close": forecast_future["yhat"].values,
-            "lower_bound":     forecast_future["yhat_lower"].values,
-            "upper_bound":     forecast_future["yhat_upper"].values,
-            "model":           "prophet",
-            "ticker":          ticker,
-        })
+        forecast_df = pd.DataFrame(
+            {
+                "ds": [pd.Timestamp(d).date() for d in forecast_future["ds"]],
+                "predicted_close": forecast_future["yhat"].values,
+                "lower_bound": forecast_future["yhat_lower"].values,
+                "upper_bound": forecast_future["yhat_upper"].values,
+                "model": "prophet",
+                "ticker": ticker,
+            }
+        )
 
         _log_mlflow(ticker, "prophet", metrics, forecast_df)
         return forecast_df, metrics
@@ -212,18 +224,20 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
 
 # ── MLflow logging ────────────────────────────────────────────────────────────
 
+
 def _log_mlflow(ticker: str, model_name: str, metrics: dict, forecast_df: pd.DataFrame):
     try:
         import mlflow
+
         mlflow.set_experiment(MLFLOW_EXP)
 
         with mlflow.start_run(run_name=f"{model_name}_{ticker}"):
-            mlflow.log_param("ticker",        ticker)
-            mlflow.log_param("model",         model_name)
+            mlflow.log_param("ticker", ticker)
+            mlflow.log_param("model", model_name)
             mlflow.log_param("forecast_days", FORECAST_DAYS)
-            mlflow.log_param("holdout_days",  HOLDOUT_DAYS)
+            mlflow.log_param("holdout_days", HOLDOUT_DAYS)
             mlflow.log_metric("rmse", metrics["rmse"])
-            mlflow.log_metric("mae",  metrics["mae"])
+            mlflow.log_metric("mae", metrics["mae"])
             mlflow.log_metric("mape", metrics["mape"])
 
             os.makedirs("mlruns_artifacts", exist_ok=True)
@@ -237,14 +251,15 @@ def _log_mlflow(ticker: str, model_name: str, metrics: dict, forecast_df: pd.Dat
 
 # ── Database write ────────────────────────────────────────────────────────────
 
+
 def save_forecasts(df: pd.DataFrame) -> int:
     """Upsert forecast rows. Returns number of rows inserted."""
     if df.empty:
         return 0
 
-    engine   = get_engine()
+    engine = get_engine()
     inserted = 0
-    run_at   = pd.Timestamp.now()
+    run_at = pd.Timestamp.now()
 
     with engine.begin() as conn:
         for _, row in df.iterrows():
@@ -264,14 +279,14 @@ def save_forecasts(df: pd.DataFrame) -> int:
                         ON CONFLICT DO NOTHING
                     """),
                     {
-                        "ticker":          row["ticker"],
-                        "model":           row["model"],
-                        "forecast_date":   ds,
+                        "ticker": row["ticker"],
+                        "model": row["model"],
+                        "forecast_date": ds,
                         "predicted_close": round(float(row["predicted_close"]), 4),
-                        "lower_bound":     round(float(row["lower_bound"]),     4),
-                        "upper_bound":     round(float(row["upper_bound"]),     4),
-                        "run_at":          run_at,
-                    }
+                        "lower_bound": round(float(row["lower_bound"]), 4),
+                        "upper_bound": round(float(row["upper_bound"]), 4),
+                        "run_at": run_at,
+                    },
                 )
                 inserted += 1
             except Exception as e:
@@ -281,6 +296,7 @@ def save_forecasts(df: pd.DataFrame) -> int:
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
+
 
 def show_forecasts(ticker: str):
     engine = get_engine()
@@ -303,9 +319,9 @@ def show_forecasts(ticker: str):
         print(f"No forecasts found for {ticker}.")
         return
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  7-Day Forecasts for {ticker}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(df.to_string(index=False))
 
 
@@ -328,18 +344,19 @@ def compare_models(ticker: str):
         print(f"No forecasts found for {ticker}.")
         return
 
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print(f"  ARIMA vs Prophet — {ticker}")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     print(df.to_string(index=False))
     print()
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
-def run(tickers: list[str] = None, models: list[str] = None) -> dict:
+
+def run(tickers: list[str] | None = None, models: list[str] | None = None) -> dict:
     tickers = tickers or TICKERS
-    models  = models  or ["arima", "prophet"]
+    models = models or ["arima", "prophet"]
     results = {}
 
     for ticker in tickers:
@@ -376,9 +393,9 @@ def run(tickers: list[str] = None, models: list[str] = None) -> dict:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stock price forecasting engine")
-    parser.add_argument("--ticker",  type=str, help="Single ticker (e.g. AAPL)")
-    parser.add_argument("--model",   type=str, choices=["arima", "prophet"])
-    parser.add_argument("--show",    type=str, help="Print forecasts for a ticker")
+    parser.add_argument("--ticker", type=str, help="Single ticker (e.g. AAPL)")
+    parser.add_argument("--model", type=str, choices=["arima", "prophet"])
+    parser.add_argument("--show", type=str, help="Print forecasts for a ticker")
     parser.add_argument("--compare", type=str, help="Compare ARIMA vs Prophet")
     args = parser.parse_args()
 
@@ -388,7 +405,7 @@ if __name__ == "__main__":
         compare_models(args.compare.upper())
     else:
         tickers = [args.ticker.upper()] if args.ticker else None
-        models  = [args.model] if args.model else None
+        models = [args.model] if args.model else None
 
         logger.info("Starting forecasting pipeline...")
         results = run(tickers=tickers, models=models)

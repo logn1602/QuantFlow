@@ -7,15 +7,16 @@ read os.environ directly in your scripts.
 
 import os
 import sys
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ── Database ─────────────────────────────────────────────────────────────────
-DB_HOST     = os.getenv("DB_HOST", "localhost")
-DB_PORT     = int(os.getenv("DB_PORT", 5432))
-DB_NAME     = os.getenv("DB_NAME", "stock_pipeline")
-DB_USER     = os.getenv("DB_USER", "postgres")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", 5432))
+DB_NAME = os.getenv("DB_NAME", "stock_pipeline")
+DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
 # TLS. Default 'require' rather than libpq's 'prefer': prefer falls back to
@@ -28,17 +29,14 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 # from a private CA ("Supabase Intermediate 2021 CA") that is in neither the
 # system trust store nor certifi, so it needs DB_SSLROOTCERT pointing at
 # Supabase's CA file. See the TLS section in the README.
-DB_SSLMODE     = os.getenv("DB_SSLMODE", "require")
+DB_SSLMODE = os.getenv("DB_SSLMODE", "require")
 DB_SSLROOTCERT = os.getenv("DB_SSLROOTCERT", "")
 
-DATABASE_URL = (
-    f"postgresql://{DB_USER}:{DB_PASSWORD}"
-    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
-NEWS_API_KEY          = os.getenv("NEWS_API_KEY", "")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 # ── Tickers ───────────────────────────────────────────────────────────────────
 _raw_tickers = os.getenv("TICKERS", "AAPL,MSFT,GOOGL,NVDA")
@@ -49,7 +47,7 @@ FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", 15))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-LOG_DIR   = os.path.join(os.path.dirname(__file__), "logs")
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 
 def validate():
@@ -104,6 +102,5 @@ def require_or_exit():
     if fatal:
         for f in fatal:
             print(f"[config] FATAL: {f}", file=sys.stderr)
-        print("[config] Fix your .env (see .env.example) and retry.",
-              file=sys.stderr)
+        print("[config] Fix your .env (see .env.example) and retry.", file=sys.stderr)
         sys.exit(1)

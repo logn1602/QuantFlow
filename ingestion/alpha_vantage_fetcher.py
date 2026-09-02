@@ -7,13 +7,15 @@ Free tier: 25 requests/day, 15-min interval data available.
 Docs: https://www.alphavantage.co/documentation/
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import time
-import requests
+
 import pandas as pd
+import requests
 from sqlalchemy import text
 
 from config import ALPHA_VANTAGE_API_KEY, TICKERS
@@ -23,7 +25,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 BASE_URL = "https://www.alphavantage.co/query"
-SOURCE   = "alpha_vantage"
+SOURCE = "alpha_vantage"
 
 # Free tier allows 25 req/day — add a small delay between calls to be safe
 REQUEST_DELAY_SECONDS = 12
@@ -51,11 +53,11 @@ def _upsert_prices(df: pd.DataFrame, ticker: str) -> int:
                     {
                         "ticker": ticker,
                         "source": SOURCE,
-                        "ts":     row["ts"],
-                        "open":   row["open"],
-                        "high":   row["high"],
-                        "low":    row["low"],
-                        "close":  row["close"],
+                        "ts": row["ts"],
+                        "open": row["open"],
+                        "high": row["high"],
+                        "low": row["low"],
+                        "close": row["close"],
                         "volume": row["volume"],
                     },
                 )
@@ -66,7 +68,7 @@ def _upsert_prices(df: pd.DataFrame, ticker: str) -> int:
     return inserted
 
 
-def fetch_intraday(tickers: list[str] = None, interval: str = "15min") -> dict:
+def fetch_intraday(tickers: list[str] | None = None, interval: str = "15min") -> dict:
     """
     Fetch intraday OHLCV from Alpha Vantage.
 
@@ -93,11 +95,11 @@ def fetch_intraday(tickers: list[str] = None, interval: str = "15min") -> dict:
             resp = requests.get(
                 BASE_URL,
                 params={
-                    "function":   "TIME_SERIES_INTRADAY",
-                    "symbol":     ticker,
-                    "interval":   interval,
-                    "outputsize": "compact",   # last 100 data points
-                    "apikey":     ALPHA_VANTAGE_API_KEY,
+                    "function": "TIME_SERIES_INTRADAY",
+                    "symbol": ticker,
+                    "interval": interval,
+                    "outputsize": "compact",  # last 100 data points
+                    "apikey": ALPHA_VANTAGE_API_KEY,
                 },
                 timeout=15,
             )
@@ -114,14 +116,16 @@ def fetch_intraday(tickers: list[str] = None, interval: str = "15min") -> dict:
 
             rows = []
             for ts_str, ohlcv in data[key].items():
-                rows.append({
-                    "ts":     pd.Timestamp(ts_str, tz="US/Eastern"),
-                    "open":   float(ohlcv["1. open"]),
-                    "high":   float(ohlcv["2. high"]),
-                    "low":    float(ohlcv["3. low"]),
-                    "close":  float(ohlcv["4. close"]),
-                    "volume": int(ohlcv["5. volume"]),
-                })
+                rows.append(
+                    {
+                        "ts": pd.Timestamp(ts_str, tz="US/Eastern"),
+                        "open": float(ohlcv["1. open"]),
+                        "high": float(ohlcv["2. high"]),
+                        "low": float(ohlcv["3. low"]),
+                        "close": float(ohlcv["4. close"]),
+                        "volume": int(ohlcv["5. volume"]),
+                    }
+                )
 
             df = pd.DataFrame(rows)
             n = _upsert_prices(df, ticker)
@@ -135,7 +139,7 @@ def fetch_intraday(tickers: list[str] = None, interval: str = "15min") -> dict:
     return results
 
 
-def fetch_daily(tickers: list[str] = None) -> dict:
+def fetch_daily(tickers: list[str] | None = None) -> dict:
     """
     Fetch daily adjusted OHLCV from Alpha Vantage.
     Useful for longer historical seeding.
@@ -162,10 +166,10 @@ def fetch_daily(tickers: list[str] = None) -> dict:
             resp = requests.get(
                 BASE_URL,
                 params={
-                    "function":   "TIME_SERIES_DAILY",
-                    "symbol":     ticker,
-                    "outputsize": "compact",   # last 100 trading days
-                    "apikey":     ALPHA_VANTAGE_API_KEY,
+                    "function": "TIME_SERIES_DAILY",
+                    "symbol": ticker,
+                    "outputsize": "compact",  # last 100 trading days
+                    "apikey": ALPHA_VANTAGE_API_KEY,
                 },
                 timeout=15,
             )
@@ -181,14 +185,16 @@ def fetch_daily(tickers: list[str] = None) -> dict:
 
             rows = []
             for date_str, ohlcv in data[key].items():
-                rows.append({
-                    "ts":     pd.Timestamp(date_str, tz="UTC"),
-                    "open":   float(ohlcv["1. open"]),
-                    "high":   float(ohlcv["2. high"]),
-                    "low":    float(ohlcv["3. low"]),
-                    "close":  float(ohlcv["4. close"]),
-                    "volume": int(ohlcv["5. volume"]),
-                })
+                rows.append(
+                    {
+                        "ts": pd.Timestamp(date_str, tz="UTC"),
+                        "open": float(ohlcv["1. open"]),
+                        "high": float(ohlcv["2. high"]),
+                        "low": float(ohlcv["3. low"]),
+                        "close": float(ohlcv["4. close"]),
+                        "volume": int(ohlcv["5. volume"]),
+                    }
+                )
 
             df = pd.DataFrame(rows)
             n = _upsert_prices(df, ticker)

@@ -22,23 +22,28 @@ Usage:
     python sentiment.py --summary          # market-wide sentiment overview
 """
 
-import sys
-import os
 import argparse
+import os
+import sys
 import time
 import warnings
+
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-import feedparser
-import pandas as pd
-from datetime import datetime, timedelta, timezone
-from sqlalchemy import text
+# The imports below sit after the sys.path bootstrap above and therefore trip
+# E402. Each carries a targeted suppression rather than a config-wide ignore.
+# The src/ layout removes the bootstrap, and these all come out with it.
+from datetime import UTC, datetime, timedelta  # noqa: E402
 
-from config import TICKERS, NEWS_API_KEY
-from db.connection import get_engine
-from utils.logger import get_logger
+import feedparser  # noqa: E402
+import pandas as pd  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+
+from config import NEWS_API_KEY, TICKERS  # noqa: E402
+from db.connection import get_engine  # noqa: E402
+from utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("sentiment")
 
@@ -54,54 +59,55 @@ logger = get_logger("sentiment")
 #
 # Resolved from the HF API on 2026-08-05; the checkpoint itself dates to
 # 2023-05-23. Update deliberately after re-measuring.
-FINBERT_MODEL    = "ProsusAI/finbert"
+FINBERT_MODEL = "ProsusAI/finbert"
 FINBERT_REVISION = "4556d13015211d73dccd3fdd39d39232506f3e43"
 
 # ── RSS feed URLs per ticker ──────────────────────────────────────────────────
 RSS_FEEDS = {
-    "AAPL":  [
+    "AAPL": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL&region=US&lang=en-US",
         "https://feeds.marketwatch.com/marketwatch/realtimeheadlines/",
     ],
-    "MSFT":  [
+    "MSFT": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=MSFT&region=US&lang=en-US",
     ],
     "GOOGL": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GOOGL&region=US&lang=en-US",
     ],
-    "AMZN":  [
+    "AMZN": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AMZN&region=US&lang=en-US",
     ],
-    "NVDA":  [
+    "NVDA": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=NVDA&region=US&lang=en-US",
     ],
-    "TSLA":  [
+    "TSLA": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=TSLA&region=US&lang=en-US",
     ],
-    "META":  [
+    "META": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=META&region=US&lang=en-US",
     ],
-    "JPM":   [
+    "JPM": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=JPM&region=US&lang=en-US",
     ],
 }
 
 # Company names for NewsAPI keyword search
 TICKER_KEYWORDS = {
-    "AAPL":  "Apple stock",
-    "MSFT":  "Microsoft stock",
+    "AAPL": "Apple stock",
+    "MSFT": "Microsoft stock",
     "GOOGL": "Google Alphabet stock",
-    "AMZN":  "Amazon stock",
-    "NVDA":  "Nvidia stock",
-    "TSLA":  "Tesla stock",
-    "META":  "Meta Facebook stock",
-    "JPM":   "JPMorgan stock",
+    "AMZN": "Amazon stock",
+    "NVDA": "Nvidia stock",
+    "TSLA": "Tesla stock",
+    "META": "Meta Facebook stock",
+    "JPM": "JPMorgan stock",
 }
 
 
 # ── FinBERT model ─────────────────────────────────────────────────────────────
 
 _finbert_pipeline = None
+
 
 def get_finbert():
     """Load FinBERT model once and cache it."""
@@ -110,13 +116,14 @@ def get_finbert():
         logger.info("Loading FinBERT model (first run takes ~2 min to download)...")
         try:
             from transformers import pipeline
+
             _finbert_pipeline = pipeline(
                 "text-classification",
                 model=FINBERT_MODEL,
                 tokenizer=FINBERT_MODEL,
                 revision=FINBERT_REVISION,
-                top_k=None,          # return all 3 class scores
-                device=-1,           # CPU (use 0 for GPU if available)
+                top_k=None,  # return all 3 class scores
+                device=-1,  # CPU (use 0 for GPU if available)
                 truncation=True,
                 max_length=512,
             )
@@ -134,16 +141,21 @@ def analyze_headline(headline: str) -> dict:
     """
     model = get_finbert()
     if model is None:
-        return {"sentiment": "neutral", "score_pos": 0.33, "score_neg": 0.33,
-                "score_neu": 0.34, "compound": 0.0}
+        return {
+            "sentiment": "neutral",
+            "score_pos": 0.33,
+            "score_neg": 0.33,
+            "score_neu": 0.34,
+            "compound": 0.0,
+        }
 
     try:
-        results = model(headline[:512])[0]   # truncate to 512 tokens
+        results = model(headline[:512])[0]  # truncate to 512 tokens
 
         scores = {r["label"].lower(): r["score"] for r in results}
         score_pos = scores.get("positive", 0.0)
         score_neg = scores.get("negative", 0.0)
-        score_neu = scores.get("neutral",  0.0)
+        score_neu = scores.get("neutral", 0.0)
 
         # Compound score: positive signal - negative signal
         compound = round(score_pos - score_neg, 4)
@@ -156,20 +168,32 @@ def analyze_headline(headline: str) -> dict:
             "score_pos": round(score_pos, 4),
             "score_neg": round(score_neg, 4),
             "score_neu": round(score_neu, 4),
-            "compound":  compound,
+            "compound": compound,
         }
     except Exception as e:
         logger.warning(f"FinBERT failed on headline: {e}")
-        return {"sentiment": "neutral", "score_pos": 0.33, "score_neg": 0.33,
-                "score_neu": 0.34, "compound": 0.0}
+        return {
+            "sentiment": "neutral",
+            "score_pos": 0.33,
+            "score_neg": 0.33,
+            "score_neu": 0.34,
+            "compound": 0.0,
+        }
 
 
 def analyze_batch(headlines: list[str]) -> list[dict]:
     """Run FinBERT on a batch of headlines (faster than one at a time)."""
     model = get_finbert()
     if model is None or not headlines:
-        return [{"sentiment": "neutral", "score_pos": 0.33, "score_neg": 0.33,
-                 "score_neu": 0.34, "compound": 0.0}] * len(headlines)
+        return [
+            {
+                "sentiment": "neutral",
+                "score_pos": 0.33,
+                "score_neg": 0.33,
+                "score_neu": 0.34,
+                "compound": 0.0,
+            }
+        ] * len(headlines)
 
     try:
         # Truncate each headline
@@ -181,16 +205,18 @@ def analyze_batch(headlines: list[str]) -> list[dict]:
             scores = {r["label"].lower(): r["score"] for r in results}
             score_pos = scores.get("positive", 0.0)
             score_neg = scores.get("negative", 0.0)
-            score_neu = scores.get("neutral",  0.0)
-            compound  = round(score_pos - score_neg, 4)
+            score_neu = scores.get("neutral", 0.0)
+            compound = round(score_pos - score_neg, 4)
             sentiment = max(scores, key=scores.get)
-            output.append({
-                "sentiment": sentiment,
-                "score_pos": round(score_pos, 4),
-                "score_neg": round(score_neg, 4),
-                "score_neu": round(score_neu, 4),
-                "compound":  compound,
-            })
+            output.append(
+                {
+                    "sentiment": sentiment,
+                    "score_pos": round(score_pos, 4),
+                    "score_neg": round(score_neg, 4),
+                    "score_neu": round(score_neu, 4),
+                    "compound": compound,
+                }
+            )
         return output
 
     except Exception as e:
@@ -200,6 +226,7 @@ def analyze_batch(headlines: list[str]) -> list[dict]:
 
 # ── News fetchers ─────────────────────────────────────────────────────────────
 
+
 def fetch_rss(ticker: str) -> list[dict]:
     """
     Fetch headlines from Yahoo Finance RSS for a ticker.
@@ -208,7 +235,7 @@ def fetch_rss(ticker: str) -> list[dict]:
     """
     feeds = RSS_FEEDS.get(ticker, [])
     articles = []
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    cutoff = datetime.now(UTC) - timedelta(days=7)
 
     for feed_url in feeds:
         try:
@@ -217,9 +244,9 @@ def fetch_rss(ticker: str) -> list[dict]:
                 # Parse published date
                 published = None
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                    published = datetime(*entry.published_parsed[:6], tzinfo=UTC)
                 else:
-                    published = datetime.now(timezone.utc)
+                    published = datetime.now(UTC)
 
                 if published < cutoff:
                     continue
@@ -228,12 +255,14 @@ def fetch_rss(ticker: str) -> list[dict]:
                 if not headline:
                     continue
 
-                articles.append({
-                    "headline":     headline,
-                    "url":          entry.get("link", ""),
-                    "published_at": published,
-                    "source":       "rss",
-                })
+                articles.append(
+                    {
+                        "headline": headline,
+                        "url": entry.get("link", ""),
+                        "published_at": published,
+                        "source": "rss",
+                    }
+                )
 
         except Exception as e:
             logger.warning(f"RSS fetch failed for {ticker} ({feed_url}): {e}")
@@ -254,6 +283,7 @@ def fetch_newsapi(ticker: str) -> list[dict]:
 
     try:
         from newsapi import NewsApiClient
+
         client = NewsApiClient(api_key=NEWS_API_KEY)
 
         keyword = TICKER_KEYWORDS.get(ticker, ticker)
@@ -275,18 +305,18 @@ def fetch_newsapi(ticker: str) -> list[dict]:
 
             published_str = article.get("publishedAt", "")
             try:
-                published = datetime.fromisoformat(
-                    published_str.replace("Z", "+00:00")
-                )
+                published = datetime.fromisoformat(published_str.replace("Z", "+00:00"))
             except Exception:
-                published = datetime.now(timezone.utc)
+                published = datetime.now(UTC)
 
-            articles.append({
-                "headline":     headline,
-                "url":          article.get("url", ""),
-                "published_at": published,
-                "source":       "newsapi",
-            })
+            articles.append(
+                {
+                    "headline": headline,
+                    "url": article.get("url", ""),
+                    "published_at": published,
+                    "source": "newsapi",
+                }
+            )
 
         logger.info(f"  NewsAPI: {len(articles)} articles for {ticker}")
         return articles
@@ -297,6 +327,7 @@ def fetch_newsapi(ticker: str) -> list[dict]:
 
 
 # ── Database write ────────────────────────────────────────────────────────────
+
 
 def save_sentiment(articles: list[dict], ticker: str) -> int:
     """
@@ -323,17 +354,17 @@ def save_sentiment(articles: list[dict], ticker: str) -> int:
                         ON CONFLICT (ticker, headline, published_at) DO NOTHING
                     """),
                     {
-                        "ticker":       ticker,
-                        "source":       article["source"],
+                        "ticker": ticker,
+                        "source": article["source"],
                         "published_at": article["published_at"],
-                        "headline":     article["headline"][:1000],
-                        "url":          article.get("url", "")[:500],
-                        "sentiment":    article["sentiment"],
-                        "score_pos":    article["score_pos"],
-                        "score_neg":    article["score_neg"],
-                        "score_neu":    article["score_neu"],
-                        "compound":     article["compound"],
-                    }
+                        "headline": article["headline"][:1000],
+                        "url": article.get("url", "")[:500],
+                        "sentiment": article["sentiment"],
+                        "score_pos": article["score_pos"],
+                        "score_neg": article["score_neg"],
+                        "score_neu": article["score_neu"],
+                        "compound": article["compound"],
+                    },
                 )
                 inserted += 1
             except Exception as e:
@@ -343,6 +374,7 @@ def save_sentiment(articles: list[dict], ticker: str) -> int:
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
+
 
 def show_sentiment(ticker: str, n: int = 15):
     """Print latest sentiment rows for a ticker."""
@@ -363,7 +395,9 @@ def show_sentiment(ticker: str, n: int = 15):
         df = pd.read_sql(query, conn, params={"ticker": ticker, "n": n})
 
     if df.empty:
-        print(f"No sentiment data for {ticker}. Run: python sentiment.py --ticker {ticker}")
+        print(
+            f"No sentiment data for {ticker}. Run: python sentiment.py --ticker {ticker}"
+        )
         return
 
     pos = len(df[df["sentiment"] == "positive"])
@@ -371,10 +405,12 @@ def show_sentiment(ticker: str, n: int = 15):
     neu = len(df[df["sentiment"] == "neutral"])
     avg = df["compound"].mean()
 
-    print(f"\n{'='*75}")
+    print(f"\n{'=' * 75}")
     print(f"  Sentiment for {ticker} — latest {n} headlines")
-    print(f"  Positive: {pos} | Negative: {neg} | Neutral: {neu} | Avg compound: {avg:.3f}")
-    print(f"{'='*75}")
+    print(
+        f"  Positive: {pos} | Negative: {neg} | Neutral: {neu} | Avg compound: {avg:.3f}"
+    )
+    print(f"{'=' * 75}")
     print(df.to_string(index=False))
     print()
 
@@ -403,9 +439,9 @@ def show_summary():
         print("No sentiment data yet. Run: python sentiment.py")
         return
 
-    print(f"\n{'='*75}")
+    print(f"\n{'=' * 75}")
     print("  Market Sentiment Overview — last 7 days")
-    print(f"{'='*75}")
+    print(f"{'=' * 75}")
     print(df.to_string(index=False))
     print()
     print("  Compound score: +1.0 = fully positive, -1.0 = fully negative")
@@ -414,7 +450,8 @@ def show_summary():
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
-def run(tickers: list[str] = None) -> dict:
+
+def run(tickers: list[str] | None = None) -> dict:
     """
     Full pipeline: fetch news → run FinBERT → save to DB.
     Returns dict of {ticker: rows_inserted}.
@@ -430,9 +467,9 @@ def run(tickers: list[str] = None) -> dict:
         logger.info(f"Processing sentiment for {ticker}...")
 
         # Fetch from both sources
-        rss_articles     = fetch_rss(ticker)
+        rss_articles = fetch_rss(ticker)
         newsapi_articles = fetch_newsapi(ticker)
-        all_articles     = rss_articles + newsapi_articles
+        all_articles = rss_articles + newsapi_articles
 
         if not all_articles:
             logger.warning(f"  No articles found for {ticker}")
@@ -445,7 +482,7 @@ def run(tickers: list[str] = None) -> dict:
         scores = analyze_batch(headlines)
 
         # Merge scores back into articles
-        for article, score in zip(all_articles, scores):
+        for article, score in zip(all_articles, scores, strict=False):
             article.update(score)
 
         # Save to DB
@@ -463,10 +500,10 @@ def run(tickers: list[str] = None) -> dict:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="News sentiment analysis engine")
-    parser.add_argument("--ticker",  type=str, help="Single ticker (e.g. AAPL)")
-    parser.add_argument("--show",    type=str, help="Print sentiment for a ticker")
+    parser.add_argument("--ticker", type=str, help="Single ticker (e.g. AAPL)")
+    parser.add_argument("--show", type=str, help="Print sentiment for a ticker")
     parser.add_argument("--summary", action="store_true", help="Market-wide overview")
-    parser.add_argument("--rows",    type=int, default=15, help="Rows to show")
+    parser.add_argument("--rows", type=int, default=15, help="Rows to show")
     args = parser.parse_args()
 
     if args.summary:

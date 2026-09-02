@@ -18,34 +18,33 @@ Usage:
     python run_models.py --no-clear       # keep existing forecasts (rarely wanted)
 """
 
-import sys
-import os
 import argparse
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
+
+from sqlalchemy import text
 
 import config
 from config import TICKERS
 from db.connection import get_engine
 from utils.logger import get_logger
-from sqlalchemy import text
 
 logger = get_logger("run_models")
 
 
-def clear_forecasts(tickers: list[str] = None):
+def clear_forecasts(tickers: list[str] | None = None):
     """Clear existing forecasts so old data doesn't pollute new runs."""
     tickers = tickers or TICKERS
     engine = get_engine()
     with engine.begin() as conn:
         for ticker in tickers:
-            conn.execute(
-                text("DELETE FROM forecasts WHERE ticker = :t"),
-                {"t": ticker}
-            )
+            conn.execute(text("DELETE FROM forecasts WHERE ticker = :t"), {"t": ticker})
     logger.info(f"Cleared old forecasts for: {', '.join(tickers)}")
 
 
-def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]:
+def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, list[str]]:
     """
     Run all 5 forecasting models in sequence.
 
@@ -61,7 +60,7 @@ def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]
     """
     tickers = tickers or TICKERS
     results = {}
-    failed  = []
+    failed = []
 
     if clear:
         logger.info("Clearing old forecasts...")
@@ -77,6 +76,7 @@ def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]
     logger.info("=" * 50)
     try:
         from forecasting import run as forecast_run
+
         forecast_results = forecast_run(tickers=tickers)
         for ticker, model_results in forecast_results.items():
             for model, n in model_results.items():
@@ -92,6 +92,7 @@ def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]
     logger.info("=" * 50)
     try:
         from xgboost_model import run as xgb_run
+
         xgb_results = xgb_run(tickers=tickers)
         for ticker, model_results in xgb_results.items():
             for model, n in model_results.items():
@@ -107,6 +108,7 @@ def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]
     logger.info("=" * 50)
     try:
         from ensemble import run as ensemble_run
+
         ensemble_results = ensemble_run(tickers=tickers)
         for ticker, n in ensemble_results.items():
             logger.info(f"  {ticker} [ensemble_stack]: {n} rows saved")
@@ -117,8 +119,9 @@ def run(tickers: list[str] = None, clear: bool = True) -> tuple[dict, list[str]]
 
     logger.info("=" * 50)
     if failed:
-        logger.error(f"Pipeline finished with {len(failed)} failed step(s): "
-                     f"{', '.join(failed)}")
+        logger.error(
+            f"Pipeline finished with {len(failed)} failed step(s): {', '.join(failed)}"
+        )
     else:
         logger.info("All models complete. Launch dashboard: streamlit run dashboard.py")
     logger.info("=" * 50)
@@ -135,8 +138,11 @@ if __name__ == "__main__":
     # no-op (store_true with default=True can only ever be True) and implied
     # clearing was opt-in when it never was.
     parser.add_argument(
-        "--no-clear", action="store_false", dest="clear", default=True,
-        help="Keep existing forecasts instead of replacing them (rarely wanted)"
+        "--no-clear",
+        action="store_false",
+        dest="clear",
+        default=True,
+        help="Keep existing forecasts instead of replacing them (rarely wanted)",
     )
     args = parser.parse_args()
 
@@ -155,8 +161,10 @@ if __name__ == "__main__":
         print("\n--- PIPELINE FAILED ---", file=sys.stderr)
         for step in failed:
             print(f"  FAILED: {step}", file=sys.stderr)
-        print(f"{len(failed)} step(s) failed — see the log above for tracebacks.",
-              file=sys.stderr)
+        print(
+            f"{len(failed)} step(s) failed — see the log above for tracebacks.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print("\nAll pipeline steps completed successfully.")

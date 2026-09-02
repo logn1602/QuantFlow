@@ -8,7 +8,8 @@ Writes to both console and a rotating log file.
 import logging
 import os
 from logging.handlers import RotatingFileHandler
-from config import LOG_LEVEL, LOG_DIR
+
+from config import LOG_DIR, LOG_LEVEL
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -18,16 +18,16 @@ Usage:
     python scheduler/job_runner.py
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
-
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
 import config
@@ -40,7 +40,8 @@ logger = get_logger(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _clear_model_forecasts(models: list[str], tickers: list[str] = None):
+
+def _clear_model_forecasts(models: list[str], tickers: list[str] | None = None):
     """Delete prior forecast rows for the given models so the scheduler
     doesn't accumulate one row per run per forecast_date.
 
@@ -50,14 +51,14 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] = None):
     run — missing is better than silently averaged with stale predictions.
     """
     tickers = tickers or TICKERS
-    engine  = get_engine()
+    engine = get_engine()
     with engine.begin() as conn:
         result = conn.execute(
             text("""
                 DELETE FROM forecasts
                 WHERE ticker = ANY(:tickers) AND model = ANY(:models)
             """),
-            {"tickers": tickers, "models": models}
+            {"tickers": tickers, "models": models},
         )
         deleted = result.rowcount
     logger.info(
@@ -78,10 +79,12 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] = None):
 # exception, but logs it with logger.exception so the full traceback lands in
 # logs/pipeline.log instead of a one-line message with no context.
 
+
 def run_yfinance_job():
     logger.info("--- yFinance intraday job started ---")
     try:
         from ingestion.yfinance_fetcher import fetch_intraday
+
         results = fetch_intraday()
         total = sum(results.values())
         logger.info(f"--- yFinance job done: {total} rows inserted ---")
@@ -93,6 +96,7 @@ def run_alpha_vantage_job():
     logger.info("--- Alpha Vantage intraday job started ---")
     try:
         from ingestion.alpha_vantage_fetcher import fetch_intraday
+
         results = fetch_intraday()
         total = sum(results.values())
         logger.info(f"--- Alpha Vantage job done: {total} rows inserted ---")
@@ -104,6 +108,7 @@ def run_indicators_job():
     logger.info("--- Indicators job started ---")
     try:
         from indicators import run as indicators_run
+
         results = indicators_run()
         total = sum(results.values())
         logger.info(f"--- Indicators job done: {total} rows saved ---")
@@ -115,6 +120,7 @@ def run_anomaly_job():
     logger.info("--- Anomaly detection job started ---")
     try:
         from anomaly_detection import run as anomaly_run
+
         results = anomaly_run()
         total = sum(results.values())
         logger.info(f"--- Anomaly job done: {total} anomalies flagged ---")
@@ -126,6 +132,7 @@ def run_sentiment_job():
     logger.info("--- Sentiment job started ---")
     try:
         from sentiment import run as sentiment_run
+
         results = sentiment_run()
         total = sum(results.values())
         logger.info(f"--- Sentiment job done: {total} rows saved ---")
@@ -137,6 +144,7 @@ def run_forecasting_job():
     logger.info("--- ARIMA/Prophet forecasting job started ---")
     try:
         from forecasting import run as forecasting_run
+
         _clear_model_forecasts(["arima", "prophet"])
         results = forecasting_run()
         logger.info(f"--- Forecasting job done: {results} ---")
@@ -148,6 +156,7 @@ def run_xgboost_job():
     logger.info("--- XGBoost/LightGBM job started ---")
     try:
         from xgboost_model import run as xgb_run
+
         _clear_model_forecasts(["xgboost", "lightgbm"])
         results = xgb_run()
         logger.info(f"--- XGBoost job done: {results} ---")
@@ -160,6 +169,7 @@ def run_ensemble_job():
     logger.info("--- Stacking Ensemble job started ---")
     try:
         from ensemble import run as ensemble_run
+
         _clear_model_forecasts(["ensemble_stack"])
         results = ensemble_run()
         for ticker, n in results.items():
@@ -174,6 +184,7 @@ def run_backtest_job():
     logger.info("--- Backtest job started ---")
     try:
         from backtest import run as backtest_run
+
         results = backtest_run()
         for ticker, m in results.items():
             if m:
@@ -187,6 +198,7 @@ def run_backtest_job():
 
 
 # ── Scheduler setup ───────────────────────────────────────────────────────────
+
 
 def start():
     # Config first, then connectivity. A long-running daemon started with a
@@ -287,12 +299,12 @@ def start():
     logger.info("QuantFlow scheduler started. Jobs:")
     logger.info(f"  Price ingestion  : every {FETCH_INTERVAL_MINUTES} min")
     logger.info(f"  Indicators       : every {FETCH_INTERVAL_MINUTES} min")
-    logger.info(f"  Anomaly detection: every 60 min")
-    logger.info(f"  Sentiment        : every 6 hours")
-    logger.info(f"  ARIMA/Prophet    : daily at 4:30 PM ET")
-    logger.info(f"  XGBoost/LightGBM : daily at 4:45 PM ET")
-    logger.info(f"  Stacking Ensemble: daily at 5:00 PM ET")
-    logger.info(f"  Backtesting      : daily at 5:15 PM ET")
+    logger.info("  Anomaly detection: every 60 min")
+    logger.info("  Sentiment        : every 6 hours")
+    logger.info("  ARIMA/Prophet    : daily at 4:30 PM ET")
+    logger.info("  XGBoost/LightGBM : daily at 4:45 PM ET")
+    logger.info("  Stacking Ensemble: daily at 5:00 PM ET")
+    logger.info("  Backtesting      : daily at 5:15 PM ET")
     logger.info("Press Ctrl+C to stop.")
 
     # Run immediately on start

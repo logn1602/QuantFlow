@@ -6,12 +6,13 @@ Use get_engine() for SQLAlchemy (DataFrames).
 Use get_conn() for raw psycopg2 (custom SQL).
 """
 
+import os
+import sys
+
 import psycopg2
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 
-import sys
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from config import DATABASE_URL, DB_SSLMODE, DB_SSLROOTCERT

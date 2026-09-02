@@ -6,8 +6,9 @@ Fetches OHLCV data from Yahoo Finance via yfinance.
 - fetch_intraday():   pull today's 15-min candles (run on schedule)
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pandas as pd
@@ -64,7 +65,7 @@ def _upsert_prices(df: pd.DataFrame, ticker: str) -> int:
     return inserted
 
 
-def fetch_historical(tickers: list[str] = None, period: str = "2y") -> dict:
+def fetch_historical(tickers: list[str] | None = None, period: str = "2y") -> dict:
     """
     Pull daily OHLCV for the given tickers going back `period`.
     Good for seeding the DB on first run.
@@ -103,7 +104,7 @@ def fetch_historical(tickers: list[str] = None, period: str = "2y") -> dict:
     return results
 
 
-def fetch_intraday(tickers: list[str] = None) -> dict:
+def fetch_intraday(tickers: list[str] | None = None) -> dict:
     """
     Pull the last 5 days of 15-min candles.
     Designed to run on a schedule every 15 minutes.

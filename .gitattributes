@@ -1,0 +1,12 @@
+# Line endings.
+#
+# core.autocrlf is true on the maintainer's Windows machine, so without this
+# every checkout would produce CRLF files that the mixed-line-ending pre-commit
+# hook rewrites back to LF on the next commit — a loop that fails the first
+# commit attempt every time. Pinning eol=lf keeps the working tree identical on
+# Windows, macOS and CI runners.
+* text=auto eol=lf
+
+# Generated. Collapsed by default in GitHub diffs so a 3,400-line lockfile does
+# not bury the reviewable part of a pull request.
+uv.lock linguist-generated=true

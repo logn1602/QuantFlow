@@ -11,8 +11,9 @@ Metric persistence is best-effort by design: a failure to save a metric
 must never take down a model run.
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from sqlalchemy import text
@@ -35,8 +36,9 @@ def _as_float(value):
         return None
 
 
-def save_model_metrics(ticker: str, model: str, metrics: dict,
-                       holdout_days: int) -> None:
+def save_model_metrics(
+    ticker: str, model: str, metrics: dict, holdout_days: int
+) -> None:
     """
     Write one metrics row for (ticker, model). Missing rmse/mae/mape keys
     are stored as NULL. Never raises — logs a warning and returns instead.
@@ -57,21 +59,22 @@ def save_model_metrics(ticker: str, model: str, metrics: dict,
                     ON CONFLICT (ticker, model, run_at) DO NOTHING
                 """),
                 {
-                    "ticker":       ticker,
-                    "model":        model,
+                    "ticker": ticker,
+                    "model": model,
                     "holdout_days": int(holdout_days),
-                    "rmse":         _as_float(metrics.get("rmse")),
-                    "mae":          _as_float(metrics.get("mae")),
-                    "mape":         _as_float(metrics.get("mape")),
-                }
+                    "rmse": _as_float(metrics.get("rmse")),
+                    "mae": _as_float(metrics.get("mae")),
+                    "mape": _as_float(metrics.get("mape")),
+                },
             )
         logger.info(
             f"  Metrics saved — {ticker} [{model}] "
             f"MAPE: {metrics.get('mape')} over {holdout_days} days"
         )
     except Exception as e:
-        logger.warning(f"Metric persistence failed for {ticker} [{model}] "
-                       f"(non-critical): {e}")
+        logger.warning(
+            f"Metric persistence failed for {ticker} [{model}] (non-critical): {e}"
+        )
 
 
 def load_latest_metrics(ticker: str) -> dict:
@@ -97,11 +100,11 @@ def load_latest_metrics(ticker: str) -> dict:
 
     return {
         row["model"]: {
-            "rmse":         _as_float(row["rmse"]),
-            "mae":          _as_float(row["mae"]),
-            "mape":         _as_float(row["mape"]),
+            "rmse": _as_float(row["rmse"]),
+            "mae": _as_float(row["mae"]),
+            "mape": _as_float(row["mape"]),
             "holdout_days": row["holdout_days"],
-            "run_at":       row["run_at"],
+            "run_at": row["run_at"],
         }
         for row in rows
     }

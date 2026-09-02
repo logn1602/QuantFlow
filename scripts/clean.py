@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import os
 import shutil
 import sys
@@ -46,19 +47,23 @@ def dir_size(p: Path) -> int:
     total = 0
     for dirpath, _, filenames in os.walk(p):
         for f in filenames:
-            try:
+            with contextlib.suppress(OSError):
                 total += (Path(dirpath) / f).stat().st_size
-            except OSError:
-                pass
     return total
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Clean logs and build artifacts")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="List what would be removed, delete nothing")
-    ap.add_argument("--mlflow", action="store_true",
-                    help="Also delete mlflow.db (past experiment history)")
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List what would be removed, delete nothing",
+    )
+    ap.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Also delete mlflow.db (past experiment history)",
+    )
     args = ap.parse_args()
 
     targets: list[tuple[Path, int]] = []

@@ -39,38 +39,45 @@ Usage:
     python ensemble.py --show AAPL      # print ensemble forecasts
 """
 
-import sys
-import os
 import argparse
+import os
+import sys
 import warnings
+
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-import numpy as np
-import pandas as pd
-from datetime import datetime
-from sqlalchemy import text
+# The imports below sit after the sys.path bootstrap above and therefore trip
+# E402. Each carries a targeted suppression rather than a config-wide ignore.
+# The src/ layout removes the bootstrap, and these all come out with it.
+from datetime import datetime  # noqa: E402
 
-from config import TICKERS
-from db.connection import get_engine
-from db.metrics import save_model_metrics
-from utils.logger import get_logger
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+
+from config import TICKERS  # noqa: E402
+from db.connection import get_engine  # noqa: E402
+from db.metrics import save_model_metrics  # noqa: E402
+from utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("ensemble")
 
-HOLDOUT_DAYS     = 30
-FORECAST_DAYS    = 7
-META_WARMUP_DAYS = 10   # days used to fit the first meta-learner
-MLFLOW_EXP       = "stock_forecasting"
+HOLDOUT_DAYS = 30
+FORECAST_DAYS = 7
+META_WARMUP_DAYS = 10  # days used to fit the first meta-learner
+MLFLOW_EXP = "stock_forecasting"
 
 
 # ── Holdout prediction helpers ────────────────────────────────────────────────
 
+
 def _arima_holdout(price_df: pd.DataFrame) -> np.ndarray:
     """Fit ARIMA on train split, return 30-day holdout predictions."""
     from statsmodels.tsa.arima.model import ARIMA
-    train  = price_df.iloc[:-HOLDOUT_DAYS]
+
+    train = price_df.iloc[:-HOLDOUT_DAYS]
     fitted = ARIMA(train["y"].values, order=(5, 1, 0)).fit()
     return fitted.forecast(steps=HOLDOUT_DAYS)
 
@@ -78,6 +85,7 @@ def _arima_holdout(price_df: pd.DataFrame) -> np.ndarray:
 def _prophet_holdout(price_df: pd.DataFrame) -> np.ndarray:
     """Fit Prophet on train split, return 30-day holdout predictions."""
     from prophet import Prophet
+
     train = price_df.iloc[:-HOLDOUT_DAYS].copy()
     model = Prophet(
         daily_seasonality=False,
@@ -87,7 +95,7 @@ def _prophet_holdout(price_df: pd.DataFrame) -> np.ndarray:
         interval_width=0.95,
     )
     model.fit(train)
-    future   = model.make_future_dataframe(periods=HOLDOUT_DAYS, freq="B")
+    future = model.make_future_dataframe(periods=HOLDOUT_DAYS, freq="B")
     forecast = model.predict(future)
     return forecast["yhat"].iloc[-HOLDOUT_DAYS:].values
 
@@ -95,8 +103,10 @@ def _prophet_holdout(price_df: pd.DataFrame) -> np.ndarray:
 def _xgb_lgb_holdout(ticker: str) -> dict:
     """Train XGBoost & LightGBM on train split, return holdout predictions."""
     from xgboost_model import (
-        load_features, engineer_features, get_feature_cols,
-        train_xgboost, train_lightgbm,
+        engineer_features,
+        load_features,
+        train_lightgbm,
+        train_xgboost,
     )
 
     df = load_features(ticker)
@@ -113,12 +123,13 @@ def _xgb_lgb_holdout(ticker: str) -> dict:
         return {}
 
     return {
-        "xgboost":  xgb_result.get("holdout_preds", np.array([])),
+        "xgboost": xgb_result.get("holdout_preds", np.array([])),
         "lightgbm": lgb_result.get("holdout_preds", np.array([])),
     }
 
 
 # ── Holdout stacking ──────────────────────────────────────────────────────────
+
 
 def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
     """
@@ -143,13 +154,13 @@ def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
 
     actual = price_df["y"].iloc[-HOLDOUT_DAYS:].values
 
-    logger.info(f"  [1/4] ARIMA holdout predictions...")
+    logger.info("  [1/4] ARIMA holdout predictions...")
     arima_preds = _arima_holdout(price_df)
 
-    logger.info(f"  [2/4] Prophet holdout predictions...")
+    logger.info("  [2/4] Prophet holdout predictions...")
     prophet_preds = _prophet_holdout(price_df)
 
-    logger.info(f"  [3/4] XGBoost + LightGBM holdout predictions...")
+    logger.info("  [3/4] XGBoost + LightGBM holdout predictions...")
     ml_preds = _xgb_lgb_holdout(ticker)
     if not ml_preds or len(ml_preds.get("xgboost", [])) == 0:
         logger.error(f"{ticker}: XGB/LGB holdout failed — cannot stack")
@@ -158,19 +169,27 @@ def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
     xgb_preds = ml_preds["xgboost"]
     lgb_preds = ml_preds["lightgbm"]
 
-    n = min(len(actual), len(arima_preds), len(prophet_preds),
-            len(xgb_preds), len(lgb_preds))
+    n = min(
+        len(actual),
+        len(arima_preds),
+        len(prophet_preds),
+        len(xgb_preds),
+        len(lgb_preds),
+    )
 
-    return pd.DataFrame({
-        "actual":   actual[:n],
-        "arima":    np.asarray(arima_preds)[:n],
-        "prophet":  np.asarray(prophet_preds)[:n],
-        "xgboost":  np.asarray(xgb_preds)[:n],
-        "lightgbm": np.asarray(lgb_preds)[:n],
-    })
+    return pd.DataFrame(
+        {
+            "actual": actual[:n],
+            "arima": np.asarray(arima_preds)[:n],
+            "prophet": np.asarray(prophet_preds)[:n],
+            "xgboost": np.asarray(xgb_preds)[:n],
+            "lightgbm": np.asarray(lgb_preds)[:n],
+        }
+    )
 
 
 # ── Meta-learner ──────────────────────────────────────────────────────────────
+
 
 def _mape(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.mean(np.abs((actual - predicted) / actual)) * 100)
@@ -188,6 +207,7 @@ class NNLSMeta:
     a proper convex combination of the base models — it can never predict
     outside [min(base_preds), max(base_preds)] for a given day.
     """
+
     def __init__(self, weights: np.ndarray):
         self.coef_ = weights  # non-negative, sums to 1
 
@@ -211,17 +231,19 @@ def _fit_nnls(X, y) -> NNLSMeta:
     if hasattr(y, "values"):
         y = y.values
 
-    n_features     = X.shape[1]
+    n_features = X.shape[1]
     raw_weights, _ = nnls(X, y)
 
     weight_sum = raw_weights.sum()
-    weights    = (raw_weights / weight_sum if weight_sum > 0
-                  else np.ones(n_features) / n_features)
+    weights = (
+        raw_weights / weight_sum if weight_sum > 0 else np.ones(n_features) / n_features
+    )
     return NNLSMeta(weights)
 
 
-def out_of_fold_meta_predictions(stacked_df: pd.DataFrame,
-                                 warmup: int = META_WARMUP_DAYS) -> tuple:
+def out_of_fold_meta_predictions(
+    stacked_df: pd.DataFrame, warmup: int = META_WARMUP_DAYS
+) -> tuple:
     """
     Expanding-window out-of-fold ensemble predictions.
 
@@ -245,8 +267,8 @@ def out_of_fold_meta_predictions(stacked_df: pd.DataFrame,
 
     oof_preds = np.empty(len(stacked_df) - warmup, dtype=float)
     for j, i in enumerate(range(warmup, len(stacked_df))):
-        meta         = _fit_nnls(X[:i], y[:i])
-        oof_preds[j] = float(meta.predict(X[i:i + 1])[0])
+        meta = _fit_nnls(X[:i], y[:i])
+        oof_preds[j] = float(meta.predict(X[i : i + 1])[0])
 
     return oof_preds, y[warmup:]
 
@@ -278,29 +300,34 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
     # ── Honest evaluation: out-of-fold predictions ────────────────────────────
     oof_preds, oof_actuals = out_of_fold_meta_predictions(stacked_df)
     eval_days = len(oof_actuals)
-    warmup    = len(stacked_df) - eval_days
+    warmup = len(stacked_df) - eval_days
 
     if eval_days > 0:
         # Base models MUST be scored on the same window as the OOF ensemble.
-        base_mapes = {m: round(_mape(oof_actuals, stacked_df[m].values[warmup:]), 2)
-                      for m in feature_cols}
+        base_mapes = {
+            m: round(_mape(oof_actuals, stacked_df[m].values[warmup:]), 2)
+            for m in feature_cols
+        }
         best_base = min(base_mapes.values())
-        ens_mape  = round(_mape(oof_actuals, oof_preds), 2)
-        improvement = (round((best_base - ens_mape) / best_base * 100, 2)
-                       if best_base > 0 else 0.0)
+        ens_mape = round(_mape(oof_actuals, oof_preds), 2)
+        improvement = (
+            round((best_base - ens_mape) / best_base * 100, 2) if best_base > 0 else 0.0
+        )
     else:
-        base_mapes  = {m: None for m in feature_cols}
-        best_base   = None
-        ens_mape    = None
+        base_mapes = dict.fromkeys(feature_cols)
+        best_base = None
+        ens_mape = None
         improvement = None
 
     # ── Production fit: all holdout days, used for the forward forecast ───────
-    meta    = _fit_nnls(X, y)
+    meta = _fit_nnls(X, y)
     weights = meta.coef_
 
     logger.info(
-        "  NNLS weights — " +
-        " | ".join(f"{m}: {w:.3f}" for m, w in zip(feature_cols, weights))
+        "  NNLS weights — "
+        + " | ".join(
+            f"{m}: {w:.3f}" for m, w in zip(feature_cols, weights, strict=False)
+        )
     )
     if eval_days > 0:
         verdict = "beats" if improvement > 0 else "does NOT beat"
@@ -310,17 +337,17 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
         )
 
     metrics = {
-        "ensemble_mape":   ens_mape,
-        "arima_mape":      base_mapes["arima"],
-        "prophet_mape":    base_mapes["prophet"],
-        "xgboost_mape":    base_mapes["xgboost"],
-        "lightgbm_mape":   base_mapes["lightgbm"],
-        "meta_learner":    "nnls_convex",
-        "oof_mape":        ens_mape,
-        "eval_days":       eval_days,
-        "warmup_days":     warmup,
-        "coefficients":    dict(zip(feature_cols, weights.tolist())),
-        "intercept":       0.0,
+        "ensemble_mape": ens_mape,
+        "arima_mape": base_mapes["arima"],
+        "prophet_mape": base_mapes["prophet"],
+        "xgboost_mape": base_mapes["xgboost"],
+        "lightgbm_mape": base_mapes["lightgbm"],
+        "meta_learner": "nnls_convex",
+        "oof_mape": ens_mape,
+        "eval_days": eval_days,
+        "warmup_days": warmup,
+        "coefficients": dict(zip(feature_cols, weights.tolist(), strict=False)),
+        "intercept": 0.0,
         "improvement_pct": improvement,
     }
 
@@ -328,6 +355,7 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
 
 
 # ── Forecast generation ───────────────────────────────────────────────────────
+
 
 def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     """
@@ -366,34 +394,37 @@ def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
         logger.warning(f"{ticker}: one or more base models missing from DB")
         return pd.DataFrame()
 
-    X_future       = pivot[required].values
+    X_future = pivot[required].values
     ensemble_preds = meta_model.predict(X_future)
 
     # Weighted CI propagation using |coef| / sum(|coef|)
-    abs_coefs    = np.abs(meta_model.coef_)
+    abs_coefs = np.abs(meta_model.coef_)
     coef_weights = abs_coefs / abs_coefs.sum()
-    ens_lower    = (lower[required].values * coef_weights).sum(axis=1)
-    ens_upper    = (upper[required].values * coef_weights).sum(axis=1)
+    ens_lower = (lower[required].values * coef_weights).sum(axis=1)
+    ens_upper = (upper[required].values * coef_weights).sum(axis=1)
 
-    return pd.DataFrame({
-        "ticker":          ticker,
-        "model":           "ensemble_stack",
-        "ds":              pivot.index,
-        "predicted_close": ensemble_preds,
-        "lower_bound":     ens_lower,
-        "upper_bound":     ens_upper,
-    })
+    return pd.DataFrame(
+        {
+            "ticker": ticker,
+            "model": "ensemble_stack",
+            "ds": pivot.index,
+            "predicted_close": ensemble_preds,
+            "lower_bound": ens_lower,
+            "upper_bound": ens_upper,
+        }
+    )
 
 
 # ── Database write ────────────────────────────────────────────────────────────
+
 
 def save_ensemble_forecasts(df: pd.DataFrame) -> int:
     if df.empty:
         return 0
 
-    engine   = get_engine()
+    engine = get_engine()
     inserted = 0
-    run_at   = datetime.now()
+    run_at = datetime.now()
 
     with engine.begin() as conn:
         for _, row in df.iterrows():
@@ -401,7 +432,8 @@ def save_ensemble_forecasts(df: pd.DataFrame) -> int:
                 ds = row["ds"]
                 if hasattr(ds, "date") and not isinstance(ds, str):
                     ds = ds.date()
-                conn.execute(text("""
+                conn.execute(
+                    text("""
                     INSERT INTO forecasts
                         (ticker, model, forecast_date, predicted_close,
                          lower_bound, upper_bound, run_at)
@@ -409,15 +441,17 @@ def save_ensemble_forecasts(df: pd.DataFrame) -> int:
                         (:ticker, :model, :forecast_date, :predicted_close,
                          :lower_bound, :upper_bound, :run_at)
                     ON CONFLICT DO NOTHING
-                """), {
-                    "ticker":          row["ticker"],
-                    "model":           row["model"],
-                    "forecast_date":   ds,
-                    "predicted_close": round(float(row["predicted_close"]), 4),
-                    "lower_bound":     round(float(row["lower_bound"]),     4),
-                    "upper_bound":     round(float(row["upper_bound"]),     4),
-                    "run_at":          run_at,
-                })
+                """),
+                    {
+                        "ticker": row["ticker"],
+                        "model": row["model"],
+                        "forecast_date": ds,
+                        "predicted_close": round(float(row["predicted_close"]), 4),
+                        "lower_bound": round(float(row["lower_bound"]), 4),
+                        "upper_bound": round(float(row["upper_bound"]), 4),
+                        "run_at": run_at,
+                    },
+                )
                 inserted += 1
             except Exception as e:
                 logger.warning(f"Row skipped: {e}")
@@ -427,19 +461,26 @@ def save_ensemble_forecasts(df: pd.DataFrame) -> int:
 
 # ── MLflow logging ────────────────────────────────────────────────────────────
 
-def log_to_mlflow(ticker: str, meta_model, metrics: dict,
-                  stacked_df: pd.DataFrame, forecast_df: pd.DataFrame):
+
+def log_to_mlflow(
+    ticker: str,
+    meta_model,
+    metrics: dict,
+    stacked_df: pd.DataFrame,
+    forecast_df: pd.DataFrame,
+):
     try:
         import mlflow
+
         mlflow.set_experiment(MLFLOW_EXP)
 
         with mlflow.start_run(run_name=f"ensemble_stack_{ticker}"):
-            mlflow.log_param("ticker",        ticker)
-            mlflow.log_param("model",         "ensemble_stack")
-            mlflow.log_param("meta_learner",  metrics["meta_learner"])
-            mlflow.log_param("base_models",   "arima,prophet,xgboost,lightgbm")
-            mlflow.log_param("holdout_days",  HOLDOUT_DAYS)
-            mlflow.log_param("warmup_days",   metrics["warmup_days"])
+            mlflow.log_param("ticker", ticker)
+            mlflow.log_param("model", "ensemble_stack")
+            mlflow.log_param("meta_learner", metrics["meta_learner"])
+            mlflow.log_param("base_models", "arima,prophet,xgboost,lightgbm")
+            mlflow.log_param("holdout_days", HOLDOUT_DAYS)
+            mlflow.log_param("warmup_days", metrics["warmup_days"])
             mlflow.log_param("forecast_days", FORECAST_DAYS)
 
             # Learned model weights — key insight for recruiters reviewing MLflow
@@ -449,15 +490,22 @@ def log_to_mlflow(ticker: str, meta_model, metrics: dict,
             # eval_days is always meaningful; the MAPEs are None if the stack
             # was too short to leave any out-of-fold days.
             mlflow.log_metric("eval_days", metrics["eval_days"])
-            for key in ("ensemble_mape", "oof_mape", "arima_mape", "prophet_mape",
-                        "xgboost_mape", "lightgbm_mape", "improvement_pct"):
+            for key in (
+                "ensemble_mape",
+                "oof_mape",
+                "arima_mape",
+                "prophet_mape",
+                "xgboost_mape",
+                "lightgbm_mape",
+                "improvement_pct",
+            ):
                 if metrics[key] is not None:
                     mlflow.log_metric(key, metrics[key])
 
             os.makedirs("mlruns_artifacts", exist_ok=True)
-            stack_path    = f"mlruns_artifacts/ensemble_stack_{ticker}_holdout.csv"
+            stack_path = f"mlruns_artifacts/ensemble_stack_{ticker}_holdout.csv"
             forecast_path = f"mlruns_artifacts/ensemble_stack_{ticker}_forecast.csv"
-            stacked_df.to_csv(stack_path,     index=False)
+            stacked_df.to_csv(stack_path, index=False)
             forecast_df.to_csv(forecast_path, index=False)
             mlflow.log_artifact(stack_path)
             mlflow.log_artifact(forecast_path)
@@ -467,6 +515,7 @@ def log_to_mlflow(ticker: str, meta_model, metrics: dict,
 
 
 # ── Display ───────────────────────────────────────────────────────────────────
+
 
 def show_results(ticker: str):
     engine = get_engine()
@@ -486,33 +535,36 @@ def show_results(ticker: str):
         print(f"No ensemble forecasts for {ticker}.")
         return
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Stacking Ensemble Forecast — {ticker}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(df.to_string(index=False))
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
-def run(tickers: list = None) -> dict:
+
+def run(tickers: list | None = None) -> dict:
     tickers = tickers or TICKERS
     results = {}
 
     for ticker in tickers:
-        logger.info(f"{'='*50}")
+        logger.info(f"{'=' * 50}")
         logger.info(f"Stacking Ensemble — {ticker}")
-        logger.info(f"{'='*50}")
+        logger.info(f"{'=' * 50}")
 
-        logger.info(f"Collecting out-of-fold holdout predictions...")
+        logger.info("Collecting out-of-fold holdout predictions...")
         stacked_df = collect_holdout_stacks(ticker)
         if stacked_df.empty:
             logger.error(f"{ticker}: stacking skipped")
             results[ticker] = 0
             continue
 
-        logger.info(f"  Stack shape: {stacked_df.shape[0]} rows × {stacked_df.shape[1]} columns")
+        logger.info(
+            f"  Stack shape: {stacked_df.shape[0]} rows × {stacked_df.shape[1]} columns"  # noqa: RUF001
+        )
 
-        logger.info(f"Training NNLS meta-learner (non-negative convex combination)...")
+        logger.info("Training NNLS meta-learner (non-negative convex combination)...")
         meta_model, metrics = tune_and_train_meta(stacked_df)
 
         coefs = metrics["coefficients"]
@@ -521,8 +573,12 @@ def run(tickers: list = None) -> dict:
             f"XGBoost: {coefs['xgboost']:.3f} | LightGBM: {coefs['lightgbm']:.3f}"
         )
         if metrics["eval_days"] > 0:
-            base_best = min(metrics["arima_mape"], metrics["prophet_mape"],
-                            metrics["xgboost_mape"], metrics["lightgbm_mape"])
+            base_best = min(
+                metrics["arima_mape"],
+                metrics["prophet_mape"],
+                metrics["xgboost_mape"],
+                metrics["lightgbm_mape"],
+            )
             logger.info(
                 f"  MAPE (out-of-fold, {metrics['eval_days']} days) — "
                 f"Ensemble: {metrics['ensemble_mape']}% vs "
@@ -535,12 +591,13 @@ def run(tickers: list = None) -> dict:
         # Store the out-of-fold MAPE against the evaluation window it was
         # measured on, not the full 30-day holdout.
         save_model_metrics(
-            ticker, "ensemble_stack",
+            ticker,
+            "ensemble_stack",
             {"mape": metrics["ensemble_mape"]},
             metrics["eval_days"],
         )
 
-        logger.info(f"Generating 7-day ensemble forecast...")
+        logger.info("Generating 7-day ensemble forecast...")
         forecast_df = generate_ensemble_forecast(ticker, meta_model)
         if forecast_df.empty:
             logger.error(f"{ticker}: forecast failed — ensure run_models.py ran first")
@@ -562,7 +619,7 @@ def run(tickers: list = None) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stacking ensemble forecasting")
     parser.add_argument("--ticker", type=str, help="Single ticker (e.g. AAPL)")
-    parser.add_argument("--show",   type=str, help="Show ensemble forecasts for a ticker")
+    parser.add_argument("--show", type=str, help="Show ensemble forecasts for a ticker")
     args = parser.parse_args()
 
     if args.show:

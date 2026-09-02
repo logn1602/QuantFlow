@@ -35,6 +35,7 @@ def _reload_with(monkeypatch, **env):
 
 # ── TICKERS parsing ───────────────────────────────────────────────────────────
 
+
 def test_tickers_are_upcased(monkeypatch):
     cfg = _reload_with(monkeypatch, TICKERS="aapl,msft")
     assert cfg.TICKERS == ["AAPL", "MSFT"]
@@ -67,12 +68,13 @@ def test_tickers_mixed_case_and_padding_together(monkeypatch):
 
 # ── validate() ────────────────────────────────────────────────────────────────
 
+
 def _all_present():
     return {
-        "DB_PASSWORD":           "sekret",
+        "DB_PASSWORD": "sekret",
         "ALPHA_VANTAGE_API_KEY": "av-key",
-        "NEWS_API_KEY":          "news-key",
-        "TICKERS":               "AAPL",
+        "NEWS_API_KEY": "news-key",
+        "TICKERS": "AAPL",
     }
 
 
@@ -81,11 +83,14 @@ def test_validate_true_when_everything_is_set(monkeypatch):
     assert cfg.validate() is True
 
 
-@pytest.mark.parametrize("missing", [
-    "DB_PASSWORD",
-    "ALPHA_VANTAGE_API_KEY",
-    "NEWS_API_KEY",
-])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "DB_PASSWORD",
+        "ALPHA_VANTAGE_API_KEY",
+        "NEWS_API_KEY",
+    ],
+)
 def test_validate_false_when_a_required_var_is_blank(monkeypatch, missing):
     env = _all_present()
     env[missing] = ""
@@ -103,7 +108,7 @@ def test_validate_false_when_tickers_list_is_empty(monkeypatch):
 
 def test_validate_reports_every_missing_var_not_just_the_first(monkeypatch, capsys):
     env = _all_present()
-    env["DB_PASSWORD"]  = ""
+    env["DB_PASSWORD"] = ""
     env["NEWS_API_KEY"] = ""
     cfg = _reload_with(monkeypatch, **env)
 
@@ -115,11 +120,15 @@ def test_validate_reports_every_missing_var_not_just_the_first(monkeypatch, caps
 
 # ── Other settings ────────────────────────────────────────────────────────────
 
+
 def test_database_url_is_assembled_from_parts(monkeypatch):
     cfg = _reload_with(
         monkeypatch,
-        DB_USER="quant", DB_PASSWORD="pw", DB_HOST="db.example.com",
-        DB_PORT="6543", DB_NAME="flow",
+        DB_USER="quant",
+        DB_PASSWORD="pw",
+        DB_HOST="db.example.com",
+        DB_PORT="6543",
+        DB_NAME="flow",
     )
     assert cfg.DATABASE_URL == "postgresql://quant:pw@db.example.com:6543/flow"
 

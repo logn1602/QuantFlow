@@ -20,9 +20,9 @@ Usage:
     python indicators.py --show AAPL      # print latest indicators for a ticker
 """
 
-import sys
-import os
 import argparse
+import os
+import sys
 
 import pandas as pd
 import ta
@@ -37,6 +37,7 @@ logger = get_logger("indicators")
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
+
 
 def load_prices(ticker: str, source: str = "yfinance") -> pd.DataFrame:
     """
@@ -67,6 +68,7 @@ def load_prices(ticker: str, source: str = "yfinance") -> pd.DataFrame:
 
 # ── Indicator computation ─────────────────────────────────────────────────────
 
+
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute RSI, MACD, and Bollinger Bands on a price DataFrame.
@@ -74,7 +76,9 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     Returns DataFrame with indicator columns added.
     """
     if len(df) < 26:
-        logger.warning(f"Not enough rows ({len(df)}) to compute indicators. Need at least 26.")
+        logger.warning(
+            f"Not enough rows ({len(df)}) to compute indicators. Need at least 26."
+        )
         return pd.DataFrame()
 
     result = df.copy()
@@ -82,9 +86,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ── RSI (14-period) ──────────────────────────────────────────────────────
     # > 70 = overbought (potential sell signal)
     # < 30 = oversold  (potential buy signal)
-    result["rsi_14"] = ta.momentum.RSIIndicator(
-        close=df["close"], window=14
-    ).rsi()
+    result["rsi_14"] = ta.momentum.RSIIndicator(close=df["close"], window=14).rsi()
 
     # ── MACD (12, 26, 9) ────────────────────────────────────────────────────
     # MACD crossing above signal = bullish
@@ -95,19 +97,17 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         window_fast=12,
         window_sign=9,
     )
-    result["macd"]        = macd.macd()
+    result["macd"] = macd.macd()
     result["macd_signal"] = macd.macd_signal()
-    result["macd_hist"]   = macd.macd_diff()
+    result["macd_hist"] = macd.macd_diff()
 
     # ── Bollinger Bands (20-period, 2 std devs) ─────────────────────────────
     # Price near upper band = overbought
     # Price near lower band = oversold
-    bb = ta.volatility.BollingerBands(
-        close=df["close"], window=20, window_dev=2
-    )
-    result["bb_upper"]  = bb.bollinger_hband()
+    bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
+    result["bb_upper"] = bb.bollinger_hband()
     result["bb_middle"] = bb.bollinger_mavg()
-    result["bb_lower"]  = bb.bollinger_lband()
+    result["bb_lower"] = bb.bollinger_lband()
 
     # Drop rows where all indicators are NaN (warm-up period)
     indicator_cols = ["rsi_14", "macd", "bb_upper"]
@@ -117,6 +117,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Database write ────────────────────────────────────────────────────────────
+
 
 def save_indicators(df: pd.DataFrame, ticker: str) -> int:
     """
@@ -129,8 +130,6 @@ def save_indicators(df: pd.DataFrame, ticker: str) -> int:
 
     engine = get_engine()
     inserted = 0
-
-    cols = ["rsi_14", "macd", "macd_signal", "macd_hist", "bb_upper", "bb_middle", "bb_lower"]
 
     with engine.begin() as conn:
         for ts, row in df.iterrows():
@@ -153,16 +152,30 @@ def save_indicators(df: pd.DataFrame, ticker: str) -> int:
                             bb_lower    = EXCLUDED.bb_lower
                     """),
                     {
-                        "ticker":      ticker,
-                        "ts":          ts,
-                        "rsi_14":      round(float(row["rsi_14"]),   4) if pd.notna(row["rsi_14"])   else None,
-                        "macd":        round(float(row["macd"]),      6) if pd.notna(row["macd"])      else None,
-                        "macd_signal": round(float(row["macd_signal"]),6) if pd.notna(row["macd_signal"]) else None,
-                        "macd_hist":   round(float(row["macd_hist"]), 6) if pd.notna(row["macd_hist"]) else None,
-                        "bb_upper":    round(float(row["bb_upper"]),  4) if pd.notna(row["bb_upper"])  else None,
-                        "bb_middle":   round(float(row["bb_middle"]), 4) if pd.notna(row["bb_middle"]) else None,
-                        "bb_lower":    round(float(row["bb_lower"]),  4) if pd.notna(row["bb_lower"])  else None,
-                    }
+                        "ticker": ticker,
+                        "ts": ts,
+                        "rsi_14": round(float(row["rsi_14"]), 4)
+                        if pd.notna(row["rsi_14"])
+                        else None,
+                        "macd": round(float(row["macd"]), 6)
+                        if pd.notna(row["macd"])
+                        else None,
+                        "macd_signal": round(float(row["macd_signal"]), 6)
+                        if pd.notna(row["macd_signal"])
+                        else None,
+                        "macd_hist": round(float(row["macd_hist"]), 6)
+                        if pd.notna(row["macd_hist"])
+                        else None,
+                        "bb_upper": round(float(row["bb_upper"]), 4)
+                        if pd.notna(row["bb_upper"])
+                        else None,
+                        "bb_middle": round(float(row["bb_middle"]), 4)
+                        if pd.notna(row["bb_middle"])
+                        else None,
+                        "bb_lower": round(float(row["bb_lower"]), 4)
+                        if pd.notna(row["bb_lower"])
+                        else None,
+                    },
                 )
                 inserted += 1
             except Exception as e:
@@ -173,7 +186,8 @@ def save_indicators(df: pd.DataFrame, ticker: str) -> int:
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
-def run(tickers: list[str] = None) -> dict:
+
+def run(tickers: list[str] | None = None) -> dict:
     """
     Full pipeline: load → compute → save for each ticker.
     Returns dict of {ticker: rows_inserted}.
@@ -223,12 +237,14 @@ def show_latest(ticker: str, n: int = 10):
         df = pd.read_sql(query, conn, params={"ticker": ticker, "n": n})
 
     if df.empty:
-        print(f"No indicators found for {ticker}. Run: python indicators.py --ticker {ticker}")
+        print(
+            f"No indicators found for {ticker}. Run: python indicators.py --ticker {ticker}"
+        )
         return
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"  Latest {n} indicator rows for {ticker}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     print(df.to_string(index=False))
 
     # Quick signal interpretation
@@ -254,9 +270,13 @@ def show_latest(ticker: str, n: int = 10):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compute technical indicators")
-    parser.add_argument("--ticker", type=str, help="Single ticker to compute (e.g. AAPL)")
-    parser.add_argument("--show",   type=str, help="Print latest indicators for a ticker")
-    parser.add_argument("--rows",   type=int, default=10, help="Number of rows to show (default: 10)")
+    parser.add_argument(
+        "--ticker", type=str, help="Single ticker to compute (e.g. AAPL)"
+    )
+    parser.add_argument("--show", type=str, help="Print latest indicators for a ticker")
+    parser.add_argument(
+        "--rows", type=int, default=10, help="Number of rows to show (default: 10)"
+    )
     args = parser.parse_args()
 
     if args.show:
