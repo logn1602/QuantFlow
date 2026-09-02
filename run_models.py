@@ -24,11 +24,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from sqlalchemy import text
 
-from db.connection import get_engine
 from quantflow import config
 from quantflow.config import TICKERS
+from quantflow.db.forecasts import clear_forecasts as db_clear_forecasts
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("run_models")
@@ -37,10 +36,7 @@ logger = get_logger("run_models")
 def clear_forecasts(tickers: list[str] | None = None):
     """Clear existing forecasts so old data doesn't pollute new runs."""
     tickers = tickers or TICKERS
-    engine = get_engine()
-    with engine.begin() as conn:
-        for ticker in tickers:
-            conn.execute(text("DELETE FROM forecasts WHERE ticker = :t"), {"t": ticker})
+    db_clear_forecasts(tickers)
     logger.info(f"Cleared old forecasts for: {', '.join(tickers)}")
 
 

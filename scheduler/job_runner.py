@@ -28,11 +28,11 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import text
 
-from db.connection import get_engine, test_connection
 from quantflow import config
 from quantflow.config import FETCH_INTERVAL_MINUTES, TICKERS
+from quantflow.db.connection import test_connection
+from quantflow.db.forecasts import clear_forecasts as db_clear_forecasts
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -51,16 +51,7 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] | None = None):
     run — missing is better than silently averaged with stale predictions.
     """
     tickers = tickers or TICKERS
-    engine = get_engine()
-    with engine.begin() as conn:
-        result = conn.execute(
-            text("""
-                DELETE FROM forecasts
-                WHERE ticker = ANY(:tickers) AND model = ANY(:models)
-            """),
-            {"tickers": tickers, "models": models},
-        )
-        deleted = result.rowcount
+    deleted = db_clear_forecasts(tickers, models)
     logger.info(
         f"  Cleared {deleted} prior forecast rows for "
         f"{', '.join(models)} across {len(tickers)} tickers"

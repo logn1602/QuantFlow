@@ -55,8 +55,9 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from db.connection import get_engine  # noqa: E402
 from quantflow.config import TICKERS  # noqa: E402
+from quantflow.db.connection import get_engine  # noqa: E402
+from quantflow.db.prices import load_daily_close as load_prices  # noqa: E402
 from quantflow.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("backtest")
@@ -305,7 +306,6 @@ def run_backtest(ticker: str) -> dict:
         out_of_fold_meta_predictions,
         tune_and_train_meta,
     )
-    from forecasting import load_prices
 
     logger.info(f"{'=' * 50}")
     logger.info(f"Backtesting — {ticker}")

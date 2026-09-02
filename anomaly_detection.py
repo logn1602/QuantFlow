@@ -27,8 +27,9 @@ import pandas as pd
 from sqlalchemy import text
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db.connection import get_engine
 from quantflow.config import TICKERS
+from quantflow.db.connection import get_engine
+from quantflow.db.prices import load_close_volume as load_prices
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("anomaly_detection")
@@ -40,30 +41,6 @@ IQR_MULTIPLIER = 1.5  # standard IQR fence multiplier
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
-
-
-def load_prices(ticker: str, source: str = "yfinance") -> pd.DataFrame:
-    """Load daily close prices for a ticker, sorted oldest to newest."""
-    engine = get_engine()
-    query = text("""
-        SELECT ts, close, volume
-        FROM raw_prices
-        WHERE ticker = :ticker
-          AND source = :source
-        ORDER BY ts ASC
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker, "source": source})
-
-    if df.empty:
-        logger.warning(f"No price data found for {ticker}")
-        return df
-
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df = df.set_index("ts")
-    df["close"] = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
-    return df
 
 
 # ── Anomaly detection ─────────────────────────────────────────────────────────

@@ -11,14 +11,9 @@ Metric persistence is best-effort by design: a failure to save a metric
 must never take down a model run.
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from sqlalchemy import text
 
-from db.connection import get_engine
+from quantflow.db.connection import get_engine
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)

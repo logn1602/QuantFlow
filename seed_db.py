@@ -13,10 +13,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from db.connection import test_connection
 from ingestion.alpha_vantage_fetcher import fetch_daily
 from ingestion.yfinance_fetcher import fetch_historical
 from quantflow.config import TICKERS
+from quantflow.db.connection import test_connection
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("seed_db")

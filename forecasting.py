@@ -38,9 +38,11 @@ import pandas as pd  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db.connection import get_engine  # noqa: E402
-from db.metrics import save_model_metrics  # noqa: E402
 from quantflow.config import TICKERS  # noqa: E402
+from quantflow.db.connection import get_engine  # noqa: E402
+from quantflow.db.forecasts import save_forecasts  # noqa: E402
+from quantflow.db.metrics import save_model_metrics  # noqa: E402
+from quantflow.db.prices import load_daily_close as load_prices  # noqa: E402
 from quantflow.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("forecasting")
@@ -52,28 +54,6 @@ MLFLOW_EXP = "stock_forecasting"
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
-
-
-def load_prices(ticker: str, source: str = "yfinance") -> pd.DataFrame:
-    """Load daily close prices sorted oldest to newest. Strips timestamp."""
-    engine = get_engine()
-    query = text("""
-        SELECT ts::date AS ds, close AS y
-        FROM raw_prices
-        WHERE ticker = :ticker AND source = :source
-        ORDER BY ts ASC
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker, "source": source})
-
-    if df.empty:
-        logger.warning(f"No price data for {ticker}")
-        return df
-
-    df["ds"] = pd.to_datetime(df["ds"]).dt.normalize()
-    df["y"] = df["y"].astype(float)
-    df = df.drop_duplicates(subset="ds").sort_values("ds").reset_index(drop=True)
-    return df
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -250,49 +230,6 @@ def _log_mlflow(ticker: str, model_name: str, metrics: dict, forecast_df: pd.Dat
 
 
 # ── Database write ────────────────────────────────────────────────────────────
-
-
-def save_forecasts(df: pd.DataFrame) -> int:
-    """Upsert forecast rows. Returns number of rows inserted."""
-    if df.empty:
-        return 0
-
-    engine = get_engine()
-    inserted = 0
-    run_at = pd.Timestamp.now()
-
-    with engine.begin() as conn:
-        for _, row in df.iterrows():
-            try:
-                ds = row["ds"]
-                if isinstance(ds, (pd.Timestamp, np.datetime64)):
-                    ds = pd.Timestamp(ds).date()
-
-                conn.execute(
-                    text("""
-                        INSERT INTO forecasts
-                            (ticker, model, forecast_date, predicted_close,
-                             lower_bound, upper_bound, run_at)
-                        VALUES
-                            (:ticker, :model, :forecast_date, :predicted_close,
-                             :lower_bound, :upper_bound, :run_at)
-                        ON CONFLICT DO NOTHING
-                    """),
-                    {
-                        "ticker": row["ticker"],
-                        "model": row["model"],
-                        "forecast_date": ds,
-                        "predicted_close": round(float(row["predicted_close"]), 4),
-                        "lower_bound": round(float(row["lower_bound"]), 4),
-                        "upper_bound": round(float(row["upper_bound"]), 4),
-                        "run_at": run_at,
-                    },
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped: {e}")
-
-    return inserted
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────

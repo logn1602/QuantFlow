@@ -50,15 +50,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 # The imports below sit after the sys.path bootstrap above and therefore trip
 # E402. Each carries a targeted suppression rather than a config-wide ignore.
 # The src/ layout removes the bootstrap, and these all come out with it.
-from datetime import datetime  # noqa: E402
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from db.connection import get_engine  # noqa: E402
-from db.metrics import save_model_metrics  # noqa: E402
 from quantflow.config import TICKERS  # noqa: E402
+from quantflow.db.connection import get_engine  # noqa: E402
+from quantflow.db.forecasts import save_forecasts  # noqa: E402
+from quantflow.db.metrics import save_model_metrics  # noqa: E402
 from quantflow.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("xgboost_model")
@@ -514,45 +514,6 @@ def generate_forecast(
 
 
 # ── Database write ────────────────────────────────────────────────────────────
-
-
-def save_forecasts(df: pd.DataFrame) -> int:
-    """Save XGBoost/LightGBM forecasts to the forecasts table."""
-    if df.empty:
-        return 0
-
-    engine = get_engine()
-    inserted = 0
-    run_at = datetime.now()
-
-    with engine.begin() as conn:
-        for _, row in df.iterrows():
-            try:
-                conn.execute(
-                    text("""
-                    INSERT INTO forecasts
-                        (ticker, model, forecast_date, predicted_close,
-                         lower_bound, upper_bound, run_at)
-                    VALUES
-                        (:ticker, :model, :forecast_date, :predicted_close,
-                         :lower_bound, :upper_bound, :run_at)
-                    ON CONFLICT DO NOTHING
-                """),
-                    {
-                        "ticker": row["ticker"],
-                        "model": row["model"],
-                        "forecast_date": row["ds"].date(),
-                        "predicted_close": round(float(row["predicted_close"]), 4),
-                        "lower_bound": round(float(row["lower_bound"]), 4),
-                        "upper_bound": round(float(row["upper_bound"]), 4),
-                        "run_at": run_at,
-                    },
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped: {e}")
-
-    return inserted
 
 
 # ── MLflow logging ────────────────────────────────────────────────────────────

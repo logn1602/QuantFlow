@@ -25,9 +25,10 @@ import streamlit as st
 from plotly.subplots import make_subplots
 from sqlalchemy import text
 
-from db.connection import get_engine
-from db.metrics import load_latest_metrics
 from quantflow.config import TICKERS
+from quantflow.db.connection import get_engine
+from quantflow.db.metrics import load_latest_metrics
+from quantflow.db.prices import load_recent_ohlcv as load_prices
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -50,22 +51,6 @@ st.markdown(
 
 
 # ── Data loaders ──────────────────────────────────────────────────────────────
-
-
-@st.cache_data(ttl=300)
-def load_prices(ticker: str, days: int = 180) -> pd.DataFrame:
-    engine = get_engine()
-    query = text("""
-        SELECT ts::date AS date, open, high, low, close, volume
-        FROM raw_prices
-        WHERE ticker = :ticker AND source = 'yfinance'
-          AND ts >= NOW() - INTERVAL '1 day' * :days
-        ORDER BY ts ASC
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker, "days": days})
-    df["date"] = pd.to_datetime(df["date"])
-    return df
 
 
 @st.cache_data(ttl=300)

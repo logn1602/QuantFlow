@@ -29,41 +29,15 @@ import ta
 from sqlalchemy import text
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db.connection import get_engine
 from quantflow.config import TICKERS
+from quantflow.db.connection import get_engine
+from quantflow.db.prices import load_ohlcv as load_prices
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("indicators")
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
-
-
-def load_prices(ticker: str, source: str = "yfinance") -> pd.DataFrame:
-    """
-    Load raw OHLCV data for a ticker from the database.
-    Uses yfinance by default (more history = better indicators).
-    Returns DataFrame sorted oldest → newest.
-    """
-    engine = get_engine()
-    query = text("""
-        SELECT ts, open, high, low, close, volume
-        FROM raw_prices
-        WHERE ticker = :ticker
-          AND source = :source
-        ORDER BY ts ASC
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker, "source": source})
-
-    if df.empty:
-        logger.warning(f"No price data found for {ticker} ({source})")
-        return df
-
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df = df.set_index("ts")
-    df = df[["open", "high", "low", "close", "volume"]].astype(float)
-    return df
 
 
 # ── Indicator computation ─────────────────────────────────────────────────────
