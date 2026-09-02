@@ -6,11 +6,6 @@ Fetches OHLCV data from Yahoo Finance via yfinance.
 - fetch_intraday():   pull today's 15-min candles (run on schedule)
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 import pandas as pd
 import yfinance as yf
 from sqlalchemy import text

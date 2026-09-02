@@ -18,11 +18,7 @@ Usage:
     python scheduler/job_runner.py
 """
 
-import os
 import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -74,7 +70,7 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] | None = None):
 def run_yfinance_job():
     logger.info("--- yFinance intraday job started ---")
     try:
-        from ingestion.yfinance_fetcher import fetch_intraday
+        from quantflow.ingestion.yfinance_fetcher import fetch_intraday
 
         results = fetch_intraday()
         total = sum(results.values())
@@ -86,7 +82,7 @@ def run_yfinance_job():
 def run_alpha_vantage_job():
     logger.info("--- Alpha Vantage intraday job started ---")
     try:
-        from ingestion.alpha_vantage_fetcher import fetch_intraday
+        from quantflow.ingestion.alpha_vantage_fetcher import fetch_intraday
 
         results = fetch_intraday()
         total = sum(results.values())

@@ -42,7 +42,7 @@ setup:
 
 # ── Pipeline stages ───────────────────────────────────────────────────────────
 seed:
-	python seed_db.py
+	python -m quantflow.pipelines.seed
 
 indicators:
 	python -m quantflow.features.indicators
@@ -52,7 +52,7 @@ anomalies:
 
 # Run all 4 models in one command (recommended)
 models:
-	python run_models.py
+	python -m quantflow.pipelines.run_models
 
 # Run individual model families if needed
 forecast:
@@ -77,19 +77,19 @@ test:
 
 # ── Dashboard + scheduler ─────────────────────────────────────────────────────
 dashboard:
-	streamlit run dashboard.py
+	streamlit run src/quantflow/dashboard/app.py
 
 scheduler:
-	python scheduler/job_runner.py
+	python -m quantflow.pipelines.scheduler
 
 # ── Run everything end to end ─────────────────────────────────────────────────
 all:
 	@echo "Running full QuantFlow pipeline..."
-	python seed_db.py
+	python -m quantflow.pipelines.seed
 	python -m quantflow.features.indicators
 	python -m quantflow.features.anomalies
 	python -m quantflow.features.sentiment
-	python run_models.py
+	python -m quantflow.pipelines.run_models
 	python -m quantflow.evaluation.backtest
 	@echo "Pipeline complete. Launch dashboard with: make dashboard"
 

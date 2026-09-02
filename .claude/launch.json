@@ -8,7 +8,7 @@
         "-m",
         "streamlit",
         "run",
-        "dashboard.py",
+        "src/quantflow/dashboard/app.py",
         "--server.port=8501",
         "--server.address=127.0.0.1",
         "--server.headless=true",

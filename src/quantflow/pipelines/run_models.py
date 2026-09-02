@@ -19,11 +19,7 @@ Usage:
 """
 
 import argparse
-import os
 import sys
-
-sys.path.insert(0, os.path.dirname(__file__))
-
 
 from quantflow import config
 from quantflow.config import TICKERS
