@@ -28,6 +28,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
+# Install the package itself. requirements.txt above brings in the third-party
+# dependencies; this makes `quantflow` importable, which the src/ layout needs.
+RUN pip install --no-cache-dir -e . --no-deps
+
 # Create logs directory
 RUN mkdir -p logs
 

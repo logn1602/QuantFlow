@@ -21,14 +21,11 @@ Usage:
 """
 
 import argparse
-import os
-import sys
 
 import pandas as pd
 import ta
 from sqlalchemy import text
 
-sys.path.insert(0, os.path.dirname(__file__))
 from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
 from quantflow.db.prices import load_ohlcv as load_prices

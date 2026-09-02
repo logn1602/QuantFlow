@@ -98,7 +98,7 @@ def run_alpha_vantage_job():
 def run_indicators_job():
     logger.info("--- Indicators job started ---")
     try:
-        from indicators import run as indicators_run
+        from quantflow.features.indicators import run as indicators_run
 
         results = indicators_run()
         total = sum(results.values())
@@ -110,7 +110,7 @@ def run_indicators_job():
 def run_anomaly_job():
     logger.info("--- Anomaly detection job started ---")
     try:
-        from anomaly_detection import run as anomaly_run
+        from quantflow.features.anomalies import run as anomaly_run
 
         results = anomaly_run()
         total = sum(results.values())
@@ -122,7 +122,7 @@ def run_anomaly_job():
 def run_sentiment_job():
     logger.info("--- Sentiment job started ---")
     try:
-        from sentiment import run as sentiment_run
+        from quantflow.features.sentiment import run as sentiment_run
 
         results = sentiment_run()
         total = sum(results.values())

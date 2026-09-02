@@ -45,10 +45,10 @@ seed:
 	python seed_db.py
 
 indicators:
-	python indicators.py
+	python -m quantflow.features.indicators
 
 anomalies:
-	python anomaly_detection.py
+	python -m quantflow.features.anomalies
 
 # Run all 4 models in one command (recommended)
 models:
@@ -68,7 +68,7 @@ backtest:
 	python backtest.py
 
 sentiment:
-	python sentiment.py
+	python -m quantflow.features.sentiment
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # Offline only: no database, no network, no model training.
@@ -86,9 +86,9 @@ scheduler:
 all:
 	@echo "Running full QuantFlow pipeline..."
 	python seed_db.py
-	python indicators.py
-	python anomaly_detection.py
-	python sentiment.py
+	python -m quantflow.features.indicators
+	python -m quantflow.features.anomalies
+	python -m quantflow.features.sentiment
 	python run_models.py
 	python backtest.py
 	@echo "Pipeline complete. Launch dashboard with: make dashboard"

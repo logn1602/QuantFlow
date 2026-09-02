@@ -23,27 +23,22 @@ Usage:
 """
 
 import argparse
-import os
-import sys
 import time
 import warnings
+from datetime import UTC, datetime, timedelta
 
+import feedparser
+import pandas as pd
+from sqlalchemy import text
+
+from quantflow.config import NEWS_API_KEY, TICKERS
+from quantflow.db.connection import get_engine
+from quantflow.utils.logger import get_logger
+
+# Applied after imports rather than before them: nothing imported here
+# warns at import time (transformers is loaded lazily in get_finbert),
+# and an early call is what forced the imports below it to trip E402.
 warnings.filterwarnings("ignore")
-
-sys.path.insert(0, os.path.dirname(__file__))
-
-# The imports below sit after the sys.path bootstrap above and therefore trip
-# E402. Each carries a targeted suppression rather than a config-wide ignore.
-# The src/ layout removes the bootstrap, and these all come out with it.
-from datetime import UTC, datetime, timedelta  # noqa: E402
-
-import feedparser  # noqa: E402
-import pandas as pd  # noqa: E402
-from sqlalchemy import text  # noqa: E402
-
-from quantflow.config import NEWS_API_KEY, TICKERS  # noqa: E402
-from quantflow.db.connection import get_engine  # noqa: E402
-from quantflow.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("sentiment")
 
