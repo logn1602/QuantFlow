@@ -18,9 +18,9 @@ import pandas as pd
 import requests
 from sqlalchemy import text
 
-from config import ALPHA_VANTAGE_API_KEY, TICKERS
 from db.connection import get_engine
-from utils.logger import get_logger
+from quantflow.config import ALPHA_VANTAGE_API_KEY, TICKERS
+from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

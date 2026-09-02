@@ -47,7 +47,12 @@ FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", 15))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+# Anchored to the working directory, not to this file. Under the old flat
+# layout os.path.dirname(__file__) was the repo root; under src/ it would be
+# src/quantflow/logs, which silently moves the log file inside the package.
+# Every entry point runs from the repo root, so cwd reproduces the previous
+# path exactly, and an installed copy still gets somewhere sensible.
+LOG_DIR = os.getenv("LOG_DIR") or os.path.join(os.getcwd(), "logs")
 
 
 def validate():

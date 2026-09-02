@@ -12,7 +12,7 @@ import importlib
 
 import pytest
 
-import config as config_module
+import quantflow.config as config_module
 
 
 @pytest.fixture(autouse=True)

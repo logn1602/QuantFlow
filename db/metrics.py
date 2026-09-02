@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from sqlalchemy import text
 
 from db.connection import get_engine
-from utils.logger import get_logger
+from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

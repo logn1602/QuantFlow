@@ -15,9 +15,9 @@ import pandas as pd
 import yfinance as yf
 from sqlalchemy import text
 
-from config import TICKERS
 from db.connection import get_engine
-from utils.logger import get_logger
+from quantflow.config import TICKERS
+from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

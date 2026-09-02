@@ -15,8 +15,8 @@ from sqlalchemy.exc import OperationalError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from config import DATABASE_URL, DB_SSLMODE, DB_SSLROOTCERT
-from utils.logger import get_logger
+from quantflow.config import DATABASE_URL, DB_SSLMODE, DB_SSLROOTCERT
+from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

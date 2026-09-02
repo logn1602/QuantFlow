@@ -25,9 +25,9 @@ import streamlit as st
 from plotly.subplots import make_subplots
 from sqlalchemy import text
 
-from config import TICKERS
 from db.connection import get_engine
 from db.metrics import load_latest_metrics
+from quantflow.config import TICKERS
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(

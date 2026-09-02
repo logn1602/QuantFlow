@@ -30,10 +30,10 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
-import config
-from config import FETCH_INTERVAL_MINUTES, TICKERS
 from db.connection import get_engine, test_connection
-from utils.logger import get_logger
+from quantflow import config
+from quantflow.config import FETCH_INTERVAL_MINUTES, TICKERS
+from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

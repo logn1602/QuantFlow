@@ -27,9 +27,9 @@ import pandas as pd
 from sqlalchemy import text
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import TICKERS
 from db.connection import get_engine
-from utils.logger import get_logger
+from quantflow.config import TICKERS
+from quantflow.utils.logger import get_logger
 
 logger = get_logger("anomaly_detection")
 

@@ -38,10 +38,10 @@ import pandas as pd  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import TICKERS  # noqa: E402
 from db.connection import get_engine  # noqa: E402
 from db.metrics import save_model_metrics  # noqa: E402
-from utils.logger import get_logger  # noqa: E402
+from quantflow.config import TICKERS  # noqa: E402
+from quantflow.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("forecasting")
 

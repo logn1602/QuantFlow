@@ -9,7 +9,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-from config import LOG_DIR, LOG_LEVEL
+from quantflow.config import LOG_DIR, LOG_LEVEL
 
 
 def get_logger(name: str) -> logging.Logger:

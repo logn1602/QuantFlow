@@ -67,11 +67,15 @@ dev = [
 Homepage = "https://github.com/logn1602/QuantFlow"
 Demo     = "https://quantflow-analytics.streamlit.app"
 
-# Flat module layout with no installable package yet — uv installs the
-# dependencies but does not try to build QuantFlow itself. Flip to a real
-# package when the src/ layout lands.
-[tool.uv]
-package = false
+[build-system]
+requires      = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# src/ layout. Installing the package (editable, via uv sync) is what lets every
+# module do `from quantflow.config import TICKERS` instead of mutating sys.path
+# at import time, which is what the previous flat layout required in 15 files.
+[tool.setuptools.packages.find]
+where = ["src"]
 
 
 # ── Ruff ──────────────────────────────────────────────────────────────────────
@@ -106,7 +110,7 @@ ignore = [
 "tests/*" = ["S101"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["config", "db", "ingestion", "scheduler", "utils"]
+known-first-party = ["quantflow"]
 
 
 # ── mypy ──────────────────────────────────────────────────────────────────────
@@ -165,7 +169,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["."]
+source = ["src/quantflow"]
 omit   = [
     "venv-311/*",
     ".venv/*",
