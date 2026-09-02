@@ -1,5 +1,9 @@
 # QuantFlow dependencies
 #
+# NOTE: pyproject.toml is the source of truth. This file is kept in sync by
+# hand because the Dockerfile and .github/workflows/daily_refresh.yml both
+# install with `pip install -r requirements.txt`. Change both or neither.
+#
 # Policy: `>=` floors are set at the versions verified working in the project
 # venv (Python 3.11.9). Floors stop silent downward drift — a `pip install` of
 # one package once resolved pandas back to 1.5.3, which segfaulted LightGBM's
@@ -50,7 +54,6 @@ streamlit>=1.61.0         # dashboard.py uses st.divider(), added in 1.23
 plotly>=6.9.0
 
 # ML ensemble
-scikit-learn>=1.9.0
 scipy>=1.17.1             # direct import: ensemble.py uses scipy.optimize.nnls
 xgboost>=3.2.0
 lightgbm>=4.7.0
