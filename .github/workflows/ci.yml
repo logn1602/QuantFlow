@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'chore/**', 'refactor/**']
+  pull_request:
+    branches: [main]
+
+# Nothing here writes to the repo. gitleaks needs full history, granted per-job.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # config.py reads these at import time, and every source module imports it.
+  # Dummy values keep lint/typecheck/test hermetic: the offline suite never
+  # opens a connection, but the module-level DATABASE_URL still has to build.
+  DB_PASSWORD: ci-not-a-real-password
+  TICKERS: AAPL,MSFT
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # Version must match the ruff pin in .pre-commit-config.yaml and the
+      # floor in pyproject.toml [dev]. Bump all three together.
+      - name: ruff check
+        run: uvx ruff@0.16.5 check --output-format=github .
+      - name: ruff format --check
+        run: uvx ruff@0.16.5 format --check .
+
+  typecheck:
+    name: Typecheck (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+      - name: mypy
+        run: uv run mypy
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+      # Excludes the eval and integration markers: those need a seeded database
+      # and two years of price history, neither of which exists on a runner.
+      - name: pytest
+        run: uv run pytest -m "not eval and not integration" --cov --cov-report=term-missing
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks scans history, not just the tip
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

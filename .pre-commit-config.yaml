@@ -1,0 +1,67 @@
+# QuantFlow pre-commit hooks
+#
+# Install once:  uv run pre-commit install
+# Run manually:  uv run pre-commit run --all-files
+#
+# Ruff and mypy are pinned to the same versions as the [dev] extra in
+# pyproject.toml. When you bump one, bump the other — a drift between them
+# means CI and your local commit disagree about what is an error.
+
+default_language_version:
+  python: python3.11
+
+repos:
+  # ── Hygiene ─────────────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'          # trailing double-space is a hard break in Markdown
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ['--maxkb=500']     # mlflow.db reached 1.2 MB before it was untracked
+        exclude: '^uv\.lock$'    # a lockfile is legitimately large, and it is text
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # ── Lint + format ───────────────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.5
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ── Types ───────────────────────────────────────────────────────────────────
+  # A local hook, not mirrors-mypy. mirrors-mypy builds its own isolated venv,
+  # so unless every runtime dependency is duplicated into
+  # additional_dependencies it reports "cannot find module numpy/pandas/
+  # sqlalchemy" — 47 phantom errors that say nothing about this code. Running
+  # mypy out of the project environment via uv gives it the real packages and
+  # matches exactly what CI does.
+  #
+  # A real commit gate: the baseline is clean, so any new type error is one this
+  # commit introduced. Source roots come from pyproject (src, tests, scripts) —
+  # passing `.` makes mypy walk the virtualenvs as source and then fail to
+  # resolve sqlalchemy, numpy and requests, which all ship py.typed.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+  # ── Secrets ─────────────────────────────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks

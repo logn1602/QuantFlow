@@ -1,0 +1,311 @@
+"""
+anomaly_detection.py
+--------------------
+Phase 3 — Anomaly Detection Engine
+
+Detects unusual price movements using two methods:
+  1. Z-Score       : How many standard deviations from the rolling mean
+  2. IQR Method    : Flags prices outside 1.5x the interquartile range
+
+Flags are written to the anomalies table with:
+  - The date and closing price
+  - The Z-score at that point
+  - Flag type: 'HIGH' (spike up) or 'LOW' (spike down)
+
+Usage:
+    python anomaly_detection.py               # run for all tickers
+    python anomaly_detection.py --ticker TSLA # run for one ticker
+    python anomaly_detection.py --show TSLA   # print anomalies for a ticker
+    python anomaly_detection.py --summary     # show anomaly counts per ticker
+"""
+
+import argparse
+
+import pandas as pd
+from sqlalchemy import text
+
+from quantflow.config import TICKERS
+from quantflow.db.connection import get_engine
+from quantflow.db.prices import load_close_volume as load_prices
+from quantflow.utils.logger import get_logger
+
+logger = get_logger("anomaly_detection")
+
+# ── Config ────────────────────────────────────────────────────────────────────
+ZSCORE_WINDOW = 30  # rolling window for mean/std calculation (trading days)
+ZSCORE_THRESHOLD = 2.0  # flag if |z-score| exceeds this value
+IQR_MULTIPLIER = 1.5  # standard IQR fence multiplier
+
+
+# ── Data loading ──────────────────────────────────────────────────────────────
+
+
+# ── Anomaly detection ─────────────────────────────────────────────────────────
+
+
+def detect_zscore_anomalies(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """
+    Rolling Z-Score anomaly detection on daily close prices.
+
+    Z = (price - rolling_mean) / rolling_std
+
+    A Z-score > 2.0 means the price is more than 2 standard deviations
+    above the recent average — statistically unusual (~5% of trading days).
+
+    Returns DataFrame of flagged rows only.
+    """
+    if len(df) < ZSCORE_WINDOW:
+        logger.warning(f"{ticker}: Not enough rows for Z-score (need {ZSCORE_WINDOW})")
+        return pd.DataFrame()
+
+    result = df.copy()
+
+    # Rolling mean and std over ZSCORE_WINDOW days
+    result["rolling_mean"] = result["close"].rolling(window=ZSCORE_WINDOW).mean()
+    result["rolling_std"] = result["close"].rolling(window=ZSCORE_WINDOW).std()
+
+    # Compute Z-score
+    result["zscore"] = (result["close"] - result["rolling_mean"]) / result[
+        "rolling_std"
+    ]
+
+    # Drop warm-up rows where rolling stats aren't ready
+    result = result.dropna(subset=["zscore"])
+
+    # Flag anomalies
+    anomalies = result[result["zscore"].abs() >= ZSCORE_THRESHOLD].copy()
+    anomalies["flag"] = anomalies["zscore"].apply(lambda z: "HIGH" if z > 0 else "LOW")
+    anomalies["ticker"] = ticker
+
+    return anomalies[["ticker", "close", "zscore", "flag"]]
+
+
+def detect_iqr_anomalies(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """
+    IQR-based anomaly detection on daily returns (% change).
+
+    Catches sudden large moves regardless of the price level —
+    better for catching single-day crash/spike events.
+
+    Returns DataFrame of flagged rows only.
+    """
+    result = df.copy()
+
+    # Daily return as percentage
+    result["daily_return"] = result["close"].pct_change() * 100
+    result = result.dropna(subset=["daily_return"])
+
+    # IQR fences
+    Q1 = result["daily_return"].quantile(0.25)
+    Q3 = result["daily_return"].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_fence = Q1 - IQR_MULTIPLIER * IQR
+    upper_fence = Q3 + IQR_MULTIPLIER * IQR
+
+    anomalies = result[
+        (result["daily_return"] < lower_fence) | (result["daily_return"] > upper_fence)
+    ].copy()
+
+    anomalies["flag"] = anomalies["daily_return"].apply(
+        lambda r: "HIGH" if r > 0 else "LOW"
+    )
+    anomalies["zscore"] = (
+        anomalies["daily_return"] - result["daily_return"].mean()
+    ) / result["daily_return"].std()
+    anomalies["ticker"] = ticker
+
+    return anomalies[["ticker", "close", "zscore", "flag"]]
+
+
+# ── Database write ────────────────────────────────────────────────────────────
+
+
+def save_anomalies(df: pd.DataFrame) -> int:
+    """
+    Replace the stored anomaly flags for every ticker present in df.
+    Returns number of rows inserted.
+
+    Why replace rather than append: each run recomputes the full series from
+    scratch, and both detectors are history-dependent — the rolling Z-score
+    window and the IQR fences shift as new prices arrive — so re-running
+    produces a slightly different zscore for the same timestamp. The newest
+    estimate is the one computed from the most data, so it wins.
+
+    This deliberately does not depend on a UNIQUE (ticker, ts) constraint.
+    The live table carries only PRIMARY KEY (id): it was created before the
+    UNIQUE clause was added to db/schema.sql, and CREATE TABLE IF NOT EXISTS
+    cannot retrofit a constraint. The previous `ON CONFLICT DO NOTHING` had no
+    unique index to detect, so it never fired and every run appended another
+    full copy of the flags. See db/migrations/001_dedupe_anomalies.sql.
+
+    The delete and the inserts share one transaction, so a failure part-way
+    rolls back the delete too: the table is either fully replaced or left
+    exactly as it was, never half-written.
+    """
+    if df.empty:
+        return 0
+
+    engine = get_engine()
+    inserted = 0
+    tickers = sorted({str(t) for t in df["ticker"]})
+
+    with engine.begin() as conn:
+        deleted = conn.execute(
+            text("DELETE FROM anomalies WHERE ticker = ANY(:tickers)"),
+            {"tickers": tickers},
+        ).rowcount
+        if deleted:
+            logger.info(
+                f"  Cleared {deleted} prior anomaly rows for {', '.join(tickers)}"
+            )
+
+        for ts, row in df.iterrows():
+            conn.execute(
+                text("""
+                    INSERT INTO anomalies
+                        (ticker, ts, close, zscore, flag)
+                    VALUES
+                        (:ticker, :ts, :close, :zscore, :flag)
+                    ON CONFLICT DO NOTHING
+                """),
+                {
+                    "ticker": row["ticker"],
+                    "ts": ts,
+                    "close": round(float(row["close"]), 4),
+                    "zscore": round(float(row["zscore"]), 4),
+                    "flag": row["flag"],
+                },
+            )
+            inserted += 1
+
+    return inserted
+
+
+# ── Display helpers ───────────────────────────────────────────────────────────
+
+
+def show_anomalies(ticker: str, n: int = 15):
+    """Print the most recent anomaly flags for a ticker."""
+    engine = get_engine()
+    query = text("""
+        SELECT
+            DATE(ts)               AS date,
+            ROUND(close::numeric, 2)  AS close,
+            ROUND(zscore::numeric, 3) AS zscore,
+            flag
+        FROM anomalies
+        WHERE ticker = :ticker
+        ORDER BY ts DESC
+        LIMIT :n
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn, params={"ticker": ticker, "n": n})
+
+    if df.empty:
+        print(f"No anomalies found for {ticker}.")
+        return
+
+    # Color coding in terminal
+    high_count = len(df[df["flag"] == "HIGH"])
+    low_count = len(df[df["flag"] == "LOW"])
+
+    print(f"\n{'=' * 60}")
+    print(f"  Anomaly flags for {ticker} (latest {n})")
+    print(f"  HIGH spikes: {high_count}  |  LOW crashes: {low_count}")
+    print(f"{'=' * 60}")
+    print(df.to_string(index=False))
+    print()
+
+
+def show_summary():
+    """Print anomaly counts per ticker."""
+    engine = get_engine()
+    query = text("""
+        SELECT
+            ticker,
+            COUNT(*) FILTER (WHERE flag = 'HIGH') AS spikes,
+            COUNT(*) FILTER (WHERE flag = 'LOW')  AS crashes,
+            COUNT(*)                               AS total,
+            ROUND(MAX(ABS(zscore))::numeric, 2)   AS max_zscore,
+            DATE(MAX(ts))                          AS last_anomaly
+        FROM anomalies
+        GROUP BY ticker
+        ORDER BY total DESC
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+
+    if df.empty:
+        print("No anomalies in database yet. Run: python anomaly_detection.py")
+        return
+
+    print(f"\n{'=' * 65}")
+    print("  Anomaly Summary — all tickers")
+    print(f"{'=' * 65}")
+    print(df.to_string(index=False))
+    print()
+
+
+# ── Main pipeline ─────────────────────────────────────────────────────────────
+
+
+def run(tickers: list[str] | None = None) -> dict:
+    """
+    Full pipeline: detect anomalies using both methods, merge, save.
+    Returns dict of {ticker: rows_inserted}.
+    """
+    tickers = tickers or TICKERS
+    results = {}
+
+    for ticker in tickers:
+        logger.info(f"Detecting anomalies for {ticker}...")
+
+        df = load_prices(ticker)
+        if df.empty:
+            results[ticker] = 0
+            continue
+
+        # Run both detection methods
+        zscore_anomalies = detect_zscore_anomalies(df, ticker)
+        iqr_anomalies = detect_iqr_anomalies(df, ticker)
+
+        # Merge and deduplicate by timestamp
+        combined = pd.concat([zscore_anomalies, iqr_anomalies])
+        combined = combined[~combined.index.duplicated(keep="first")]
+        combined = combined.sort_index()
+
+        n = save_anomalies(combined)
+        results[ticker] = n
+        logger.info(f"  {ticker}: {n} anomalies flagged")
+
+    return results
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Anomaly detection engine")
+    parser.add_argument("--ticker", type=str, help="Single ticker (e.g. TSLA)")
+    parser.add_argument("--show", type=str, help="Print anomalies for a ticker")
+    parser.add_argument(
+        "--summary", action="store_true", help="Show anomaly counts per ticker"
+    )
+    parser.add_argument(
+        "--rows", type=int, default=15, help="Rows to display (default: 15)"
+    )
+    args = parser.parse_args()
+
+    if args.summary:
+        show_summary()
+    elif args.show:
+        show_anomalies(args.show.upper(), n=args.rows)
+    elif args.ticker:
+        results = run([args.ticker.upper()])
+        print(f"\nDone: {results}")
+    else:
+        logger.info("Running anomaly detection for all tickers...")
+        results = run()
+        total = sum(results.values())
+        logger.info(f"Complete. Total anomalies flagged: {total}")
+        for ticker, n in results.items():
+            print(f"  {ticker}: {n} anomalies")
