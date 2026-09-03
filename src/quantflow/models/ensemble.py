@@ -280,16 +280,27 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
     eval_days = len(oof_actuals)
     warmup = len(stacked_df) - eval_days
 
+    base_mapes: dict[str, float | None]
+    best_base: float | None
+    ens_mape: float | None
+    improvement: float | None
+
     if eval_days > 0:
         # Base models MUST be scored on the same window as the OOF ensemble.
-        base_mapes = {
+        # Computed into concrete floats first: the outer variables are optional
+        # because the else-branch has nothing to report, but nothing in here is.
+        scored = {
             m: round(_mape(oof_actuals, stacked_df[m].values[warmup:]), 2)
             for m in feature_cols
         }
-        best_base = min(base_mapes.values())
-        ens_mape = round(_mape(oof_actuals, oof_preds), 2)
+        best = min(scored.values())
+        ensemble_score = round(_mape(oof_actuals, oof_preds), 2)
+
+        base_mapes = dict(scored)
+        best_base = best
+        ens_mape = ensemble_score
         improvement = (
-            round((best_base - ens_mape) / best_base * 100, 2) if best_base > 0 else 0.0
+            round((best - ensemble_score) / best * 100, 2) if best > 0 else 0.0
         )
     else:
         base_mapes = dict.fromkeys(feature_cols)
@@ -307,7 +318,7 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
             f"{m}: {w:.3f}" for m, w in zip(feature_cols, weights, strict=False)
         )
     )
-    if eval_days > 0:
+    if improvement is not None:
         verdict = "beats" if improvement > 0 else "does NOT beat"
         logger.info(
             f"  Out-of-fold over {eval_days} days: ensemble {ens_mape}% "

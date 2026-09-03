@@ -813,11 +813,11 @@ with tab6:
         # ── Cumulative return chart for selected ticker ────────────────────────
         bt_series = load_backtest_series(ticker)
         if bt_series:
-            days = list(range(len(bt_series["daily_values"])))
+            day_indices = list(range(len(bt_series["daily_values"])))
             fig_bt = go.Figure()
             fig_bt.add_trace(
                 go.Scatter(
-                    x=days,
+                    x=day_indices,
                     y=bt_series["daily_values"],
                     name="Ensemble Strategy",
                     line={"color": "#ffd700", "width": 3},
@@ -825,7 +825,7 @@ with tab6:
             )
             fig_bt.add_trace(
                 go.Scatter(
-                    x=days,
+                    x=day_indices,
                     y=bt_series["benchmark_values"],
                     name="Buy & Hold",
                     line={"color": "#ffffff", "width": 2, "dash": "dash"},
@@ -877,7 +877,7 @@ with tab6:
 
         # ── Summary table — all tickers ───────────────────────────────────────
         st.subheader("All Tickers — Performance Summary")
-        display = bt_summary[
+        summary_table = bt_summary[
             [
                 "ticker",
                 "total_return",
@@ -890,7 +890,7 @@ with tab6:
                 "alpha",
             ]
         ].copy()
-        display.columns = [
+        summary_table.columns = [
             "Ticker",
             "Return %",
             "Ann. Return %",
@@ -903,11 +903,22 @@ with tab6:
         ]
 
         # Format numeric columns cleanly
-        for col in ["Return %", "Ann. Return %", "Max DD %", "Benchmark %", "Alpha %"]:
-            display[col] = display[col].map(lambda x: f"{x:+.2f}%")
-        display["Sharpe"] = display["Sharpe"].map(lambda x: f"{x:.3f}")
-        display["Win Rate %"] = display["Win Rate %"].map(lambda x: f"{x:.1f}%")
-        display["Trades"] = display["Trades"].astype(int)
+        percent_columns = [
+            "Return %",
+            "Ann. Return %",
+            "Max DD %",
+            "Benchmark %",
+            "Alpha %",
+        ]
+        for column_name in percent_columns:
+            summary_table[column_name] = summary_table[column_name].map(
+                lambda x: f"{x:+.2f}%"
+            )
+        summary_table["Sharpe"] = summary_table["Sharpe"].map(lambda x: f"{x:.3f}")
+        summary_table["Win Rate %"] = summary_table["Win Rate %"].map(
+            lambda x: f"{x:.1f}%"
+        )
+        summary_table["Trades"] = summary_table["Trades"].astype(int)
 
         def color_alpha(val):
             if not isinstance(val, str):
@@ -916,7 +927,7 @@ with tab6:
             return f"color: {color}"
 
         st.dataframe(
-            display.style.applymap(color_alpha, subset=["Alpha %"]),
+            summary_table.style.applymap(color_alpha, subset=["Alpha %"]),
             use_container_width=True,
             hide_index=True,
         )

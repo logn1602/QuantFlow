@@ -50,7 +50,7 @@ jobs:
       - name: Install dev dependencies
         run: uv sync --extra dev
       - name: mypy
-        run: uv run mypy .
+        run: uv run mypy
 
   test:
     name: Tests

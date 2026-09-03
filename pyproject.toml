@@ -117,7 +117,14 @@ known-first-party = ["quantflow"]
 
 [tool.mypy]
 python_version         = "3.11"
-exclude                = '^(venv-311|\.venv|mlruns|mlruns_artifacts|logs)/'
+
+# Explicit source roots rather than `mypy .`. Walking the whole tree pulls the
+# virtualenvs in as *source*, and mypy then prefers those files over the
+# installed distributions — which made it report "cannot find implementation or
+# library stub" for sqlalchemy, numpy and requests, all of which ship py.typed.
+# Excluding the venvs is not enough; they must not be discovered as sources at
+# all. Naming the roots also cuts a full run from minutes to seconds.
+files                  = ["src", "tests", "scripts"]
 warn_unused_configs    = true
 warn_redundant_casts   = true
 warn_unused_ignores    = true
@@ -130,24 +137,26 @@ ignore_missing_imports = false
 check_untyped_defs     = false
 disallow_untyped_defs  = false
 
-# Third-party packages that ship no type information. Listed explicitly rather
-# than setting a global ignore_missing_imports, so a genuinely missing stub for
-# a typed package still surfaces.
+# The dependencies that ship no type information. This list is exactly what
+# mypy asks for and no more — sqlalchemy, numpy, requests, streamlit, mlflow,
+# prophet, xgboost, lightgbm and transformers all resolve on their own, and
+# listing them would be reported as an unused override.
+#
+# Stubs exist for several of these (pandas-stubs, scipy-stubs, types-psycopg2) and would be strictly better
+# than suppressing. They are not pulled in here because this is a pandas-heavy
+# codebase and adopting pandas-stubs surfaces a large new error set that wants
+# its own pass rather than being bundled into a typing cleanup.
 [[tool.mypy.overrides]]
 module = [
     "apscheduler.*",
     "feedparser.*",
-    "lightgbm.*",
-    "mlflow.*",
     "newsapi.*",
+    "pandas.*",
     "plotly.*",
-    "prophet.*",
     "psycopg2.*",
+    "scipy.*",
     "statsmodels.*",
-    "streamlit.*",
     "ta.*",
-    "transformers.*",
-    "xgboost.*",
     "yfinance.*",
 ]
 ignore_missing_imports = true

@@ -156,7 +156,7 @@ def analyze_headline(headline: str) -> dict:
         compound = round(score_pos - score_neg, 4)
 
         # Dominant sentiment
-        sentiment = max(scores, key=scores.get)
+        sentiment = max(scores, key=lambda label: scores[label])
 
         return {
             "sentiment": sentiment,
@@ -202,7 +202,7 @@ def analyze_batch(headlines: list[str]) -> list[dict]:
             score_neg = scores.get("negative", 0.0)
             score_neu = scores.get("neutral", 0.0)
             compound = round(score_pos - score_neg, 4)
-            sentiment = max(scores, key=scores.get)
+            sentiment = max(scores, key=lambda label: scores[label])
             output.append(
                 {
                     "sentiment": sentiment,
@@ -239,7 +239,10 @@ def fetch_rss(ticker: str) -> list[dict]:
                 # Parse published date
                 published = None
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published = datetime(*entry.published_parsed[:6], tzinfo=UTC)
+                    year, month, day, hour, minute, second = entry.published_parsed[:6]
+                    published = datetime(
+                        year, month, day, hour, minute, second, tzinfo=UTC
+                    )
                 else:
                     published = datetime.now(UTC)
 

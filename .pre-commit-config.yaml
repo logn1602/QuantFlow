@@ -46,22 +46,19 @@ repos:
   # mypy out of the project environment via uv gives it the real packages and
   # matches exactly what CI does.
   #
-  # stages: [manual] because the current baseline is 43 real errors. Annotating
-  # the API and core modules is a later phase; until that lands, a blocking
-  # hook would make every commit impossible. CI's typecheck job still runs on
-  # every push, so this is not unchecked — it just is not a commit gate yet.
-  # Run it on demand with:  uv run pre-commit run mypy --hook-stage manual
-  # Remove the stages line to make it a gate once the baseline is clean.
+  # A real commit gate: the baseline is clean, so any new type error is one this
+  # commit introduced. Source roots come from pyproject (src, tests, scripts) —
+  # passing `.` makes mypy walk the virtualenvs as source and then fail to
+  # resolve sqlalchemy, numpy and requests, which all ship py.typed.
   - repo: local
     hooks:
       - id: mypy
         name: mypy
-        entry: uv run mypy .
+        entry: uv run mypy
         language: system
         types: [python]
         pass_filenames: false
         require_serial: true
-        stages: [manual]
 
   # ── Secrets ─────────────────────────────────────────────────────────────────
   - repo: https://github.com/gitleaks/gitleaks
