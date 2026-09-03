@@ -137,3 +137,73 @@ def test_numeric_settings_are_coerced_to_int(monkeypatch):
     cfg = _reload_with(monkeypatch, DB_PORT="6543", FETCH_INTERVAL_MINUTES="30")
     assert cfg.DB_PORT == 6543
     assert cfg.FETCH_INTERVAL_MINUTES == 30
+
+
+# ── require_or_exit() ─────────────────────────────────────────────────────────
+#
+# The hard gate. validate() only warns; this is what actually stops a pipeline
+# from starting against a broken .env. It is deliberately narrower than
+# validate(): the API keys are optional at runtime, so treating them as fatal
+# would kill a run that could have completed on the RSS fallback.
+
+
+def test_require_or_exit_passes_when_the_fatal_vars_are_set(monkeypatch):
+    cfg = _reload_with(monkeypatch, DB_PASSWORD="pw", TICKERS="AAPL")
+    cfg.require_or_exit()  # must not raise
+
+
+def test_require_or_exit_rejects_a_missing_db_password(monkeypatch):
+    cfg = _reload_with(monkeypatch, DB_PASSWORD="", TICKERS="AAPL")
+    with pytest.raises(SystemExit) as exc:
+        cfg.require_or_exit()
+    assert exc.value.code == 1
+
+
+def test_require_or_exit_rejects_an_empty_ticker_list(monkeypatch):
+    """An empty list means every loop body is skipped and the pipeline
+    'succeeds' having done nothing."""
+    cfg = _reload_with(monkeypatch, DB_PASSWORD="pw", TICKERS=" , ")
+    with pytest.raises(SystemExit) as exc:
+        cfg.require_or_exit()
+    assert exc.value.code == 1
+
+
+def test_require_or_exit_writes_the_reason_to_stderr(monkeypatch, capsys):
+    cfg = _reload_with(monkeypatch, DB_PASSWORD="", TICKERS="AAPL")
+    with pytest.raises(SystemExit):
+        cfg.require_or_exit()
+    err = capsys.readouterr().err
+    assert "DB_PASSWORD" in err
+    assert ".env" in err
+
+
+def test_require_or_exit_reports_every_fatal_var_not_just_the_first(
+    monkeypatch, capsys
+):
+    cfg = _reload_with(monkeypatch, DB_PASSWORD="", TICKERS=" , ")
+    with pytest.raises(SystemExit):
+        cfg.require_or_exit()
+    err = capsys.readouterr().err
+    assert "DB_PASSWORD" in err
+    assert "TICKERS" in err
+
+
+@pytest.mark.parametrize("optional", ["ALPHA_VANTAGE_API_KEY", "NEWS_API_KEY"])
+def test_require_or_exit_tolerates_missing_api_keys(monkeypatch, optional):
+    """Neither key is fatal. Alpha Vantage is unused by the default ingestion
+    path, and sentiment degrades to the RSS feed when NEWS_API_KEY is absent.
+    Exiting for either would be worse than the missing data."""
+    env = _all_present()
+    env[optional] = ""
+    cfg = _reload_with(monkeypatch, **env)
+    cfg.require_or_exit()  # must not raise
+
+
+def test_require_or_exit_message_is_ascii_only(monkeypatch, capsys):
+    """These lines reach Windows consoles and CI logs where a non-UTF-8 code
+    page turns an em dash into mojibake."""
+    cfg = _reload_with(monkeypatch, DB_PASSWORD="", TICKERS="AAPL")
+    with pytest.raises(SystemExit):
+        cfg.require_or_exit()
+    err = capsys.readouterr().err
+    assert err.isascii(), f"non-ASCII in stderr output: {err!r}"

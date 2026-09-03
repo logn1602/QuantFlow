@@ -183,8 +183,19 @@ def test_no_look_ahead_changing_a_middle_actual_only_moves_later_preds(stacked):
 
 
 def test_oof_mape_is_not_better_than_in_sample_mape(stacked):
-    """In-sample scoring flatters the ensemble. An honest OOF estimate must
-    not come out ahead of it."""
+    """In-sample scoring flatters the ensemble, so an honest out-of-fold
+    estimate should not come out ahead of it.
+
+    Scoped to this fixture on purpose. That relationship is a statistical
+    tendency, not an arithmetic identity: over a 20-day evaluation window the
+    out-of-fold score beats in-sample on roughly 12% of random seeds. This
+    assertion holds for this fixture's seed and is worth keeping as a cheap
+    regression check, but it is not the general property.
+
+    The general property is asserted as an aggregate over 40 seeds in
+    tests/evals/test_ensemble_evaluation.py. Do not promote this one to a
+    parametrized sweep — it will fail.
+    """
     preds, actuals = out_of_fold_meta_predictions(stacked)
     meta = _fit_nnls(stacked[BASE_COLS].values, stacked["actual"].values)
 
