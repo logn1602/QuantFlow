@@ -60,3 +60,8 @@ lightgbm>=4.7.0
 
 # Testing
 pytest>=9.1.1
+
+# Install the quantflow package itself (src/ layout). Streamlit Cloud only runs
+# `pip install -r requirements.txt`, so without this line the dashboard entry
+# point cannot `import quantflow` — src/ never lands on sys.path.
+.
