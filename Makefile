@@ -2,7 +2,7 @@
 # Run any pipeline stage with a single command.
 # Usage: make <target>
 
-.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest dashboard scheduler test all clean clean-dry
+.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest dashboard scheduler test eval all clean clean-dry
 
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
@@ -23,6 +23,7 @@ help:
 	@echo "  make dashboard    Launch Streamlit dashboard"
 	@echo "  make scheduler    Start the live data scheduler"
 	@echo "  make test         Run the offline test suite (no DB needed)"
+	@echo "  make eval         Run the evaluation suite (slower)"
 	@echo "  make all          Run full pipeline end to end"
 	@echo "  make clean        Remove logs and caches (keeps mlflow.db)"
 	@echo "  make clean-dry    Preview what clean would remove"
@@ -30,8 +31,12 @@ help:
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
+# -e . installs the quantflow package itself. Without it every target below
+# fails with ModuleNotFoundError, because they invoke python -m quantflow.*
+# and requirements.txt only brings in third-party dependencies.
 install:
 	pip install -r requirements.txt
+	pip install -e . --no-deps
 
 setup:
 	psql -U postgres -d stock_pipeline -f sql/schema.sql
@@ -73,7 +78,12 @@ sentiment:
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # Offline only: no database, no network, no model training.
 test:
-	pytest -q
+	pytest -m "not eval and not integration"
+
+# Evaluation suite: exercises the full scoring path. Slower, and excluded from
+# `make test` and CI for that reason.
+eval:
+	pytest -m eval
 
 # ── Dashboard + scheduler ─────────────────────────────────────────────────────
 dashboard:
