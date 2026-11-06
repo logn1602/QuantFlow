@@ -89,6 +89,54 @@ and the value printed to the console can disagree in the last digit — which is
 exactly the kind of discrepancy that costs an hour when two dashboards
 disagree and neither is wrong.
 
+### Price data: one row per trading date, stored raw
+
+`raw_prices` holds two kinds of bar: the daily bars seeding writes, and the
+15-minute bars every refresh writes. Everything that wants one row per
+trading date (every model, the indicator and anomaly stages, the dashboard's
+candles) goes through `db.prices.daily_bars`:
+
+- a date with a daily bar uses it;
+- a date with only 15-minute bars gets one bar built from them: first open,
+  highest high, lowest low, last close, summed volume. Each load logs, per
+  ticker, how many dates took this path.
+
+The loaders used to keep each date's first row by timestamp instead. Seeded
+dates were fine, since their midnight daily bar sorts first, but every date
+after the seed had only 15-minute bars, so its "close" was the close of the
+09:30 bar. The daily refresh now also stores Yahoo's daily bar after every
+close, and `python -m quantflow.ingestion.backfill` fills in the dates
+between the seed and that change. Run it with `--dry-run` first; a real run
+prints an undo query that deletes exactly the rows it wrote.
+
+**Prices are stored raw.** Both fetchers request `auto_adjust=False`: bars
+are split-adjusted, as Yahoo serves everything, but not dividend-adjusted.
+Yahoo never dividend-adjusts 15-minute bars, so adjusted daily bars sat on a
+different basis from the 15-minute bars of the same date, and a stored value
+depended on when it was fetched. Three consequences follow:
+
+- Raw prices drop on each ex-dividend date by roughly the dividend, a
+  fraction of a percent per quarter for the dividend payers here (AMZN and
+  TSLA pay none). The models see that as an ordinary down move.
+- Backtest returns exclude dividends, for the strategy and for buy-and-hold
+  alike. The comparison between the two stays like-for-like, but neither
+  figure is a total return.
+- History stored before this change was seeded with `auto_adjust=True`, so
+  it is dividend-adjusted as of the seed date. The bars just before the seed
+  carry an adjustment factor of 1, so that segment joins the raw rows after
+  it without a jump; within it, earlier prices sit slightly below what
+  actually traded. A fresh seed is raw throughout, so a new install's
+  numbers can differ slightly from the live database's.
+
+**Splits are guarded, not absorbed.** Yahoo split-adjusts as of fetch time
+and stored rows are never rewritten, so a split after rows were stored would
+read as a crash. `quantflow.ingestion.split_guard` runs after each daily
+fetch and fails the refresh if any stored daily close differs from Yahoo's
+raw close by more than `SPLIT_GUARD_THRESHOLD` (default 15%; dividend drift
+stays far below it, any split far above). The fix is a scoped rescale of that
+ticker's earlier rows, run by hand, after which the guard passes again by
+itself.
+
 ### SQL confined to `db/`
 
 Every statement in the project lives under `quantflow.db`. `raw_prices` has
