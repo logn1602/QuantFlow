@@ -57,7 +57,8 @@ from quantflow.evaluation.out_of_fold import (
     DEFAULT_WARMUP_DAYS,
     expanding_window_predictions,
 )
-from quantflow.evaluation.splits import HOLDOUT_DAYS
+from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
+from quantflow.models.statistical import prophet_settings
 from quantflow.utils.logger import get_logger
 
 warnings.filterwarnings("ignore")
@@ -86,21 +87,17 @@ def _arima_holdout(price_df: pd.DataFrame) -> np.ndarray:
 
 
 def _prophet_holdout(price_df: pd.DataFrame) -> np.ndarray:
-    """Fit Prophet on train split, return 30-day holdout predictions."""
+    """Fit Prophet on train split, return predictions for the 30 holdout dates.
+
+    Predicted on the holdout's own dates rather than weekday steps, so this
+    column lines up row for row with `actual` across market holidays.
+    """
     from prophet import Prophet
 
-    train = price_df.iloc[:-HOLDOUT_DAYS].copy()
-    model = Prophet(
-        daily_seasonality=False,
-        weekly_seasonality=True,
-        yearly_seasonality=True,
-        changepoint_prior_scale=0.05,
-        interval_width=0.95,
-    )
+    train, holdout = train_holdout_split(price_df, copy=True)
+    model = Prophet(**prophet_settings(train))
     model.fit(train)
-    future = model.make_future_dataframe(periods=HOLDOUT_DAYS, freq="B")
-    forecast = model.predict(future)
-    return forecast["yhat"].iloc[-HOLDOUT_DAYS:].values
+    return model.predict(holdout[["ds"]])["yhat"].to_numpy()
 
 
 def _xgb_lgb_holdout(ticker: str) -> dict:
