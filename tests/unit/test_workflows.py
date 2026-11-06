@@ -35,3 +35,13 @@ def test_daily_refresh_stores_daily_bars_before_any_stage_reads_prices():
         "python -m quantflow.pipelines.run_models",
     )
     assert positions == sorted(positions)
+
+
+def test_the_split_guard_runs_after_the_fetch_and_before_any_stage_reads_prices():
+    positions = _step_order(
+        DAILY_REFRESH,
+        "quantflow.ingestion.yfinance_fetcher --daily",
+        "python -m quantflow.ingestion.split_guard",
+        "python -m quantflow.features.indicators",
+    )
+    assert positions == sorted(positions)

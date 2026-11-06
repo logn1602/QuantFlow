@@ -139,6 +139,27 @@ def test_numeric_settings_are_coerced_to_int(monkeypatch):
     assert cfg.FETCH_INTERVAL_MINUTES == 30
 
 
+def test_split_guard_threshold_is_read_as_a_fraction(monkeypatch):
+    cfg = _reload_with(monkeypatch, SPLIT_GUARD_THRESHOLD="0.2")
+    assert cfg.SPLIT_GUARD_THRESHOLD == 0.2
+
+
+def _reload_with_defaults(monkeypatch, *unset):
+    """Reload config with the given variables absent from the environment
+    and from .env, so the code defaults are what gets read."""
+    import dotenv
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    for key in unset:
+        monkeypatch.delenv(key, raising=False)
+    return importlib.reload(config_module)
+
+
+def test_split_guard_threshold_defaults_to_fifteen_percent(monkeypatch):
+    cfg = _reload_with_defaults(monkeypatch, "SPLIT_GUARD_THRESHOLD")
+    assert cfg.SPLIT_GUARD_THRESHOLD == 0.15
+
+
 # ── require_or_exit() ─────────────────────────────────────────────────────────
 #
 # The hard gate. validate() only warns; this is what actually stops a pipeline

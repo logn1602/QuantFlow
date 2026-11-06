@@ -92,11 +92,14 @@ def run_daily_bars_job():
     """
     logger.info("--- yFinance daily bars job started ---")
     try:
+        from quantflow.ingestion import split_guard
         from quantflow.ingestion.yfinance_fetcher import fetch_historical
 
         results = fetch_historical(period="5d")
         total = sum(results.values())
         logger.info(f"--- Daily bars job done: {total} rows inserted ---")
+        # Raises PriceBasisError on a split; logged below like any job failure.
+        split_guard.run()
     except Exception as e:
         logger.exception(f"Daily bars job failed: {type(e).__name__}: {e}")
 
