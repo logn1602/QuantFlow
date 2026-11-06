@@ -145,54 +145,40 @@ def load_daily_bars(
     return daily_bars(bars, ticker)
 
 
-def load_ohlcv(ticker: str, source: str = "yfinance") -> pd.DataFrame:
-    """Full OHLCV indexed by UTC timestamp, all columns float.
+def _indexed_by_date(daily: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """daily_bars output indexed by each date's 00:00 UTC timestamp.
+
+    Indicators and anomaly flags are stored against that timestamp, the same
+    one daily bars carry, so a date's derived rows line up with its price.
+    """
+    index = pd.DatetimeIndex(daily["date"]).tz_localize("UTC").rename("ts")
+    return daily.set_index(index)[columns]
+
+
+def load_daily_ohlcv(ticker: str, source: str = "yfinance") -> pd.DataFrame:
+    """Daily OHLCV, indexed by date at 00:00 UTC, all columns float.
 
     Used by the indicator engine, which needs every column to compute
-    Bollinger Bands and MACD.
+    Bollinger Bands and MACD. Daily rather than per bar: computed over the
+    raw table, the 14-, 26- and 20-period windows would span hours of 15-min
+    bars on every date after the seed.
     """
-    df = _read(
-        """
-        SELECT ts, open, high, low, close, volume
-        FROM raw_prices
-        WHERE ticker = :ticker AND source = :source
-        ORDER BY ts ASC
-        """,
-        {"ticker": ticker, "source": source},
-        ticker,
-    )
-    if df.empty:
-        return df
-
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df = df.set_index("ts")
-    return df[["open", "high", "low", "close", "volume"]].astype(float)
+    daily = load_daily_bars(ticker, source)
+    if daily.empty:
+        return daily
+    return _indexed_by_date(daily, _PRICE_COLUMNS)
 
 
-def load_close_volume(ticker: str, source: str = "yfinance") -> pd.DataFrame:
-    """Close and volume only, indexed by UTC timestamp.
+def load_daily_close_volume(ticker: str, source: str = "yfinance") -> pd.DataFrame:
+    """Daily close and volume, indexed by date at 00:00 UTC.
 
-    Used by anomaly detection, which scores the close series and needs no
-    other column.
+    Used by anomaly detection, whose 30-row Z-score window is meant to be 30
+    trading days.
     """
-    df = _read(
-        """
-        SELECT ts, close, volume
-        FROM raw_prices
-        WHERE ticker = :ticker AND source = :source
-        ORDER BY ts ASC
-        """,
-        {"ticker": ticker, "source": source},
-        ticker,
-    )
-    if df.empty:
-        return df
-
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df = df.set_index("ts")
-    df["close"] = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
-    return df
+    daily = load_daily_bars(ticker, source)
+    if daily.empty:
+        return daily
+    return _indexed_by_date(daily, ["close", "volume"])
 
 
 def load_daily_close(ticker: str, source: str = "yfinance") -> pd.DataFrame:

@@ -27,11 +27,24 @@ import ta
 from sqlalchemy import text
 
 from quantflow.config import TICKERS
+from quantflow.db.batch import frame_to_rows
 from quantflow.db.connection import get_engine
-from quantflow.db.prices import load_ohlcv as load_prices
+from quantflow.db.indicators import replace_indicators
+from quantflow.db.prices import load_daily_ohlcv as load_prices
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("indicators")
+
+# Stored precision per column; matches the NUMERIC scales in sql/schema.sql.
+_ROUNDING = {
+    "rsi_14": 4,
+    "macd": 6,
+    "macd_signal": 6,
+    "macd_hist": 6,
+    "bb_upper": 4,
+    "bb_middle": 4,
+    "bb_lower": 4,
+}
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -92,67 +105,20 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def save_indicators(df: pd.DataFrame, ticker: str) -> int:
     """
-    Upsert indicator rows into technical_indicators table.
-    Skips duplicates (same ticker + ts).
-    Returns number of rows inserted.
+    Replace the ticker's rows in technical_indicators with df, which is
+    indexed by each trading date's 00:00 UTC timestamp.
+    Returns rows written. A write error raises and leaves the previous rows
+    in place; see db.indicators.replace_indicators.
     """
     if df.empty:
         return 0
 
-    engine = get_engine()
-    inserted = 0
-
-    with engine.begin() as conn:
-        for ts, row in df.iterrows():
-            try:
-                conn.execute(
-                    text("""
-                        INSERT INTO technical_indicators
-                            (ticker, ts, rsi_14, macd, macd_signal, macd_hist,
-                             bb_upper, bb_middle, bb_lower)
-                        VALUES
-                            (:ticker, :ts, :rsi_14, :macd, :macd_signal, :macd_hist,
-                             :bb_upper, :bb_middle, :bb_lower)
-                        ON CONFLICT (ticker, ts) DO UPDATE SET
-                            rsi_14      = EXCLUDED.rsi_14,
-                            macd        = EXCLUDED.macd,
-                            macd_signal = EXCLUDED.macd_signal,
-                            macd_hist   = EXCLUDED.macd_hist,
-                            bb_upper    = EXCLUDED.bb_upper,
-                            bb_middle   = EXCLUDED.bb_middle,
-                            bb_lower    = EXCLUDED.bb_lower
-                    """),
-                    {
-                        "ticker": ticker,
-                        "ts": ts,
-                        "rsi_14": round(float(row["rsi_14"]), 4)
-                        if pd.notna(row["rsi_14"])
-                        else None,
-                        "macd": round(float(row["macd"]), 6)
-                        if pd.notna(row["macd"])
-                        else None,
-                        "macd_signal": round(float(row["macd_signal"]), 6)
-                        if pd.notna(row["macd_signal"])
-                        else None,
-                        "macd_hist": round(float(row["macd_hist"]), 6)
-                        if pd.notna(row["macd_hist"])
-                        else None,
-                        "bb_upper": round(float(row["bb_upper"]), 4)
-                        if pd.notna(row["bb_upper"])
-                        else None,
-                        "bb_middle": round(float(row["bb_middle"]), 4)
-                        if pd.notna(row["bb_middle"])
-                        else None,
-                        "bb_lower": round(float(row["bb_lower"]), 4)
-                        if pd.notna(row["bb_lower"])
-                        else None,
-                    },
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped for {ticker} @ {ts}: {e}")
-
-    return inserted
+    columns = list(_ROUNDING)
+    out = df[columns].astype(float).round(_ROUNDING)
+    out.insert(0, "ts", out.index)
+    out.insert(0, "ticker", ticker)
+    rows = frame_to_rows(out.reset_index(drop=True), ["ticker", "ts", *columns])
+    return replace_indicators(ticker, rows)
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────

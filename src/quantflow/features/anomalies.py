@@ -26,7 +26,7 @@ from sqlalchemy import text
 
 from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
-from quantflow.db.prices import load_close_volume as load_prices
+from quantflow.db.prices import load_daily_close_volume as load_prices
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("anomaly_detection")
