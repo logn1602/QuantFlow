@@ -259,3 +259,24 @@ class PriceBars:
 @pytest.fixture
 def price_bars():
     return PriceBars()
+
+
+@pytest.fixture
+def read_tables(monkeypatch, fake_db):
+    """Serve canned frames to pd.read_sql, picked by the table a query reads.
+
+    Assign frames by table name: read_tables["raw_prices"] = frame. A query
+    against a table with no canned frame fails the test rather than silently
+    returning nothing.
+    """
+    served = {}
+
+    def fake_read_sql(sql, con=None, params=None, **kwargs):
+        query = str(sql)
+        for name, frame in served.items():
+            if re.search(rf"\bFROM\s+{name}\b", query, re.IGNORECASE):
+                return frame.copy()
+        raise AssertionError(f"no canned frame for query:\n{query}")
+
+    monkeypatch.setattr(pd, "read_sql", fake_read_sql)
+    return served

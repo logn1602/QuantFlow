@@ -17,6 +17,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from quantflow.db.connection import get_engine
+from quantflow.db.prices import load_daily_bars
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,26 +27,19 @@ def load_features(ticker: str) -> pd.DataFrame:
     """
     Load and merge all available signals for a ticker:
     prices + technical indicators + anomalies + sentiment
+
+    Prices come from load_daily_bars, the same one-row-per-trading-date
+    series the statistical models read, so every model sees the same close.
     """
+    # Base prices
+    prices = load_daily_bars(ticker)
+    if prices.empty:
+        logger.warning(f"No price data for {ticker}")
+        return pd.DataFrame()
+
     engine = get_engine()
 
     with engine.connect() as conn:
-        # Base prices
-        prices = pd.read_sql(
-            text("""
-            SELECT ts::date AS date, open, high, low, close, volume
-            FROM raw_prices
-            WHERE ticker = :t AND source = 'yfinance'
-            ORDER BY ts ASC
-        """),
-            conn,
-            params={"t": ticker},
-        )
-
-        if prices.empty:
-            logger.warning(f"No price data for {ticker}")
-            return pd.DataFrame()
-
         # Technical indicators
         indicators = pd.read_sql(
             text("""
@@ -88,9 +82,6 @@ def load_features(ticker: str) -> pd.DataFrame:
             conn,
             params={"t": ticker},
         )
-
-    prices["date"] = pd.to_datetime(prices["date"])
-    prices = prices.drop_duplicates("date").sort_values("date").reset_index(drop=True)
 
     indicators["date"] = pd.to_datetime(indicators["date"])
     indicators = indicators.drop_duplicates("date")
