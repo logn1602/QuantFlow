@@ -25,6 +25,7 @@ from sqlalchemy import text
 from quantflow.db.batch import insert_rows
 from quantflow.db.connection import get_engine
 from quantflow.utils.logger import get_logger
+from quantflow.utils.trading_calendar import EXCHANGE_TZ
 
 logger = get_logger(__name__)
 
@@ -39,7 +40,6 @@ _PRICE_COLUMNS = ["open", "high", "low", "close", "volume"]
 # grid, 09:30 to 15:45 New York. Anything off that grid is a daily bar,
 # whichever midnight it was stored at: 00:00 UTC from today's yfinance, or
 # New York midnight from older versions.
-EXCHANGE_TZ = "America/New_York"
 _FIRST_BAR_MINUTE = 9 * 60 + 30
 _LAST_BAR_MINUTE = 15 * 60 + 45
 

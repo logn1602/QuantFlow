@@ -70,14 +70,20 @@ jobs:
           pip-audit --requirement requirements.txt
         continue-on-error: true
 
-      - name: Fetch latest price data
+      - name: Fetch latest 15-min bars
         env:
           # yfinance needs no key. ALPHA_VANTAGE_API_KEY is kept here because
           # this is the ingestion step that would consume it if the Alpha
           # Vantage fetcher were enabled; no step reads it today.
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
-        run: |
-          python -c "from quantflow.ingestion.yfinance_fetcher import fetch_intraday; fetch_intraday()"
+        run: python -m quantflow.ingestion.yfinance_fetcher --intraday
+
+      # The daily bar carries Yahoo's official close and full-day volume; the
+      # loaders only build a day from 15-min bars where no daily bar exists.
+      # 22:30 UTC is after 17:00 New York in both EST and EDT, so today's bar
+      # is final by the time this runs. Five days heals any missed run.
+      - name: Fetch daily bars
+        run: python -m quantflow.ingestion.yfinance_fetcher --daily
 
       - name: Compute technical indicators
         run: python -m quantflow.features.indicators

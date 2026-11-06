@@ -5,6 +5,7 @@ APScheduler job runner. Runs the full QuantFlow pipeline on schedule.
 
 Jobs:
   - yFinance intraday      : every 15 min (market hours)
+  - yFinance daily bars    : daily after the close (5:05 PM ET)
   - Alpha Vantage intraday : every 15 min, offset by 5 min
   - Technical indicators   : every 15 min (after price fetch)
   - Anomaly detection      : every hour
@@ -77,6 +78,27 @@ def run_yfinance_job():
         logger.info(f"--- yFinance job done: {total} rows inserted ---")
     except Exception as e:
         logger.exception(f"yFinance job failed: {type(e).__name__}: {e}")
+
+
+def run_daily_bars_job():
+    """Store each date's official daily bar once the session is final.
+
+    Nothing in the model chain waits for this job. The 4:30 PM model jobs
+    build today's bar from its 15-min bars, which closes within a few
+    hundredths of a percent of the official close, and the next day's runs
+    read the official bar stored here. Making the models wait on it would add
+    one more wall-clock dependency to a scheduler that has no completion
+    signals (Known problem #4 in docs/architecture.md).
+    """
+    logger.info("--- yFinance daily bars job started ---")
+    try:
+        from quantflow.ingestion.yfinance_fetcher import fetch_historical
+
+        results = fetch_historical(period="5d")
+        total = sum(results.values())
+        logger.info(f"--- Daily bars job done: {total} rows inserted ---")
+    except Exception as e:
+        logger.exception(f"Daily bars job failed: {type(e).__name__}: {e}")
 
 
 def run_alpha_vantage_job():
@@ -208,6 +230,15 @@ def start():
         replace_existing=True,
     )
 
+    # ── Daily at 5:05 PM ET: official daily bars ─────────────────────────────
+    # After DAILY_BAR_FINAL_AFTER (5:00 PM ET), so today's bar is stored.
+    scheduler.add_job(
+        run_daily_bars_job,
+        trigger=CronTrigger(hour=17, minute=5, timezone="America/New_York"),
+        id="yfinance_daily",
+        replace_existing=True,
+    )
+
     # Alpha Vantage offset by 5 min to avoid rate limit collision
     av_start = datetime.now() + timedelta(minutes=5)
     scheduler.add_job(
@@ -285,6 +316,7 @@ def start():
 
     logger.info("QuantFlow scheduler started. Jobs:")
     logger.info(f"  Price ingestion  : every {FETCH_INTERVAL_MINUTES} min")
+    logger.info("  Daily bars       : daily at 5:05 PM ET")
     logger.info(f"  Indicators       : every {FETCH_INTERVAL_MINUTES} min")
     logger.info("  Anomaly detection: every 60 min")
     logger.info("  Sentiment        : every 6 hours")
