@@ -1,0 +1,59 @@
+"""tests/unit/test_trading_calendar.py
+
+Covers the NYSE calendar that dates every live forecast.
+
+Forecast dates used to step through weekdays (pd.bdate_range, freq="B"), so a
+7-day forecast made the week of Thanksgiving promised a close for a day the
+market is shut. The holiday lists below are the exchange's published
+full-day closures.
+"""
+
+import pandas as pd
+import pytest
+
+from quantflow.utils.trading_calendar import NYSEHolidayCalendar, next_trading_days
+
+NYSE_2026 = [
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25",
+    "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+]  # fmt: skip
+NYSE_2027 = [
+    "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31",
+    "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("year, expected", [(2026, NYSE_2026), (2027, NYSE_2027)])
+def test_holidays_match_the_published_nyse_schedule(year, expected):
+    holidays = NYSEHolidayCalendar().holidays(f"{year}-01-01", f"{year}-12-31")
+    assert [d.date().isoformat() for d in holidays] == expected
+
+
+def test_a_saturday_new_years_day_is_not_observed_on_the_friday_before():
+    """The exchange stays open on December 31 when January 1 is a Saturday,
+    unlike every other Saturday holiday."""
+    holidays = NYSEHolidayCalendar().holidays("2021-12-01", "2022-01-31")
+    days = [d.date().isoformat() for d in holidays]
+    assert "2021-12-31" not in days
+    assert "2021-12-24" in days  # Christmas on a Saturday is observed Friday
+
+
+def test_next_trading_days_skip_thanksgiving():
+    got = next_trading_days(pd.Timestamp("2026-11-24"), 7)
+    assert [d.date().isoformat() for d in got] == [
+        "2026-11-25", "2026-11-27", "2026-11-30", "2026-12-01",
+        "2026-12-02", "2026-12-03", "2026-12-04",
+    ]  # fmt: skip
+
+
+def test_next_trading_days_start_strictly_after_the_given_day():
+    got = next_trading_days(pd.Timestamp("2026-07-02"), 2)  # July 3 is a holiday
+    assert [d.date().isoformat() for d in got] == ["2026-07-06", "2026-07-07"]
+
+
+def test_next_trading_days_accept_dates_and_tz_aware_timestamps():
+    import datetime as dt
+
+    from_date = next_trading_days(dt.date(2026, 11, 6), 1)
+    from_aware = next_trading_days(pd.Timestamp("2026-11-06 20:00", tz="UTC"), 1)
+    assert list(from_date) == list(from_aware) == [pd.Timestamp("2026-11-09")]
