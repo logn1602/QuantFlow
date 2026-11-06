@@ -99,10 +99,15 @@ def load_features(ticker: str) -> pd.DataFrame:
     return df
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+def engineer_features(df: pd.DataFrame, drop_unlabeled: bool = True) -> pd.DataFrame:
     """
     Build the full feature matrix from raw merged data.
-    All features are derived from past data only — no future leakage.
+    All features are derived from past data only: no future leakage.
+
+    drop_unlabeled=False keeps the newest row, whose target (the next day's
+    close) is unknown. Training and scoring must not see it; the live
+    forecast needs exactly it, because its features describe the latest
+    trading day and its target is the first day to forecast.
     """
     df = df.copy().sort_values("date").reset_index(drop=True)
 
@@ -158,8 +163,11 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         int
     )  # 1=up, 0=down
 
-    # Drop rows with NaN targets or insufficient history
-    df = df.dropna(subset=["target_price", "close_lag_10", "rolling_mean_20"])
+    # Drop rows with insufficient history, and rows with no known target
+    # unless the caller asked to keep the newest one.
+    df = df.dropna(subset=["close_lag_10", "rolling_mean_20"])
+    if drop_unlabeled:
+        df = df.dropna(subset=["target_price"])
 
     return df
 

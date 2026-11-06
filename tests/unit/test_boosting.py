@@ -1,0 +1,166 @@
+"""tests/unit/test_boosting.py
+
+Covers the live 7-day forecast from XGBoost and LightGBM.
+
+Two bugs, both in what the live forecast was built from:
+
+  1d  It used the model fitted on the train split, so the live forecast
+      never saw the last 30 labelled days. ARIMA and Prophet refit on the
+      full series before forecasting; the boosters did not.
+  1e  engineer_features drops the newest row (its target, tomorrow's close,
+      is unknown), and the forecast started from what was left: the
+      second-to-last day. Its first "forecast" was for the latest day, whose
+      close was already known.
+
+No model is trained: the regressors are fakes whose prediction is the number
+of rows they were fitted on, which identifies the model a forecast came from.
+"""
+
+import sys
+import types
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from quantflow.evaluation.splits import HOLDOUT_DAYS
+from quantflow.features.engineering import engineer_features
+from quantflow.models import boosting
+from quantflow.utils.trading_calendar import NYSEHolidayCalendar
+
+TRADING_DAY = pd.offsets.CustomBusinessDay(calendar=NYSEHolidayCalendar())
+DAYS = pd.date_range(end="2026-11-20", periods=120, freq=TRADING_DAY)
+
+
+class FakeRegressor:
+    """Predicts the number of rows it was fitted on; records what it saw."""
+
+    def __init__(self, **params):
+        self.X = None
+        self.predicted_on = []
+
+    def fit(self, X, y, **kwargs):
+        self.X = X.copy()
+        self.feature_importances_ = np.ones(X.shape[1])
+        return self
+
+    def predict(self, X):
+        self.predicted_on.append(X.copy())
+        return np.full(len(X), float(len(self.X)))
+
+
+@pytest.fixture
+def raw():
+    """A merged feature frame like load_features returns, ending on a Friday."""
+    rng = np.random.default_rng(3)
+    close = 100 + np.cumsum(rng.normal(0, 1.0, len(DAYS)))
+    n = len(DAYS)
+    return pd.DataFrame(
+        {
+            "date": DAYS,
+            "open": close,
+            "high": close + 1,
+            "low": close - 1,
+            "close": close,
+            "volume": rng.integers(1_000_000, 5_000_000, n).astype(float),
+            "rsi_14": rng.uniform(20, 80, n),
+            "macd": rng.normal(0, 0.5, n),
+            "macd_signal": rng.normal(0, 0.5, n),
+            "macd_hist": rng.normal(0, 0.2, n),
+            "bb_upper": close + 2.0,
+            "bb_middle": close,
+            "bb_lower": close - 2.0,
+            "zscore": rng.normal(0, 1.0, n),
+            "sentiment_compound": rng.uniform(-1, 1, n),
+            "pos_count": rng.integers(0, 5, n).astype(float),
+            "neg_count": rng.integers(0, 5, n).astype(float),
+            "article_count": rng.integers(0, 9, n).astype(float),
+        }
+    )
+
+
+@pytest.fixture
+def forecasts(raw, monkeypatch):
+    """Run boosting.run on raw with fake regressors; return what it saved."""
+    models = []
+
+    def regressor(**params):
+        model = FakeRegressor(**params)
+        models.append(model)
+        return model
+
+    for name, cls in (("xgboost", "XGBRegressor"), ("lightgbm", "LGBMRegressor")):
+        module = types.ModuleType(name)
+        setattr(module, cls, regressor)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    saved = {}
+    monkeypatch.setattr(boosting, "load_features", lambda ticker: raw.copy())
+    monkeypatch.setattr(
+        boosting,
+        "save_forecasts",
+        lambda df: saved.setdefault(df["model"].iloc[0], df) is None or len(df),
+    )
+    monkeypatch.setattr(boosting, "save_model_metrics", lambda *a, **k: None)
+    monkeypatch.setattr(boosting, "log_mlflow", lambda *a, **k: None)
+
+    boosting.run(["AAPL"])
+    return saved, models
+
+
+def _labelled(raw):
+    return engineer_features(raw)
+
+
+# ── 1d: the live model sees every labelled row ────────────────────────────────
+
+
+@pytest.mark.parametrize("model_name", ["xgboost", "lightgbm"])
+def test_the_live_forecast_comes_from_a_model_fit_on_every_labelled_row(
+    forecasts, raw, model_name
+):
+    saved, _ = forecasts
+    n_labelled = len(_labelled(raw))
+
+    assert (saved[model_name]["predicted_close"] == n_labelled).all()
+    assert n_labelled - HOLDOUT_DAYS not in set(saved[model_name]["predicted_close"])
+
+
+def test_the_live_model_has_seen_the_final_labelled_row(forecasts, raw):
+    _, models = forecasts
+    labelled = _labelled(raw)
+    live = [m for m in models if m.predicted_on and len(m.X) == len(labelled)]
+
+    assert live, "no model fitted on every labelled row made a forecast"
+    for model in live:
+        final = model.X.iloc[-1]
+        expected = labelled[model.X.columns].fillna(0).iloc[-1]
+        assert np.allclose(final.to_numpy(), expected.to_numpy())
+
+
+# ── 1e: the forecast starts from the newest row ───────────────────────────────
+
+
+@pytest.mark.parametrize("model_name", ["xgboost", "lightgbm"])
+def test_the_first_forecast_date_is_the_next_trading_day_after_the_last_close(
+    forecasts, model_name
+):
+    saved, _ = forecasts
+    dates = [pd.Timestamp(d) for d in saved[model_name]["ds"]]
+
+    assert dates[0] > DAYS[-1]
+    assert [d.date().isoformat() for d in dates] == [
+        "2026-11-23", "2026-11-24", "2026-11-25", "2026-11-27",
+        "2026-11-30", "2026-12-01", "2026-12-02",
+    ]  # fmt: skip
+
+
+def test_the_first_step_is_predicted_from_the_newest_rows_features(forecasts, raw):
+    """close_lag_1 of the newest row is the second-to-last close."""
+    _, models = forecasts
+    # The 7 forecast steps are each forecasting model's last 7 predict calls.
+    first_steps = [m.predicted_on[-7] for m in models if len(m.predicted_on) >= 7]
+
+    assert len(first_steps) == 2
+    for X in first_steps:
+        assert X["close_lag_1"].iloc[0] == pytest.approx(raw["close"].iloc[-2])

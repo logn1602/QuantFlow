@@ -4,17 +4,25 @@ Trains one regressor per ticker on the feature matrix from
 quantflow.features.engineering, then rolls a 7-day forecast forward
 recursively.
 
+Two models per ticker and family, with different jobs:
+  - the scored model is fitted on the train split and evaluated on the
+    holdout; its holdout predictions also feed the ensemble stack;
+  - the live model has the same settings, is fitted on every labelled row,
+    and produces the published forecast, starting from the newest trading
+    day. ARIMA and Prophet refit on the full series before forecasting too.
+
 Note on what the reported metric measures: the holdout MAPE logged here is
 one-step-ahead. Each holdout row carries the *actual* lagged close, rolling
 statistics and indicators for its day, so the model is predicting tomorrow
 given a true today. The 7-day forecast published to the dashboard is a
-different task — generate_forecast feeds each prediction back in as the next
+different task: generate_forecast feeds each prediction back in as the next
 day's lag, so errors compound. The holdout number does not describe it.
 """
 
 import argparse
 import os
 import warnings
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -32,6 +40,7 @@ from quantflow.features.engineering import (
     load_features,
 )
 from quantflow.utils.logger import get_logger
+from quantflow.utils.trading_calendar import next_trading_days
 
 warnings.filterwarnings("ignore")
 
@@ -40,17 +49,53 @@ logger = get_logger("boosting")
 FORECAST_DAYS = 7
 MLFLOW_EXP = "stock_forecasting"
 
+# One set of settings per family, shared by the scored and the live model, so
+# the model that is evaluated is the model that forecasts.
+MODEL_PARAMS: dict[str, dict[str, Any]] = {
+    "xgboost": {
+        "n_estimators": 300,
+        "max_depth": 4,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "random_state": 42,
+        "verbosity": 0,
+    },
+    "lightgbm": {
+        "n_estimators": 300,
+        "max_depth": 4,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "random_state": 42,
+        "verbose": -1,
+    },
+}
 
-def train_xgboost(df: pd.DataFrame, ticker: str) -> dict:
-    """
-    Train XGBoost regressor for price prediction.
-    Uses walk-forward validation on holdout set.
-    Returns dict with model, metrics, feature importance.
-    """
+
+def _new_regressor(model_name: str):
+    """An unfitted regressor of the family; None if its package is missing."""
     try:
-        import xgboost as xgb
+        if model_name == "xgboost":
+            import xgboost as xgb
+
+            return xgb.XGBRegressor(**MODEL_PARAMS["xgboost"])
+        import lightgbm as lgb
+
+        return lgb.LGBMRegressor(**MODEL_PARAMS["lightgbm"])
     except ImportError:
-        logger.error("XGBoost not installed. Run: pip install xgboost")
+        logger.error(f"{model_name} not installed. Run: pip install {model_name}")
+        return None
+
+
+def _train_scored(model_name: str, df: pd.DataFrame, ticker: str) -> dict:
+    """Fit on the train split, score on the holdout.
+
+    Returns dict with the fitted model, holdout metrics and predictions,
+    feature importance and the feature list; {} if the package is missing.
+    """
+    model = _new_regressor(model_name)
+    if model is None:
         return {}
 
     feature_cols = get_feature_cols()
@@ -67,24 +112,18 @@ def train_xgboost(df: pd.DataFrame, ticker: str) -> dict:
     X_hold = holdout[available]
     y_hold = holdout["target_price"]
 
-    # XGBoost regressor
-    model = xgb.XGBRegressor(
-        n_estimators=300,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        verbosity=0,
-    )
-    model.fit(X_train, y_train, eval_set=[(X_hold, y_hold)], verbose=False)
+    if model_name == "xgboost":
+        model.fit(X_train, y_train, eval_set=[(X_hold, y_hold)], verbose=False)
+    else:
+        model.fit(X_train, y_train)
 
     # Evaluate on holdout
     preds = model.predict(X_hold)
     scores = regression_metrics(y_hold, preds)
 
+    label = "XGBoost" if model_name == "xgboost" else "LightGBM"
     logger.info(
-        f"  XGBoost {ticker} holdout — RMSE: {scores['rmse']} | MAE: {scores['mae']} | MAPE: {scores['mape']}%"
+        f"  {label} {ticker} holdout: RMSE: {scores['rmse']} | MAE: {scores['mae']} | MAPE: {scores['mape']}%"
     )
 
     # Feature importance
@@ -100,79 +139,54 @@ def train_xgboost(df: pd.DataFrame, ticker: str) -> dict:
         "metrics": scores,
         "importance": importance,
         "features": available,
-        "X_last": df[available].iloc[-1:],
-        "last_close": float(df["close"].iloc[-1]),
-        "last_date": df["date"].iloc[-1],
         "holdout_preds": preds,
     }
+
+
+def train_xgboost(df: pd.DataFrame, ticker: str) -> dict:
+    """
+    Train XGBoost regressor for price prediction on the train split and
+    score it on the holdout. df must hold labelled rows only.
+    Returns dict with model, metrics, feature importance.
+    """
+    return _train_scored("xgboost", df, ticker)
 
 
 def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
     """
-    Train LightGBM regressor — faster than XGBoost, often similar accuracy.
+    Train LightGBM regressor, faster than XGBoost and often similar accuracy,
+    on the train split and score it on the holdout. df must hold labelled rows.
     """
-    try:
-        import lightgbm as lgb
-    except ImportError:
-        logger.error("LightGBM not installed. Run: pip install lightgbm")
-        return {}
+    return _train_scored("lightgbm", df, ticker)
 
-    feature_cols = get_feature_cols()
-    available = [c for c in feature_cols if c in df.columns]
-    df[available] = df[available].fillna(0)
 
-    train, holdout = train_holdout_split(df, copy=True)
-
-    X_train = train[available]
-    y_train = train["target_price"]
-    X_hold = holdout[available]
-    y_hold = holdout["target_price"]
-
-    model = lgb.LGBMRegressor(
-        n_estimators=300,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        verbose=-1,
-    )
-    model.fit(X_train, y_train)
-
-    preds = model.predict(X_hold)
-    scores = regression_metrics(y_hold, preds)
-
-    logger.info(
-        f"  LightGBM {ticker} holdout — RMSE: {scores['rmse']} | MAE: {scores['mae']} | MAPE: {scores['mape']}%"
-    )
-
-    importance = pd.DataFrame(
-        {
-            "feature": available,
-            "importance": model.feature_importances_,
-        }
-    ).sort_values("importance", ascending=False)
-
-    return {
-        "model": model,
-        "metrics": scores,
-        "importance": importance,
-        "features": available,
-        "X_last": df[available].iloc[-1:],
-        "last_close": float(df["close"].iloc[-1]),
-        "last_date": df["date"].iloc[-1],
-        "holdout_preds": preds,
-    }
+def fit_live_model(model_name: str, labelled: pd.DataFrame, features: list[str]):
+    """A fresh model with the scored model's settings, fitted on every
+    labelled row, including the 30 the scored model held out."""
+    model = _new_regressor(model_name)
+    if model is None:
+        return None
+    model.fit(labelled[features].fillna(0), labelled["target_price"])
+    return model
 
 
 # ── Forecasting ───────────────────────────────────────────────────────────────
 
 
 def generate_forecast(
-    result: dict, model_name: str, ticker: str, price_history: list | None = None
+    model,
+    X_last: pd.DataFrame,
+    last_date,
+    price_history: list,
+    model_name: str,
+    ticker: str,
 ) -> pd.DataFrame:
     """
-    Generate 7-day forecast using the trained model.
+    Generate a 7-day forecast from the newest trading day.
+
+    X_last is that day's feature row and last_date its date, so the first
+    step predicts the next trading day's close. price_history holds the
+    actual closes up to and including last_date.
 
     Each step rolls the full feature vector forward using the predicted price:
       - Lag features (1/2/3/5/10) cascade from the rolling price buffer
@@ -180,25 +194,18 @@ def generate_forecast(
       - Rolling mean/std (5/10/20) recomputed from the buffer
       - Bollinger position and width derived from updated rolling stats
       - Exogenous features (RSI, MACD, sentiment, anomaly, volume) stay frozen
-        at their last known values — we cannot extrapolate them forward.
-
-    price_history: full list of historical closes used to seed lag/rolling calcs.
+        at their last known values, since we cannot extrapolate them forward.
     """
-    if not result:
-        return pd.DataFrame()
-
-    model = result["model"]
-    current_X = result["X_last"].copy()
-    last_date = result["last_date"]
+    current_X = X_last.copy()
 
     # Seed the rolling buffer with the last 30 actual closes so all windows
     # (up to rolling_mean_20 + lag_10) have enough history from day one.
-    buf = list(price_history[-30:]) if price_history else [result["last_close"]]
+    buf = list(price_history[-30:])
 
     forecasts = []
-    future_dates = pd.bdate_range(
-        start=pd.Timestamp(last_date) + pd.Timedelta(days=1), periods=FORECAST_DAYS
-    )
+    # Trading days, not weekdays: a forecast must not promise a close on a
+    # market holiday.
+    future_dates = next_trading_days(last_date, FORECAST_DAYS)
 
     for forecast_date in future_dates:
         pred = float(model.predict(current_X)[0])
@@ -218,7 +225,7 @@ def generate_forecast(
         buf.append(pred)
         prices = np.array(buf)
 
-        # Lag features — each lag reads the correct historical position
+        # Lag features: each lag reads the correct historical position
         for lag in [1, 2, 3, 5, 10]:
             col = f"close_lag_{lag}"
             if col in current_X.columns and len(prices) > lag:
@@ -260,7 +267,7 @@ def generate_forecast(
             if "bb_width" in current_X.columns and mean20 > 0:
                 current_X["bb_width"] = bb_range / mean20
 
-        # RSI, MACD, volume, sentiment, anomaly stay frozen — exogenous signals
+        # RSI, MACD, volume, sentiment, anomaly stay frozen: exogenous signals
         # that cannot be extrapolated from price alone.
 
     return pd.DataFrame(forecasts)
@@ -374,59 +381,58 @@ def run(tickers: list[str] | None = None) -> dict:
     for ticker in tickers:
         logger.info(f"Training XGBoost + LightGBM for {ticker}...")
 
-        df = load_features(ticker)
-        if df.empty:
+        raw = load_features(ticker)
+        if raw.empty:
             results[ticker] = {"xgboost": 0, "lightgbm": 0}
             continue
 
-        df = engineer_features(df)
-        if len(df) < 60:
+        # Keep the newest row: it has no target, but the live forecast starts
+        # from its features. Training and scoring use the labelled rows only.
+        features = engineer_features(raw, drop_unlabeled=False)
+        labelled = features.dropna(subset=["target_price"]).copy()
+        if len(labelled) < 60:
             logger.warning(f"{ticker}: Not enough rows after feature engineering")
             results[ticker] = {"xgboost": 0, "lightgbm": 0}
             continue
 
         logger.info(
-            f"  Feature matrix: {len(df)} rows × {len(get_feature_cols())} features"  # noqa: RUF001
+            f"  Feature matrix: {len(labelled)} rows × {len(get_feature_cols())} features"  # noqa: RUF001
         )
+
+        newest = features.iloc[[-1]]
+        last_date = newest["date"].iloc[0]
+        price_history = list(features["close"].to_numpy())
 
         ticker_results = {}
 
-        price_buf = list(df["close"].values)
+        for model_name, train in (
+            ("xgboost", train_xgboost),
+            ("lightgbm", train_lightgbm),
+        ):
+            result = train(labelled, ticker)
+            if not result:
+                continue
 
-        # XGBoost
-        xgb_result = train_xgboost(df, ticker)
-        if xgb_result:
-            xgb_forecast = generate_forecast(xgb_result, "xgboost", ticker, price_buf)
-            n = save_forecasts(xgb_forecast)
-            log_mlflow(
+            live_model = fit_live_model(model_name, labelled, result["features"])
+            forecast = generate_forecast(
+                live_model,
+                newest[result["features"]].fillna(0),
+                last_date,
+                price_history,
+                model_name,
                 ticker,
-                "xgboost",
-                xgb_result["metrics"],
-                xgb_result["importance"],
-                xgb_forecast,
             )
-            save_model_metrics(ticker, "xgboost", xgb_result["metrics"], HOLDOUT_DAYS)
-            ticker_results["xgboost"] = n
-            logger.info(f"  XGBoost: {n} forecast rows saved")
-
-            top5 = xgb_result["importance"].head(5)
-            logger.info(f"  Top features: {', '.join(top5['feature'].tolist())}")
-
-        # LightGBM
-        lgb_result = train_lightgbm(df, ticker)
-        if lgb_result:
-            lgb_forecast = generate_forecast(lgb_result, "lightgbm", ticker, price_buf)
-            n = save_forecasts(lgb_forecast)
+            n = save_forecasts(forecast)
             log_mlflow(
-                ticker,
-                "lightgbm",
-                lgb_result["metrics"],
-                lgb_result["importance"],
-                lgb_forecast,
+                ticker, model_name, result["metrics"], result["importance"], forecast
             )
-            save_model_metrics(ticker, "lightgbm", lgb_result["metrics"], HOLDOUT_DAYS)
-            ticker_results["lightgbm"] = n
-            logger.info(f"  LightGBM: {n} forecast rows saved")
+            save_model_metrics(ticker, model_name, result["metrics"], HOLDOUT_DAYS)
+            ticker_results[model_name] = n
+            logger.info(f"  {model_name}: {n} forecast rows saved")
+
+            if model_name == "xgboost":
+                top5 = result["importance"].head(5)
+                logger.info(f"  Top features: {', '.join(top5['feature'].tolist())}")
 
         results[ticker] = ticker_results
 
