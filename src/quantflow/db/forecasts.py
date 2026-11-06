@@ -12,20 +12,11 @@ import datetime as _dt
 import pandas as pd
 from sqlalchemy import text
 
+from quantflow.db.batch import insert_rows
 from quantflow.db.connection import get_engine
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-_INSERT = text("""
-    INSERT INTO forecasts
-        (ticker, model, forecast_date, predicted_close,
-         lower_bound, upper_bound, run_at)
-    VALUES
-        (:ticker, :model, :forecast_date, :predicted_close,
-         :lower_bound, :upper_bound, :run_at)
-    ON CONFLICT DO NOTHING
-""")
 
 
 def _as_date(value):
@@ -45,39 +36,33 @@ def _as_date(value):
 
 
 def save_forecasts(df: pd.DataFrame) -> int:
-    """Insert forecast rows, skipping conflicts. Returns rows inserted.
+    """Insert forecast rows, skipping conflicts. Returns rows written.
 
-    Rows are inserted one at a time inside a single transaction, and a failing
-    row is logged and skipped rather than aborting the batch — one malformed
-    forecast should not discard a whole model run.
+    One batched INSERT inside one transaction. Any error other than a skipped
+    conflict raises and rolls the whole forecast back, so a model run never
+    reports forecasts it did not store. It used to catch errors row by row
+    instead, which cannot work on Postgres: the first failure aborts the
+    transaction, every later row fails with it, and the commit rolls all of
+    them back.
     """
     if df.empty:
         return 0
 
-    engine = get_engine()
-    inserted = 0
     run_at = _dt.datetime.now()
-
-    with engine.begin() as conn:
-        for _, row in df.iterrows():
-            try:
-                conn.execute(
-                    _INSERT,
-                    {
-                        "ticker": row["ticker"],
-                        "model": row["model"],
-                        "forecast_date": _as_date(row["ds"]),
-                        "predicted_close": round(float(row["predicted_close"]), 4),
-                        "lower_bound": round(float(row["lower_bound"]), 4),
-                        "upper_bound": round(float(row["upper_bound"]), 4),
-                        "run_at": run_at,
-                    },
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped: {e}")
-
-    return inserted
+    rows = [
+        {
+            "ticker": row["ticker"],
+            "model": row["model"],
+            "forecast_date": _as_date(row["ds"]),
+            "predicted_close": round(float(row["predicted_close"]), 4),
+            "lower_bound": round(float(row["lower_bound"]), 4),
+            "upper_bound": round(float(row["upper_bound"]), 4),
+            "run_at": run_at,
+        }
+        for row in df.to_dict("records")
+    ]
+    with get_engine().begin() as conn:
+        return insert_rows(conn, "forecasts", rows, skip_conflicts=True)
 
 
 def clear_forecasts(tickers: list[str], models: list[str] | None = None) -> int:

@@ -15,8 +15,10 @@ import datetime as dt
 
 import numpy as np
 import pandas as pd
+import pytest
+from sqlalchemy.exc import DataError
 
-from quantflow.db.forecasts import _as_date
+from quantflow.db.forecasts import _as_date, save_forecasts
 
 EXPECTED = dt.date(2026, 3, 14)
 
@@ -73,3 +75,44 @@ def test_every_input_form_agrees():
         EXPECTED,
     ]
     assert {_as_date(f) for f in forms} == {EXPECTED}
+
+
+# ── save_forecasts ────────────────────────────────────────────────────────────
+#
+# It used to INSERT row by row and catch each failure, inside one transaction.
+# On Postgres the first failure aborts the transaction, so the "skipped" row
+# took every later row with it and the commit rolled the batch back.
+
+
+def _forecast(n=7, model="arima"):
+    days = pd.bdate_range("2026-11-09", periods=n)
+    return pd.DataFrame(
+        {
+            "ticker": "AAPL",
+            "model": model,
+            "ds": days,
+            "predicted_close": np.linspace(100, 101, n),
+            "lower_bound": np.linspace(98, 99, n),
+            "upper_bound": np.linspace(102, 103, n),
+        }
+    )
+
+
+def test_a_forecast_is_written_as_one_batched_insert(fake_db):
+    assert save_forecasts(_forecast()) == 7
+    assert len(fake_db.inserts("forecasts")) == 1
+
+
+def test_a_forecast_write_error_raises_instead_of_skipping_the_row(fake_db):
+    fake_db.fail_next_insert = DataError("INSERT", {}, Exception("numeric overflow"))
+    with pytest.raises(DataError):
+        save_forecasts(_forecast())
+    assert fake_db.tables["forecasts"] == []
+
+
+def test_stored_forecast_rows_keep_their_coercion_and_rounding(fake_db):
+    save_forecasts(_forecast(n=1))
+    (row,) = fake_db.tables["forecasts"]
+    assert row["forecast_date"] == dt.date(2026, 11, 9)
+    assert row["predicted_close"] == 100.0
+    assert isinstance(row["run_at"], dt.datetime)
