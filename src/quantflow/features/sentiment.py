@@ -33,6 +33,7 @@ from sqlalchemy import text
 
 from quantflow.config import NEWS_API_KEY, TICKERS
 from quantflow.db.connection import get_engine
+from quantflow.db.sentiment import insert_sentiment
 from quantflow.utils.logger import get_logger
 
 # Applied after imports rather than before them: nothing imported here
@@ -330,45 +331,28 @@ def fetch_newsapi(ticker: str) -> list[dict]:
 def save_sentiment(articles: list[dict], ticker: str) -> int:
     """
     Save analyzed articles to news_sentiment table.
-    Skips duplicates. Returns rows inserted.
+    Returns rows actually written: headlines already stored are skipped and
+    not counted, and any other write error raises.
     """
-    if not articles:
-        return 0
+    rows: dict[tuple, dict] = {}
+    for article in articles:
+        row = {
+            "ticker": ticker,
+            "source": article["source"],
+            "published_at": article["published_at"],
+            "headline": article["headline"][:1000],
+            "url": (article.get("url") or "")[:500],
+            "sentiment": article["sentiment"],
+            "score_pos": article["score_pos"],
+            "score_neg": article["score_neg"],
+            "score_neu": article["score_neu"],
+            "compound": article["compound"],
+        }
+        # RSS and NewsAPI can return the same headline at the same time; keep
+        # the first so one INSERT never carries the same key twice.
+        rows.setdefault((row["headline"], row["published_at"]), row)
 
-    engine = get_engine()
-    inserted = 0
-
-    with engine.begin() as conn:
-        for article in articles:
-            try:
-                conn.execute(
-                    text("""
-                        INSERT INTO news_sentiment
-                            (ticker, source, published_at, headline, url,
-                             sentiment, score_pos, score_neg, score_neu, compound)
-                        VALUES
-                            (:ticker, :source, :published_at, :headline, :url,
-                             :sentiment, :score_pos, :score_neg, :score_neu, :compound)
-                        ON CONFLICT (ticker, headline, published_at) DO NOTHING
-                    """),
-                    {
-                        "ticker": ticker,
-                        "source": article["source"],
-                        "published_at": article["published_at"],
-                        "headline": article["headline"][:1000],
-                        "url": article.get("url", "")[:500],
-                        "sentiment": article["sentiment"],
-                        "score_pos": article["score_pos"],
-                        "score_neg": article["score_neg"],
-                        "score_neu": article["score_neu"],
-                        "compound": article["compound"],
-                    },
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped: {e}")
-
-    return inserted
+    return insert_sentiment(list(rows.values()))
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
