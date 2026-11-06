@@ -145,6 +145,24 @@ def load_daily_bars(
     return daily_bars(bars, ticker)
 
 
+def load_bar_timestamps(ticker: str, source: str = "yfinance") -> pd.DataFrame:
+    """Every stored bar's timestamp for a ticker, as a ts column.
+
+    Enough for classify_bars to tell which dates have a daily bar, which is
+    all the daily-bar backfill needs to know.
+    """
+    return _read(
+        """
+        SELECT ts
+        FROM raw_prices
+        WHERE ticker = :ticker AND source = :source
+        ORDER BY ts ASC
+        """,
+        {"ticker": ticker, "source": source},
+        ticker,
+    )
+
+
 def _indexed_by_date(daily: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """daily_bars output indexed by each date's 00:00 UTC timestamp.
 

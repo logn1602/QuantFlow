@@ -63,7 +63,7 @@ def drop_unfinished_session(data: pd.DataFrame, now: pd.Timestamp) -> pd.DataFra
     return data[~unfinished]
 
 
-def _bars_to_rows(df: pd.DataFrame, ticker: str) -> list[dict]:
+def bars_to_rows(df: pd.DataFrame, ticker: str) -> list[dict]:
     """raw_prices rows from a yf.download frame.
 
     Rows without a close are dropped, NaN becomes NULL, and every timestamp is
@@ -97,10 +97,10 @@ def _upsert_prices(df: pd.DataFrame, ticker: str) -> int:
     write error raises, so a CLI run exits non-zero instead of reporting rows
     that were rolled back.
     """
-    return insert_bars(_bars_to_rows(df, ticker))
+    return insert_bars(bars_to_rows(df, ticker))
 
 
-def _download(ticker: str, **kwargs) -> pd.DataFrame:
+def download(ticker: str, **kwargs) -> pd.DataFrame:
     """yf.download for one ticker; a failed download is logged and returned
     as an empty frame.
 
@@ -134,7 +134,7 @@ def fetch_historical(tickers: list[str] | None = None, period: str = "2y") -> di
 
     for ticker in tickers:
         logger.info(f"Fetching daily bars for {ticker} ({period})")
-        data = _download(ticker, period=period, interval="1d", auto_adjust=False)
+        data = download(ticker, period=period, interval="1d", auto_adjust=False)
         data = drop_unfinished_session(data, _now())
         n = _upsert_prices(data, ticker)
         results[ticker] = n
@@ -159,7 +159,7 @@ def fetch_intraday(tickers: list[str] | None = None) -> dict:
 
     for ticker in tickers:
         logger.info(f"Fetching intraday data for {ticker}")
-        data = _download(ticker, period="5d", interval="15m", auto_adjust=False)
+        data = download(ticker, period="5d", interval="15m", auto_adjust=False)
         n = _upsert_prices(data, ticker)
         results[ticker] = n
         logger.info(f"  {ticker}: {n} new rows")
