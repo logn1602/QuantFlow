@@ -65,6 +65,20 @@ def save_forecasts(df: pd.DataFrame) -> int:
         return insert_rows(conn, "forecasts", rows, skip_conflicts=True)
 
 
+def load_base_forecasts(ticker: str, models: list[str]) -> pd.DataFrame:
+    """Stored forecasts for the given models: model, forecast_date and the
+    predicted close with its bounds. The ensemble's input."""
+    query = text("""
+        SELECT model, forecast_date, predicted_close, lower_bound, upper_bound
+        FROM forecasts
+        WHERE ticker = :ticker
+          AND model = ANY(:models)
+        ORDER BY forecast_date, model
+    """)
+    with get_engine().connect() as conn:
+        return pd.read_sql(query, conn, params={"ticker": ticker, "models": models})
+
+
 def clear_forecasts(tickers: list[str], models: list[str] | None = None) -> int:
     """Delete prior forecast rows so a rerun does not accumulate one row per run
     per forecast_date. Returns rows deleted.

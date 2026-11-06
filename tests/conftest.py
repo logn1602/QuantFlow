@@ -265,9 +265,10 @@ def price_bars():
 def read_tables(monkeypatch, fake_db):
     """Serve canned frames to pd.read_sql, picked by the table a query reads.
 
-    Assign frames by table name: read_tables["raw_prices"] = frame. A query
-    against a table with no canned frame fails the test rather than silently
-    returning nothing.
+    Assign frames by table name: read_tables["raw_prices"] = frame, or a
+    function of the query's params when the rows depend on them (one ticker's
+    rows, say). A query against a table with no canned frame fails the test
+    rather than silently returning nothing.
     """
     served = {}
 
@@ -275,7 +276,7 @@ def read_tables(monkeypatch, fake_db):
         query = str(sql)
         for name, frame in served.items():
             if re.search(rf"\bFROM\s+{name}\b", query, re.IGNORECASE):
-                return frame.copy()
+                return (frame(params or {}) if callable(frame) else frame).copy()
         raise AssertionError(f"no canned frame for query:\n{query}")
 
     monkeypatch.setattr(pd, "read_sql", fake_read_sql)

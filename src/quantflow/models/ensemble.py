@@ -49,7 +49,7 @@ from sqlalchemy import text
 
 from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
-from quantflow.db.forecasts import save_forecasts
+from quantflow.db.forecasts import load_base_forecasts, save_forecasts
 from quantflow.db.metrics import save_model_metrics
 from quantflow.db.prices import load_daily_close as load_prices
 from quantflow.evaluation.metrics import mape as _mape
@@ -343,42 +343,61 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
 # ── Forecast generation ───────────────────────────────────────────────────────
 
 
+class ForecastAlignmentError(ValueError):
+    """The stored base forecasts do not cover the same forecast dates."""
+
+
+def check_forecast_dates(df: pd.DataFrame, models: list[str], horizon: int) -> list:
+    """The forecast dates every base model shares, or ForecastAlignmentError.
+
+    Each model must cover exactly the same `horizon` dates. The ensemble used
+    to pivot by date and drop any date one model lacked, so a base model
+    dated one day off silently cost the published forecast a day. That only
+    happens when an upstream run is broken, so it must stop the run rather
+    than be smoothed over.
+    """
+    dates = {m: sorted(set(df.loc[df["model"] == m, "forecast_date"])) for m in models}
+    missing = [m for m, d in dates.items() if not d]
+    if missing:
+        raise ForecastAlignmentError(f"no forecasts stored for {', '.join(missing)}")
+
+    reference = dates[models[0]]
+    if len(reference) != horizon or any(d != reference for d in dates.values()):
+        detail = "; ".join(
+            f"{m}: {len(d)} dates, {d[0]} to {d[-1]}" for m, d in dates.items()
+        )
+        raise ForecastAlignmentError(
+            f"base forecasts do not cover the same {horizon} dates ({detail})"
+        )
+    return reference
+
+
 def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     """
     Load 7-day base model forecasts from DB and apply meta-learner to produce
     ensemble predictions. Confidence intervals are propagated as a weighted
     average of base model bounds, using the NNLS weights. Those weights are
-    already non-negative and sum to 1, so normalising |w| is a no-op here —
+    already non-negative and sum to 1, so normalising |w| is a no-op here;
     it is kept because it makes the CI propagation independent of how the
     meta-learner was fitted.
-    """
-    engine = get_engine()
-    query = text("""
-        SELECT model, forecast_date, predicted_close, lower_bound, upper_bound
-        FROM forecasts
-        WHERE ticker = :t
-          AND model IN ('arima', 'prophet', 'xgboost', 'lightgbm')
-        ORDER BY forecast_date, model
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"t": ticker})
 
-    if df.empty:
-        logger.warning(f"{ticker}: no base forecasts in DB — run run_models.py first")
-        return pd.DataFrame()
+    Raises ForecastAlignmentError unless all four base models cover the same
+    seven dates.
+    """
+    df = load_base_forecasts(ticker, BASE_MODELS)
+    try:
+        check_forecast_dates(df, BASE_MODELS, FORECAST_DAYS)
+    except ForecastAlignmentError as e:
+        raise ForecastAlignmentError(f"{ticker}: {e}") from e
 
     pivot = df.pivot(index="forecast_date", columns="model", values="predicted_close")
     lower = df.pivot(index="forecast_date", columns="model", values="lower_bound")
     upper = df.pivot(index="forecast_date", columns="model", values="upper_bound")
 
     required = BASE_MODELS
-    pivot = pivot.reindex(columns=required).dropna()
+    pivot = pivot.reindex(columns=required)
     lower = lower.reindex(columns=required).reindex(pivot.index).fillna(0)
     upper = upper.reindex(columns=required).reindex(pivot.index).fillna(0)
-
-    if pivot.empty:
-        logger.warning(f"{ticker}: one or more base models missing from DB")
-        return pd.DataFrame()
 
     X_future = pivot[required].values
     ensemble_preds = meta_model.predict(X_future)
@@ -492,6 +511,7 @@ def show_results(ticker: str):
 def run(tickers: list | None = None) -> dict:
     tickers = tickers or TICKERS
     results = {}
+    misaligned: list[str] = []
 
     for ticker in tickers:
         logger.info(f"{'=' * 50}")
@@ -543,9 +563,14 @@ def run(tickers: list | None = None) -> dict:
         )
 
         logger.info("Generating 7-day ensemble forecast...")
-        forecast_df = generate_ensemble_forecast(ticker, meta_model)
-        if forecast_df.empty:
-            logger.error(f"{ticker}: forecast failed — ensure run_models.py ran first")
+        try:
+            forecast_df = generate_ensemble_forecast(ticker, meta_model)
+        except ForecastAlignmentError as e:
+            # Carried to the end of the loop: one ticker's broken base run
+            # should not cost the others their forecast, but the run must
+            # still fail rather than publish a short or shifted forecast.
+            logger.error(f"{e}; no ensemble forecast written")
+            misaligned.append(ticker)
             results[ticker] = 0
             continue
 
@@ -556,6 +581,11 @@ def run(tickers: list | None = None) -> dict:
 
         results[ticker] = n
 
+    if misaligned:
+        raise ForecastAlignmentError(
+            f"no ensemble forecast for {', '.join(misaligned)}: "
+            "base forecasts do not cover the same dates (see the log above)"
+        )
     return results
 
 
