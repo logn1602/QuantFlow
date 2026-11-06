@@ -1,4 +1,4 @@
-"""Readers for the raw_prices table.
+"""Readers and the writer for the raw_prices table.
 
 Consolidates four near-duplicate loaders that previously lived in
 indicators.py, anomaly_detection.py, forecasting.py and dashboard.py. They are
@@ -6,15 +6,22 @@ kept as four distinct functions rather than merged into one: their projections,
 casts and indexes genuinely differ, and callers depend on those exact shapes.
 What is shared -- engine handling, the empty-result warning, ordering -- is
 factored into _read.
+
+Both fetchers write through insert_bars, so the conflict rule for raw_prices
+lives in one place.
 """
 
 import pandas as pd
 from sqlalchemy import text
 
+from quantflow.db.batch import insert_rows
 from quantflow.db.connection import get_engine
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Column order of a raw_prices row as the fetchers write it.
+RAW_PRICE_COLUMNS = ("ticker", "source", "ts", "open", "high", "low", "close", "volume")
 
 
 def _read(sql: str, params: dict, ticker: str) -> pd.DataFrame:
@@ -124,3 +131,19 @@ def load_recent_ohlcv(ticker: str, days: int = 180) -> pd.DataFrame:
 
     df["date"] = pd.to_datetime(df["date"])
     return df
+
+
+def insert_bars(rows: list[dict]) -> int:
+    """Write raw_prices rows; return how many Postgres actually wrote.
+
+    A bar already stored for the same (ticker, source, ts) is skipped and not
+    counted, which is the normal case: every fetch re-requests a window that
+    overlaps the previous one. Any other write error raises and rolls the
+    whole call back.
+    """
+    if not rows:
+        return 0
+    with get_engine().begin() as conn:
+        return insert_rows(
+            conn, "raw_prices", rows, skip_conflicts=("ticker", "source", "ts")
+        )
