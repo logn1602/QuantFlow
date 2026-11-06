@@ -189,6 +189,25 @@ def _replace_get_engine(monkeypatch, replacement):
             monkeypatch.setattr(module, "get_engine", replacement)
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--pg-url",
+        default=None,
+        help="a disposable local Postgres for the integration suite; "
+        "never the live database (only localhost is accepted)",
+    )
+
+
+@pytest.fixture
+def install_engine(monkeypatch):
+    """Route every get_engine call to the given engine (integration tests)."""
+
+    def install(engine):
+        _replace_get_engine(monkeypatch, lambda: engine)
+
+    return install
+
+
 @pytest.fixture(autouse=True)
 def _no_database(monkeypatch):
     def refuse():
