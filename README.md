@@ -281,7 +281,7 @@ docs/architecture.md       Design decisions and trade-offs
 | Variable | Required | Description |
 |---|---|---|
 | `DB_PASSWORD` | **yes** | Postgres password; the pipeline exits without it |
-| `TICKERS` | **yes** | Comma-separated; defaults to `AAPL,MSFT,GOOGL,NVDA` |
+| `TICKERS` | **yes** | Comma-separated; defaults to `AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM` |
 | `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` | no | Default to `localhost:5432/stock_pipeline` as `postgres` |
 | `DB_SSLMODE` | no | Default `require`; see below |
 | `DB_SSLROOTCERT` | no | CA bundle path, needed only for `verify-ca` / `verify-full` |

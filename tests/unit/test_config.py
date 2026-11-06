@@ -9,6 +9,8 @@ patched copy never leaks into another test module.
 """
 
 import importlib
+import re
+from pathlib import Path
 
 import pytest
 
@@ -158,6 +160,41 @@ def _reload_with_defaults(monkeypatch, *unset):
 def test_split_guard_threshold_defaults_to_fifteen_percent(monkeypatch):
     cfg = _reload_with_defaults(monkeypatch, "SPLIT_GUARD_THRESHOLD")
     assert cfg.SPLIT_GUARD_THRESHOLD == 0.15
+
+
+# ── The default ticker list ───────────────────────────────────────────────────
+#
+# The tests above set TICKERS explicitly, as CI does (AAPL,MSFT), so they say
+# nothing about the fallback. The fallback used to be four tickers while
+# .env.example, the daily workflow and the README all track eight.
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _env_example_tickers():
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+    match = re.search(r"^TICKERS=(.+)$", text, re.MULTILINE)
+    assert match, "no TICKERS line in .env.example"
+    return match.group(1).strip().split(",")
+
+
+def test_the_default_ticker_list_is_the_tracked_eight(monkeypatch):
+    cfg = _reload_with_defaults(monkeypatch, "TICKERS")
+    assert cfg.TICKERS == [
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "AMZN",
+        "NVDA",
+        "TSLA",
+        "META",
+        "JPM",
+    ]
+
+
+def test_the_default_ticker_list_matches_env_example(monkeypatch):
+    default = _reload_with_defaults(monkeypatch, "TICKERS").TICKERS
+    assert default == _env_example_tickers()
 
 
 # ── require_or_exit() ─────────────────────────────────────────────────────────

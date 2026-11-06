@@ -52,10 +52,11 @@ jobs:
           pip install -e . --no-deps
 
       # Runs before any data step so a logic regression fails fast, before
-      # touching the database. The suite is offline by design — no secrets,
-      # no DB, no network.
+      # touching the database. The suite is offline by design: no secrets,
+      # no DB, no network. Same selection as CI, which leaves the eval and
+      # integration suites out.
       - name: Run tests
-        run: pytest -q
+        run: pytest -m "not eval and not integration"
 
       # pip-audit cannot run on the maintainer's Windows box (pandas 2.2.2 has
       # no wheel there and its sdist needs a Visual Studio toolchain), so this

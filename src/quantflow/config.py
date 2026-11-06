@@ -39,7 +39,11 @@ ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 # ── Tickers ───────────────────────────────────────────────────────────────────
-_raw_tickers = os.getenv("TICKERS", "AAPL,MSFT,GOOGL,NVDA")
+# The fallback when TICKERS is unset: the same eight that .env.example, the
+# daily workflow and the README track. tests/unit/test_config.py and
+# test_workflows.py fail if they drift apart.
+DEFAULT_TICKERS = "AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM"
+_raw_tickers = os.getenv("TICKERS", DEFAULT_TICKERS)
 TICKERS: list[str] = [t.strip().upper() for t in _raw_tickers.split(",") if t.strip()]
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
