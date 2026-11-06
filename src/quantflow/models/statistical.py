@@ -49,14 +49,26 @@ ARIMA_ORDER = (5, 1, 0)
 MLFLOW_EXP = "stock_forecasting"
 
 
+# Prophet's own 'auto' setting turns yearly seasonality off below this span
+# (prophet/forecaster.py). Forcing it on with less fits a yearly curve to a
+# single season, which then repeats in every forecast.
+MIN_YEARLY_SPAN = pd.Timedelta(days=730)
+
+
 def prophet_settings(history: pd.DataFrame) -> dict:
     """Constructor arguments for every Prophet fit: the holdout fit, the live
     fit and the ensemble's holdout fit. One definition, so the model that is
-    scored and the model that forecasts cannot drift apart."""
+    scored and the model that forecasts cannot drift apart.
+
+    Yearly seasonality depends on how much history this particular fit sees,
+    so a ticker near the two-year mark can have it in the live fit and not in
+    the holdout fit, which trains on 30 fewer days.
+    """
+    span = history["ds"].max() - history["ds"].min()
     return {
         "daily_seasonality": False,
         "weekly_seasonality": True,
-        "yearly_seasonality": True,
+        "yearly_seasonality": bool(span >= MIN_YEARLY_SPAN),
         "changepoint_prior_scale": 0.05,
         "interval_width": 0.95,
     }

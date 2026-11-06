@@ -105,6 +105,45 @@ def test_the_ensembles_prophet_column_lines_up_with_the_holdout(fake_prophet):
     assert np.allclose(preds, HOLIDAY_IN_HOLDOUT["y"].to_numpy()[-30:])
 
 
+# ── Yearly seasonality needs two years ────────────────────────────────────────
+#
+# yearly_seasonality=True was forced on for every ticker. With under two years
+# of history Prophet fits a yearly curve to a single season, which it would
+# never do on its own: its 'auto' rule needs 730 days.
+
+ONE_YEAR = _series("2025-10-01", "2026-10-01")
+# Over two years even after the 30 holdout days are taken off the end.
+TWO_YEARS = _series("2024-06-03", "2026-10-01")
+# Just over two years in total, under two once the holdout is removed.
+NEAR_TWO_YEARS = _series("2024-09-03", "2026-10-01")
+
+
+def _yearly_flags(prophet):
+    return [instance.kwargs["yearly_seasonality"] for instance in prophet.instances]
+
+
+def test_prophet_skips_yearly_seasonality_with_under_two_years(fake_prophet):
+    statistical.run_prophet(ONE_YEAR, "AAPL")
+    assert _yearly_flags(fake_prophet) == [False, False]  # holdout fit, live fit
+
+
+def test_prophet_keeps_yearly_seasonality_with_two_years(fake_prophet):
+    statistical.run_prophet(TWO_YEARS, "AAPL")
+    assert _yearly_flags(fake_prophet) == [True, True]
+
+
+def test_near_two_years_only_the_live_fit_gets_yearly_seasonality(fake_prophet):
+    """Deliberate: each fit is judged on the history it actually sees, and
+    the holdout fit sees 30 fewer trading days than the live one."""
+    statistical.run_prophet(NEAR_TWO_YEARS, "AAPL")
+    assert _yearly_flags(fake_prophet) == [False, True]
+
+
+def test_the_ensembles_prophet_fit_follows_the_same_rule(fake_prophet):
+    ensemble._prophet_holdout(ONE_YEAR)
+    assert _yearly_flags(fake_prophet) == [False]
+
+
 # ── Live forecast dates ───────────────────────────────────────────────────────
 
 
