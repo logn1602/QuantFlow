@@ -60,3 +60,75 @@ def test_the_same_headline_twice_in_one_run_is_stored_once(fake_db):
     """RSS and NewsAPI can both return a headline with the same timestamp."""
     articles = [_article("dup", "rss"), _article("dup", "newsapi")]
     assert sentiment.save_sentiment(articles, "AAPL") == 1
+
+
+# ── Missing is not neutral ────────────────────────────────────────────────────
+#
+# When FinBERT could not run, every headline used to be stored as "neutral"
+# with compound 0.0, which the feature matrix cannot tell apart from news
+# that genuinely was neutral.
+
+
+def _label_scores():
+    return [
+        {"label": "positive", "score": 0.7},
+        {"label": "negative", "score": 0.2},
+        {"label": "neutral", "score": 0.1},
+    ]
+
+
+class FakeFinBERT:
+    """Scores every headline alike; raises on any containing UNSCORABLE."""
+
+    def __call__(self, inputs):
+        if isinstance(inputs, list):
+            if any("UNSCORABLE" in h for h in inputs):
+                raise RuntimeError("batch failed")
+            return [_label_scores() for _ in inputs]
+        if "UNSCORABLE" in inputs:
+            raise RuntimeError("cannot score this headline")
+        return [_label_scores()]
+
+
+@pytest.fixture
+def news(monkeypatch):
+    """Fetched headlines with no network and no politeness sleep."""
+
+    def fetched(*headlines):
+        return [
+            {"headline": h, "url": "", "published_at": PUBLISHED, "source": "rss"}
+            for h in headlines
+        ]
+
+    monkeypatch.setattr(
+        sentiment,
+        "fetch_rss",
+        lambda ticker: fetched("Apple beats estimates", "UNSCORABLE headline"),
+    )
+    monkeypatch.setattr(sentiment, "fetch_newsapi", lambda ticker: [])
+    monkeypatch.setattr(sentiment.time, "sleep", lambda seconds: None)
+
+
+def test_nothing_is_written_when_finbert_fails_to_load(fake_db, news, monkeypatch):
+    monkeypatch.setattr(sentiment, "get_finbert", lambda: None)
+
+    assert sentiment.run(["AAPL"]) == {"AAPL": 0}
+    assert fake_db.tables["news_sentiment"] == []
+
+
+def test_a_headline_finbert_cannot_score_is_not_written(fake_db, news, monkeypatch):
+    monkeypatch.setattr(sentiment, "get_finbert", FakeFinBERT)
+
+    sentiment.run(["AAPL"])
+
+    stored = fake_db.tables["news_sentiment"]
+    assert [row["headline"] for row in stored] == ["Apple beats estimates"]
+    assert stored[0]["compound"] == pytest.approx(0.5)
+
+
+def test_every_rss_feed_is_specific_to_its_ticker():
+    """A general-market feed listed under one ticker credits every market
+    headline to that ticker's sentiment features."""
+    for ticker, feeds in sentiment.RSS_FEEDS.items():
+        for url in feeds:
+            assert f"s={ticker}&" in url, f"{ticker}: not a per-symbol feed: {url}"

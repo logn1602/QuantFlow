@@ -5,7 +5,7 @@ Phase 6 — News Sentiment Analysis Engine
 
 Pulls financial news from two sources:
   1. NewsAPI       : Structured API, 100 req/day free tier
-  2. RSS Feeds     : Yahoo Finance, Reuters, MarketWatch — completely free
+  2. RSS Feeds     : Yahoo Finance per-symbol headlines, free
 
 Analyzes headlines using FinBERT:
   - ProsusAI/finbert — pre-trained on financial news
@@ -59,10 +59,12 @@ FINBERT_MODEL = "ProsusAI/finbert"
 FINBERT_REVISION = "4556d13015211d73dccd3fdd39d39232506f3e43"
 
 # ── RSS feed URLs per ticker ──────────────────────────────────────────────────
+# Per-symbol feeds only. A general-market feed listed under one ticker credits
+# every market headline to that ticker's sentiment features; MarketWatch's
+# realtime headlines used to sit under AAPL that way.
 RSS_FEEDS = {
     "AAPL": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL&region=US&lang=en-US",
-        "https://feeds.marketwatch.com/marketwatch/realtimeheadlines/",
     ],
     "MSFT": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=MSFT&region=US&lang=en-US",
@@ -130,91 +132,58 @@ def get_finbert():
     return _finbert_pipeline
 
 
-def analyze_headline(headline: str) -> dict:
+def _score(results: list[dict]) -> dict:
+    """FinBERT's label scores for one headline as the stored fields.
+
+    Compound score = positive probability - negative probability, and the
+    dominant label is the stored sentiment.
+    """
+    scores = {r["label"].lower(): r["score"] for r in results}
+    score_pos = scores.get("positive", 0.0)
+    score_neg = scores.get("negative", 0.0)
+    score_neu = scores.get("neutral", 0.0)
+    return {
+        "sentiment": max(scores, key=lambda label: scores[label]),
+        "score_pos": round(score_pos, 4),
+        "score_neg": round(score_neg, 4),
+        "score_neu": round(score_neu, 4),
+        "compound": round(score_pos - score_neg, 4),
+    }
+
+
+# A headline FinBERT could not score gets None, never a made-up neutral score.
+# Stored as "neutral" with compound 0.0 it would be indistinguishable from news
+# that really was neutral, and it would feed the model's sentiment features.
+
+
+def analyze_headline(headline: str) -> dict | None:
     """
     Run FinBERT on a single headline.
-    Returns dict with sentiment, score_pos, score_neg, score_neu, compound.
+    Returns dict with sentiment, score_pos, score_neg, score_neu, compound,
+    or None when FinBERT is unavailable or fails on this headline.
     """
     model = get_finbert()
     if model is None:
-        return {
-            "sentiment": "neutral",
-            "score_pos": 0.33,
-            "score_neg": 0.33,
-            "score_neu": 0.34,
-            "compound": 0.0,
-        }
+        return None
 
     try:
-        results = model(headline[:512])[0]  # truncate to 512 tokens
-
-        scores = {r["label"].lower(): r["score"] for r in results}
-        score_pos = scores.get("positive", 0.0)
-        score_neg = scores.get("negative", 0.0)
-        score_neu = scores.get("neutral", 0.0)
-
-        # Compound score: positive signal - negative signal
-        compound = round(score_pos - score_neg, 4)
-
-        # Dominant sentiment
-        sentiment = max(scores, key=lambda label: scores[label])
-
-        return {
-            "sentiment": sentiment,
-            "score_pos": round(score_pos, 4),
-            "score_neg": round(score_neg, 4),
-            "score_neu": round(score_neu, 4),
-            "compound": compound,
-        }
+        return _score(model(headline[:512])[0])  # truncate to 512 tokens
     except Exception as e:
         logger.warning(f"FinBERT failed on headline: {e}")
-        return {
-            "sentiment": "neutral",
-            "score_pos": 0.33,
-            "score_neg": 0.33,
-            "score_neu": 0.34,
-            "compound": 0.0,
-        }
+        return None
 
 
-def analyze_batch(headlines: list[str]) -> list[dict]:
-    """Run FinBERT on a batch of headlines (faster than one at a time)."""
+def analyze_batch(headlines: list[str]) -> list[dict | None]:
+    """Run FinBERT on a batch of headlines (faster than one at a time).
+    Entries are None for headlines that could not be scored."""
+    if not headlines:
+        return []
     model = get_finbert()
-    if model is None or not headlines:
-        return [
-            {
-                "sentiment": "neutral",
-                "score_pos": 0.33,
-                "score_neg": 0.33,
-                "score_neu": 0.34,
-                "compound": 0.0,
-            }
-        ] * len(headlines)
+    if model is None:
+        return [None] * len(headlines)
 
     try:
-        # Truncate each headline
-        truncated = [h[:512] for h in headlines]
-        batch_results = model(truncated)
-
-        output = []
-        for results in batch_results:
-            scores = {r["label"].lower(): r["score"] for r in results}
-            score_pos = scores.get("positive", 0.0)
-            score_neg = scores.get("negative", 0.0)
-            score_neu = scores.get("neutral", 0.0)
-            compound = round(score_pos - score_neg, 4)
-            sentiment = max(scores, key=lambda label: scores[label])
-            output.append(
-                {
-                    "sentiment": sentiment,
-                    "score_pos": round(score_pos, 4),
-                    "score_neg": round(score_neg, 4),
-                    "score_neu": round(score_neu, 4),
-                    "compound": compound,
-                }
-            )
-        return output
-
+        return [_score(results) for results in model([h[:512] for h in headlines])]
     except Exception as e:
         logger.warning(f"Batch FinBERT failed: {e}")
         return [analyze_headline(h) for h in headlines]
@@ -443,7 +412,12 @@ def run(tickers: list[str] | None = None) -> dict:
 
     # Preload FinBERT once before the loop
     logger.info("Preloading FinBERT model...")
-    get_finbert()
+    if get_finbert() is None:
+        logger.error(
+            "FinBERT could not be loaded: writing no sentiment rows. Storing "
+            "unscored headlines as neutral would read as real neutral news."
+        )
+        return dict.fromkeys(tickers, 0)
 
     for ticker in tickers:
         logger.info(f"Processing sentiment for {ticker}...")
@@ -463,12 +437,20 @@ def run(tickers: list[str] | None = None) -> dict:
         logger.info(f"  Running FinBERT on {len(headlines)} headlines...")
         scores = analyze_batch(headlines)
 
-        # Merge scores back into articles
-        for article, score in zip(all_articles, scores, strict=False):
-            article.update(score)
+        # Merge scores back into articles; unscored headlines are not stored
+        scored = [
+            {**article, **score}
+            for article, score in zip(all_articles, scores, strict=True)
+            if score is not None
+        ]
+        if len(scored) < len(all_articles):
+            logger.warning(
+                f"  {ticker}: {len(all_articles) - len(scored)} headlines FinBERT "
+                f"could not score were not stored"
+            )
 
         # Save to DB
-        n = save_sentiment(all_articles, ticker)
+        n = save_sentiment(scored, ticker)
         results[ticker] = n
         logger.info(f"  {ticker}: {n} sentiment rows saved")
 
