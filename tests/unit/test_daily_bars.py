@@ -116,6 +116,53 @@ def test_no_warning_when_every_date_has_a_daily_bar(read_tables, price_bars, cap
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
+# ── Bars that are neither daily nor on the session grid ──────────────────────
+
+
+def test_an_off_grid_bar_does_not_replace_the_day(price_bars, caplog):
+    """Anything off the 15-min grid used to count as a daily bar, so one stray
+    row (a 16:00 print, a bar with seconds) became the whole day: its own
+    open, high, low and close, and its few shares of volume."""
+    session = price_bars.session(INTRADAY_DAY, SESSION_CLOSES, volume=1000.0)
+    stray = {
+        **session[-1],
+        "ts": pd.Timestamp(f"{INTRADAY_DAY} 16:00", tz="America/New_York").tz_convert(
+            "UTC"
+        ),
+        "close": 999.0,
+        "volume": 5.0,
+    }
+    with caplog.at_level(logging.WARNING, logger="quantflow.db.prices"):
+        out = prices.daily_bars(price_bars.frame(session, stray), "AAPL")
+
+    day = _row(out, "date", INTRADAY_DAY)
+    assert day["close"] == pytest.approx(SESSION_CLOSES[-1])
+    assert day["volume"] == pytest.approx(26 * 1000.0)
+    assert any("off the session grid" in r.getMessage() for r in caplog.records)
+
+
+# ── Trailing windows start at a UTC midnight ──────────────────────────────────
+
+
+def test_a_trailing_window_starts_at_a_utc_midnight(fake_db, monkeypatch):
+    """Cut at NOW() minus N days, the first date lost its 00:00 UTC daily bar
+    but kept its afternoon 15-min bars, so the dashboard's first candle was
+    built from half a session."""
+    seen = {}
+
+    def capture(sql, params, ticker):
+        seen.update(params)
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
+
+    monkeypatch.setattr(prices, "_read", capture)
+    monkeypatch.setattr(
+        prices, "_now", lambda: pd.Timestamp("2026-11-06 21:37:12", tz="UTC")
+    )
+    prices.load_recent_ohlcv("AAPL", days=30)
+
+    assert seen["since"] == pd.Timestamp("2026-10-07 00:00", tz="UTC")
+
+
 # ── The pure rule ─────────────────────────────────────────────────────────────
 
 

@@ -37,11 +37,12 @@ DAILY_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
 _PRICE_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 # yfinance stamps 15-min bars with their start time on the regular-session
-# grid, 09:30 to 15:45 New York. Anything off that grid is a daily bar,
-# whichever midnight it was stored at: 00:00 UTC from today's yfinance, or
-# New York midnight from older versions.
+# grid: 09:30 to 15:45 New York, on the quarter hour. Daily bars sit exactly at
+# a midnight: 00:00 UTC from today's yfinance, or 00:00 New York from older
+# versions. A row that is neither is left out rather than guessed at.
 _FIRST_BAR_MINUTE = 9 * 60 + 30
 _LAST_BAR_MINUTE = 15 * 60 + 45
+_BAR_MINUTES = 15
 
 
 def _read(sql: str, params: dict, ticker: str) -> pd.DataFrame:
@@ -54,20 +55,35 @@ def _read(sql: str, params: dict, ticker: str) -> pd.DataFrame:
     return df
 
 
+def _now() -> pd.Timestamp:
+    """The current time; a seam so tests can fix it."""
+    return pd.Timestamp.now(tz="UTC")
+
+
 def classify_bars(bars: pd.DataFrame) -> pd.DataFrame:
-    """bars plus two columns: date and is_intraday.
+    """bars plus three columns: date, is_daily and is_intraday.
 
     date is the bar's UTC calendar date as a naive midnight, which is what the
     pipeline's ts::date has always produced in Supabase's UTC sessions and the
     right trading date for every timestamp shape stored here.
+
+    A row with both flags False is neither a daily bar nor a 15-min bar: a
+    16:00 print, a bar stamped with seconds. Counted as a daily bar, as the
+    first version of this rule did, it replaced the whole day.
     """
     ts = pd.to_datetime(bars["ts"], utc=True)
     local = ts.dt.tz_convert(EXCHANGE_TZ)
     minute = local.dt.hour * 60 + local.dt.minute
+    on_grid = (
+        (local.dt.second == 0)
+        & (local.dt.microsecond == 0)
+        & (minute % _BAR_MINUTES == 0)
+    )
     return bars.assign(
         ts=ts,
         date=ts.dt.tz_localize(None).dt.normalize(),
-        is_intraday=minute.between(_FIRST_BAR_MINUTE, _LAST_BAR_MINUTE),
+        is_daily=(ts == ts.dt.normalize()) | (local == local.dt.normalize()),
+        is_intraday=on_grid & minute.between(_FIRST_BAR_MINUTE, _LAST_BAR_MINUTE),
     )
 
 
@@ -85,7 +101,15 @@ def daily_bars(bars: pd.DataFrame, ticker: str) -> pd.DataFrame:
     frame = classify_bars(bars).sort_values("ts", kind="stable")
     frame[_PRICE_COLUMNS] = frame[_PRICE_COLUMNS].astype(float)
 
-    daily = frame[~frame["is_intraday"]].drop_duplicates("date", keep="first")
+    stray = frame[~frame["is_daily"] & ~frame["is_intraday"]]
+    if not stray.empty:
+        logger.warning(
+            f"{ticker}: ignored {len(stray)} bars off the session grid "
+            f"(neither 00:00 nor 09:30 to 15:45 New York on the quarter hour), "
+            f"{stray['ts'].min()} to {stray['ts'].max()}"
+        )
+
+    daily = frame[frame["is_daily"]].drop_duplicates("date", keep="first")
     intraday = frame[frame["is_intraday"] & ~frame["date"].isin(daily["date"])]
     built = (
         intraday.groupby("date", sort=True)
@@ -118,8 +142,9 @@ def load_daily_bars(
 ) -> pd.DataFrame:
     """One OHLCV row per trading date: date, open, high, low, close, volume.
 
-    days limits the read to a trailing window, bound as a parameter rather
-    than interpolated.
+    days limits the read to the trailing days that start at a UTC midnight.
+    Cut at NOW() minus N days instead, the first date lost its 00:00 UTC daily
+    bar but kept its later 15-min bars, and was built from part of a session.
     """
     if days is None:
         sql = """
@@ -134,10 +159,11 @@ def load_daily_bars(
             SELECT ts, open, high, low, close, volume
             FROM raw_prices
             WHERE ticker = :ticker AND source = :source
-              AND ts >= NOW() - INTERVAL '1 day' * :days
+              AND ts >= :since
             ORDER BY ts ASC
         """
-        params = {"ticker": ticker, "source": source, "days": days}
+        since = _now().normalize() - pd.Timedelta(days=days)
+        params = {"ticker": ticker, "source": source, "since": since}
 
     bars = _read(sql, params, ticker)
     if bars.empty:
