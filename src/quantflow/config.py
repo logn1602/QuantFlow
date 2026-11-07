@@ -50,14 +50,13 @@ TICKERS: list[str] = [t.strip().upper() for t in _raw_tickers.split(",") if t.st
 FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", 15))
 
 # ── Split guard ───────────────────────────────────────────────────────────────
-# A fraction, not a percentage: 0.15 fails the refresh when any stored daily
-# close differs from Yahoo's raw close for the same date by more than 15%.
-# Any stock split moves prices by far more (3-for-2, the smallest common ratio,
-# is 50%); dividend drift on these tickers stays under about 2% a year. See
-# quantflow/ingestion/split_guard.py, which also rejects values outside (0, 1).
-# `or` rather than a getenv default: a blank `SPLIT_GUARD_THRESHOLD=` falls back
-# too, instead of failing float('') at import and taking every entry point down.
-SPLIT_GUARD_THRESHOLD = float(os.getenv("SPLIT_GUARD_THRESHOLD") or 0.15)
+# A fraction, not a percentage: 0.15 fails the refresh when stored daily closes
+# differ from Yahoo's raw closes by more than 15%. Kept as the raw text and
+# parsed by quantflow.ingestion.split_guard.configured_threshold, which applies
+# the default for a blank value and rejects anything else that is not a
+# fraction between 0 and 1. Parsed here, a typo such as "15%" would fail at
+# import and take every entry point down, the dashboard included.
+SPLIT_GUARD_THRESHOLD = os.getenv("SPLIT_GUARD_THRESHOLD", "")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

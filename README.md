@@ -288,7 +288,7 @@ docs/architecture.md       Design decisions and trade-offs
 | `ALPHA_VANTAGE_API_KEY` | no | Only for the Alpha Vantage fetcher |
 | `NEWS_API_KEY` | no | Without it, sentiment uses the RSS feed only |
 | `FETCH_INTERVAL_MINUTES` | no | Scheduler interval, default 15 |
-| `SPLIT_GUARD_THRESHOLD` | no | Fraction, default `0.15`. The daily refresh fails if a stored daily close differs from Yahoo's raw close by more than this (a stock split after the rows were stored) |
+| `SPLIT_GUARD_THRESHOLD` | no | Fraction, default `0.15`. The daily refresh fails if stored daily closes differ from Yahoo's raw closes by more than this on three or more consecutive dates (a stock split after the rows were stored) |
 | `LOG_LEVEL` | no | Default `INFO` |
 
 **Database TLS.** `DB_SSLMODE` defaults to `require` rather than libpq's `prefer`, because `prefer` falls back to cleartext silently — no exception, no log line — if the peer declines TLS, and this database is a public endpoint reached from a laptop, a CI runner and Streamlit Cloud. `require` encrypts but does not authenticate the peer. `verify-full` is the recommended upgrade; it needs `DB_SSLROOTCERT` pointing at Supabase's CA file, because the pooler certificate is signed by a private CA present in neither the system trust store nor certifi.

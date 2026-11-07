@@ -18,8 +18,13 @@ import quantflow.config as config_module
 
 
 @pytest.fixture(autouse=True)
-def restore_config():
+def restore_config(monkeypatch):
     yield
+    # Undo the test's environment first. Fixture teardown runs in reverse
+    # setup order, and conftest's autouse fixtures set monkeypatch up before
+    # this one, so without the undo the reload below still saw the patched
+    # environment and left that copy of config behind for every later module.
+    monkeypatch.undo()
     importlib.reload(config_module)
 
 
@@ -141,16 +146,13 @@ def test_numeric_settings_are_coerced_to_int(monkeypatch):
     assert cfg.FETCH_INTERVAL_MINUTES == 30
 
 
-def test_a_blank_split_guard_threshold_falls_back_to_the_default(monkeypatch):
-    """`KEY=` with no value is how .env.example writes optional settings. A
-    float('') at import would take down every entry point, dashboard included."""
-    cfg = _reload_with(monkeypatch, SPLIT_GUARD_THRESHOLD="")
-    assert cfg.SPLIT_GUARD_THRESHOLD == 0.15
-
-
-def test_split_guard_threshold_is_read_as_a_fraction(monkeypatch):
-    cfg = _reload_with(monkeypatch, SPLIT_GUARD_THRESHOLD="0.2")
-    assert cfg.SPLIT_GUARD_THRESHOLD == 0.2
+@pytest.mark.parametrize("raw", ["", "15%", "fifteen"])
+def test_a_bad_split_guard_threshold_does_not_break_the_config_import(monkeypatch, raw):
+    """`KEY=` with no value is how .env.example writes optional settings, and
+    "15%" is an easy slip. Parsed at import, either took down every entry
+    point, the dashboard included. split_guard parses it instead."""
+    kept = _reload_with(monkeypatch, SPLIT_GUARD_THRESHOLD=raw).SPLIT_GUARD_THRESHOLD
+    assert kept == raw
 
 
 def _reload_with_defaults(monkeypatch, *unset):
@@ -165,8 +167,10 @@ def _reload_with_defaults(monkeypatch, *unset):
 
 
 def test_split_guard_threshold_defaults_to_fifteen_percent(monkeypatch):
-    cfg = _reload_with_defaults(monkeypatch, "SPLIT_GUARD_THRESHOLD")
-    assert cfg.SPLIT_GUARD_THRESHOLD == 0.15
+    from quantflow.ingestion import split_guard
+
+    _reload_with_defaults(monkeypatch, "SPLIT_GUARD_THRESHOLD")
+    assert split_guard.configured_threshold() == 0.15
 
 
 # ── The default ticker list ───────────────────────────────────────────────────
@@ -202,6 +206,18 @@ def test_the_default_ticker_list_is_the_tracked_eight(monkeypatch):
 def test_the_default_ticker_list_matches_env_example(monkeypatch):
     default = _reload_with_defaults(monkeypatch, "TICKERS").TICKERS
     assert default == _env_example_tickers()
+
+
+def _readme_default_tickers():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    match = re.search(r"^\| `TICKERS` \|.*defaults to `([^`]+)`", text, re.MULTILINE)
+    assert match, "no TICKERS row with a default in the README's settings table"
+    return match.group(1).split(",")
+
+
+def test_the_readme_documents_the_default_ticker_list(monkeypatch):
+    default = _reload_with_defaults(monkeypatch, "TICKERS").TICKERS
+    assert default == _readme_default_tickers()
 
 
 # ── require_or_exit() ─────────────────────────────────────────────────────────
