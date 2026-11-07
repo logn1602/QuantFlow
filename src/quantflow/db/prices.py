@@ -34,7 +34,7 @@ RAW_PRICE_COLUMNS = ("ticker", "source", "ts", "open", "high", "low", "close", "
 
 # What daily_bars returns: one row per trading date.
 DAILY_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
-_PRICE_COLUMNS = ["open", "high", "low", "close", "volume"]
+PRICE_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 # yfinance stamps 15-min bars with their start time on the regular-session
 # grid: 09:30 to 15:45 New York, on the quarter hour. Daily bars sit exactly at
@@ -122,7 +122,7 @@ def daily_bars(bars: pd.DataFrame, ticker: str) -> pd.DataFrame:
         return pd.DataFrame(columns=DAILY_COLUMNS)
 
     frame = classify_bars(bars).sort_values("ts", kind="stable")
-    frame[_PRICE_COLUMNS] = frame[_PRICE_COLUMNS].astype(float)
+    frame[PRICE_COLUMNS] = frame[PRICE_COLUMNS].astype(float)
 
     stray = frame[~frame["is_daily"] & ~frame["is_intraday"]]
     if not stray.empty:
@@ -208,7 +208,7 @@ def load_bar_timestamps(ticker: str, source: str = "yfinance") -> pd.DataFrame:
     )
 
 
-def _indexed_by_date(daily: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+def indexed_by_date(daily: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """daily_bars output indexed by each date's 00:00 UTC timestamp.
 
     Indicators and anomaly flags are stored against that timestamp, the same
@@ -229,7 +229,7 @@ def load_daily_ohlcv(ticker: str, source: str = "yfinance") -> pd.DataFrame:
     daily = load_daily_bars(ticker, source)
     if daily.empty:
         return daily
-    return _indexed_by_date(daily, _PRICE_COLUMNS)
+    return indexed_by_date(daily, PRICE_COLUMNS)
 
 
 def load_daily_close_volume(ticker: str, source: str = "yfinance") -> pd.DataFrame:
@@ -241,7 +241,7 @@ def load_daily_close_volume(ticker: str, source: str = "yfinance") -> pd.DataFra
     daily = load_daily_bars(ticker, source)
     if daily.empty:
         return daily
-    return _indexed_by_date(daily, ["close", "volume"])
+    return indexed_by_date(daily, ["close", "volume"])
 
 
 def load_daily_close(ticker: str, source: str = "yfinance") -> pd.DataFrame:

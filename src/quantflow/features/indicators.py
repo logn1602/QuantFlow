@@ -103,6 +103,12 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ── Database write ────────────────────────────────────────────────────────────
 
 
+def rounded_for_storage(df: pd.DataFrame) -> pd.DataFrame:
+    """The indicator columns at the precision technical_indicators keeps,
+    which is what every reader of the table gets back."""
+    return df[list(_ROUNDING)].astype(float).round(_ROUNDING)
+
+
 def save_indicators(df: pd.DataFrame, ticker: str) -> int:
     """
     Replace the ticker's rows in technical_indicators with df, which is
@@ -114,7 +120,7 @@ def save_indicators(df: pd.DataFrame, ticker: str) -> int:
         return 0
 
     columns = list(_ROUNDING)
-    out = df[columns].astype(float).round(_ROUNDING)
+    out = rounded_for_storage(df)
     out.insert(0, "ts", out.index)
     out.insert(0, "ticker", ticker)
     rows = frame_to_rows(out.reset_index(drop=True), ["ticker", "ts", *columns])

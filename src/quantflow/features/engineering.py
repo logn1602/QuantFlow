@@ -14,13 +14,25 @@ and includes a probe that plants a deliberate leak to prove the check fires.
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
 
-from quantflow.db.connection import get_engine
-from quantflow.db.prices import load_daily_bars
+from quantflow.db.features import load_stored_feature_inputs
+from quantflow.db.prices import PRICE_COLUMNS, indexed_by_date, load_daily_bars
+from quantflow.features.anomalies import STORED_DECIMALS, detect_anomalies
+from quantflow.features.indicators import compute_indicators, rounded_for_storage
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+INDICATOR_COLUMNS = [
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "bb_upper",
+    "bb_middle",
+    "bb_lower",
+]
+SENTIMENT_COLUMNS = ["sentiment_compound", "pos_count", "neg_count", "article_count"]
 
 
 def load_features(ticker: str) -> pd.DataFrame:
@@ -30,74 +42,106 @@ def load_features(ticker: str) -> pd.DataFrame:
 
     Prices come from load_daily_bars, the same one-row-per-trading-date
     series the statistical models read, so every model sees the same close.
+    The other signals are the rows the indicator, anomaly and sentiment
+    stages stored.
     """
-    # Base prices
     prices = load_daily_bars(ticker)
     if prices.empty:
         logger.warning(f"No price data for {ticker}")
         return pd.DataFrame()
 
-    engine = get_engine()
+    stored = load_stored_feature_inputs(ticker)
+    return merge_feature_inputs(
+        prices, stored["indicators"], stored["anomalies"], stored["sentiment"]
+    )
 
-    # Every date below is the UTC calendar date, the same one load_daily_bars
-    # gives each price row. A bare ts::date uses the session's TimeZone
-    # instead: UTC on Supabase, but on a server set to New York it moved every
-    # indicator, anomaly score and sentiment average to the previous day's
-    # price row.
-    with engine.connect() as conn:
-        # Technical indicators
-        indicators = pd.read_sql(
-            text("""
-            SELECT (ts AT TIME ZONE 'UTC')::date AS date,
-                   rsi_14, macd, macd_signal, macd_hist,
-                   bb_upper, bb_middle, bb_lower
-            FROM technical_indicators
-            WHERE ticker = :t
-            ORDER BY ts ASC
-        """),
-            conn,
-            params={"t": ticker},
-        )
 
-        # Anomalies
-        anomalies = pd.read_sql(
-            text("""
-            SELECT (ts AT TIME ZONE 'UTC')::date AS date, zscore
-            FROM anomalies
-            WHERE ticker = :t
-            ORDER BY ts ASC
-        """),
-            conn,
-            params={"t": ticker},
-        )
+def build_features(
+    prices: pd.DataFrame, articles: pd.DataFrame, ticker: str
+) -> pd.DataFrame:
+    """The frame load_features returns, computed instead of read back.
 
-        # Sentiment — daily average
-        sentiment = pd.read_sql(
-            text("""
-            SELECT
-                (published_at AT TIME ZONE 'UTC')::date AS date,
-                AVG(compound)                       AS sentiment_compound,
-                COUNT(*) FILTER (WHERE sentiment='positive') AS pos_count,
-                COUNT(*) FILTER (WHERE sentiment='negative') AS neg_count,
-                COUNT(*)                            AS article_count
-            FROM news_sentiment
-            WHERE ticker = :t
-            GROUP BY (published_at AT TIME ZONE 'UTC')::date
-            ORDER BY date ASC
-        """),
-            conn,
-            params={"t": ticker},
-        )
+    prices are daily bars (load_daily_bars' shape) and articles the stored
+    sentiment rows (published_at, sentiment, compound). Indicators and
+    anomaly scores are computed from the prices exactly as their stages do,
+    at the precision the tables keep, and sentiment is averaged by UTC
+    publish date as the stored query does. So for the same history this
+    matches what the live run reads, while depending only on its arguments:
+    given the history up to a date, it gives what the live run would have
+    read on that date. The stored anomaly rows cannot do that, because the
+    IQR fences behind them are fitted on the whole history.
+    """
+    if prices.empty:
+        return pd.DataFrame()
 
-    indicators["date"] = pd.to_datetime(indicators["date"])
+    indexed = indexed_by_date(prices, PRICE_COLUMNS)
+
+    computed = compute_indicators(indexed)
+    if computed.empty:
+        indicators = pd.DataFrame(columns=["date", *INDICATOR_COLUMNS])
+    else:
+        indicators = _dated(rounded_for_storage(computed))
+
+    flags = detect_anomalies(indexed[["close", "volume"]], ticker)
+    if flags.empty:
+        anomalies = pd.DataFrame(columns=["date", "zscore"])
+    else:
+        anomalies = _dated(flags[["zscore"]].astype(float).round(STORED_DECIMALS))
+
+    return merge_feature_inputs(
+        prices, indicators, anomalies, daily_sentiment(articles)
+    )
+
+
+def _dated(frame: pd.DataFrame) -> pd.DataFrame:
+    """A frame indexed by 00:00 UTC timestamps, with the date as a column,
+    as the stored queries return it."""
+    dates = pd.DatetimeIndex(frame.index).tz_convert("UTC").tz_localize(None)
+    return frame.reset_index(drop=True).assign(date=dates.normalize())
+
+
+def daily_sentiment(articles: pd.DataFrame) -> pd.DataFrame:
+    """Articles averaged by UTC publish date, as the stored query does:
+    mean compound, positive and negative counts, and every article counted."""
+    if articles.empty:
+        return pd.DataFrame(columns=["date", *SENTIMENT_COLUMNS])
+    published = pd.to_datetime(articles["published_at"], utc=True)
+    by_date = articles.assign(
+        date=published.dt.tz_localize(None).dt.normalize(),
+        compound=pd.to_numeric(articles["compound"]),
+        positive=articles["sentiment"].eq("positive"),
+        negative=articles["sentiment"].eq("negative"),
+    ).groupby("date", sort=True)
+    return pd.DataFrame(
+        {
+            "sentiment_compound": by_date["compound"].mean(),
+            "pos_count": by_date["positive"].sum(),
+            "neg_count": by_date["negative"].sum(),
+            "article_count": by_date.size(),
+        }
+    ).reset_index()
+
+
+def merge_feature_inputs(
+    prices: pd.DataFrame,
+    indicators: pd.DataFrame,
+    anomalies: pd.DataFrame,
+    sentiment: pd.DataFrame,
+) -> pd.DataFrame:
+    """Prices with each date's indicators, anomaly score and sentiment.
+
+    One rule for both sources, stored or computed: a date keeps its first
+    indicator and anomaly row, and a date with none of a signal gets missing
+    values, which engineer_features then fills.
+    """
+    indicators = indicators.assign(date=pd.to_datetime(indicators["date"]))
     indicators = indicators.drop_duplicates("date")
 
-    anomalies["date"] = pd.to_datetime(anomalies["date"])
+    anomalies = anomalies.assign(date=pd.to_datetime(anomalies["date"]))
     anomalies = anomalies.drop_duplicates("date")
 
-    sentiment["date"] = pd.to_datetime(sentiment["date"])
+    sentiment = sentiment.assign(date=pd.to_datetime(sentiment["date"]))
 
-    # Merge everything
     df = prices.merge(indicators, on="date", how="left")
     df = df.merge(anomalies, on="date", how="left")
     df = df.merge(sentiment, on="date", how="left")
