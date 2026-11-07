@@ -56,6 +56,20 @@ def test_save_sentiment_write_error_raises_instead_of_being_logged(fake_db):
         sentiment.save_sentiment([_article("a"), _article("b")], "AAPL")
 
 
+def test_untrusted_feed_text_cannot_break_the_batched_insert(fake_db):
+    """psycopg2 rejects a NUL byte or a lone surrogate before the statement
+    reaches the server. In one batched INSERT, a single such headline from a
+    feed would fail the whole write, and with it the daily refresh."""
+    bad = _article("Apple beats\x00 estimates")
+    bad["url"] = "https://example.com/\ud83d"
+
+    assert sentiment.save_sentiment([bad, _article("clean headline")], "AAPL") == 2
+    for row in fake_db.tables["news_sentiment"]:
+        for field in ("headline", "url"):
+            assert "\x00" not in row[field]
+            row[field].encode("utf-8")  # a lone surrogate raises here, as in psycopg2
+
+
 def test_the_same_headline_twice_in_one_run_is_stored_once(fake_db):
     """RSS and NewsAPI can both return a headline with the same timestamp."""
     articles = [_article("dup", "rss"), _article("dup", "newsapi")]

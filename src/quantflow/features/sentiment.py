@@ -297,6 +297,19 @@ def fetch_newsapi(ticker: str) -> list[dict]:
 # ── Database write ────────────────────────────────────────────────────────────
 
 
+def _clean_text(value: str | None, limit: int) -> str:
+    """Feed text made safe to bind: no NUL bytes, no code points UTF-8 cannot
+    encode (lone surrogates become "?"), at most `limit` characters.
+
+    Headlines and URLs come from third-party feeds. psycopg2 rejects both
+    defects on the client side, before anything reaches the server, so in one
+    batched INSERT a single malformed article would fail the whole write and
+    stop the daily refresh with it.
+    """
+    cleaned = (value or "").replace("\x00", "")
+    return cleaned.encode("utf-8", "replace").decode("utf-8")[:limit]
+
+
 def save_sentiment(articles: list[dict], ticker: str) -> int:
     """
     Save analyzed articles to news_sentiment table.
@@ -305,12 +318,15 @@ def save_sentiment(articles: list[dict], ticker: str) -> int:
     """
     rows: dict[tuple, dict] = {}
     for article in articles:
+        headline = _clean_text(article["headline"], 1000)
+        if not headline:
+            continue
         row = {
             "ticker": ticker,
             "source": article["source"],
             "published_at": article["published_at"],
-            "headline": article["headline"][:1000],
-            "url": (article.get("url") or "")[:500],
+            "headline": headline,
+            "url": _clean_text(article.get("url"), 500),
             "sentiment": article["sentiment"],
             "score_pos": article["score_pos"],
             "score_neg": article["score_neg"],
