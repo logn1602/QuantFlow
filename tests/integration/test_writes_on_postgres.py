@@ -22,7 +22,6 @@ import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DataError
 
 from quantflow.db import prices
@@ -36,11 +35,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def pg(request, install_engine):
+def pg(request, install_engine, is_local_pg_url):
     url = request.config.getoption("--pg-url")
     if not url:
         pytest.skip("needs --pg-url pointing at a disposable local Postgres")
-    if make_url(url).host not in ("localhost", "127.0.0.1"):
+    if not is_local_pg_url(url):
         pytest.fail("--pg-url must be a local database, never the live one")
 
     schema = f"qf_test_{uuid.uuid4().hex[:8]}"

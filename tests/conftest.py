@@ -198,6 +198,35 @@ def pytest_addoption(parser):
     )
 
 
+def _is_local_pg_url(url):
+    """True only when libpq would connect to this machine.
+
+    Judged on the arguments the psycopg2 dialect hands libpq, not on the URL's
+    host alone: the query string can carry host, hostaddr or service, any of
+    which sends the connection somewhere else. No connection is opened.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "postgresql":
+        return False
+    if {"host", "hostaddr", "service"} & set(parsed.query):
+        return False
+    engine = create_engine(parsed)
+    try:
+        _, kwargs = engine.dialect.create_connect_args(parsed)
+    finally:
+        engine.dispose()
+    return kwargs.get("host") in ("localhost", "127.0.0.1")
+
+
+@pytest.fixture
+def is_local_pg_url():
+    """The integration suite's local-only check, for testing it."""
+    return _is_local_pg_url
+
+
 @pytest.fixture
 def install_engine(monkeypatch):
     """Route every get_engine call to the given engine (integration tests)."""
