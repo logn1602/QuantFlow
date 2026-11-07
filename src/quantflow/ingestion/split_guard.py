@@ -31,6 +31,7 @@ Usage:
 
 import argparse
 import sys
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -54,6 +55,10 @@ MIN_BREAK_RUN = 3
 
 class PriceBasisError(RuntimeError):
     """Stored prices and Yahoo's disagree by more than the threshold."""
+
+
+class GuardError(RuntimeError):
+    """At least one ticker could not be checked because of an error."""
 
 
 def configured_threshold(raw: str | None = None) -> float:
@@ -141,56 +146,80 @@ def _dates(found: pd.DataFrame) -> str:
     return ", ".join(days) if len(days) <= 5 else f"{days[0]} to {days[-1]}"
 
 
+@dataclass
+class GuardResult:
+    """What one pass over the tickers found."""
+
+    # Each ticker with a basis break, and its mismatched closes.
+    breaks: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # Tickers Yahoo returned no reference prices for, so not checked.
+    unchecked: list[str] = field(default_factory=list)
+    # Tickers whose check raised, and the error.
+    errors: dict[str, Exception] = field(default_factory=dict)
+
+
+def _ticker_breaks(ticker: str, threshold: float) -> pd.DataFrame | None:
+    """The ticker's basis breaks (empty if none), or None when Yahoo returned
+    no reference prices to check against."""
+    stored = load_daily_bars(ticker)
+    if stored.empty:
+        return pd.DataFrame()
+    reference = yahoo_daily_closes(ticker, stored["date"].min().date().isoformat())
+    if reference.empty:
+        logger.warning(f"{ticker}: no reference prices from Yahoo; not checked")
+        return None
+
+    found = mismatched_closes(stored, reference, threshold)
+    isolated = found[found["run"] < MIN_BREAK_RUN]
+    if not isolated.empty:
+        logger.warning(
+            f"{ticker}: stored close differs from Yahoo's by more than the "
+            f"threshold on {len(isolated)} isolated dates ({_dates(isolated)}); "
+            f"a bad print on one side rather than a split, so not failing"
+        )
+    found = found[found["run"] >= MIN_BREAK_RUN].reset_index(drop=True)
+    if found.empty:
+        logger.info(f"{ticker}: stored prices agree with Yahoo")
+    return found
+
+
 def check(
     tickers: list[str] | None = None, threshold: float | None = None
-) -> tuple[dict[str, pd.DataFrame], list[str]]:
-    """(breaks, unchecked) for the given tickers.
+) -> GuardResult:
+    """Check every ticker, whatever happens to the others.
 
-    breaks maps each ticker with a basis break to its mismatched closes;
-    tickers without one are left out. unchecked lists the tickers Yahoo
-    returned no reference prices for, which were not checked at all.
+    A ticker whose check raises (the database or Yahoo misbehaving) is logged
+    and recorded, and the loop carries on: an error on one ticker used to
+    escape the loop and discard a break already found for another.
     """
     threshold = configured_threshold() if threshold is None else _checked(threshold)
 
-    breaks = {}
-    unchecked = []
+    result = GuardResult()
     for ticker in tickers or TICKERS:
-        stored = load_daily_bars(ticker)
-        if stored.empty:
+        try:
+            found = _ticker_breaks(ticker, threshold)
+        except Exception as e:
+            logger.exception(f"{ticker}: could not be checked: {type(e).__name__}: {e}")
+            result.errors[ticker] = e
             continue
-        reference = yahoo_daily_closes(ticker, stored["date"].min().date().isoformat())
-        if reference.empty:
-            logger.warning(f"{ticker}: no reference prices from Yahoo; not checked")
-            unchecked.append(ticker)
-            continue
-
-        found = mismatched_closes(stored, reference, threshold)
-        isolated = found[found["run"] < MIN_BREAK_RUN]
-        if not isolated.empty:
-            logger.warning(
-                f"{ticker}: stored close differs from Yahoo's by more than the "
-                f"threshold on {len(isolated)} isolated dates ({_dates(isolated)}); "
-                f"a bad print on one side rather than a split, so not failing"
-            )
-        found = found[found["run"] >= MIN_BREAK_RUN]
-        if found.empty:
-            logger.info(f"{ticker}: stored prices agree with Yahoo")
-        else:
-            breaks[ticker] = found.reset_index(drop=True)
-    return breaks, unchecked
+        if found is None:
+            result.unchecked.append(ticker)
+        elif not found.empty:
+            result.breaks[ticker] = found
+    return result
 
 
 def run(tickers: list[str] | None = None, threshold: float | None = None) -> list[str]:
-    """Raise PriceBasisError, after logging each break, if any ticker has one.
+    """Check every ticker, then raise if any has a break or could not be checked.
 
-    Returns the tickers that could not be checked because Yahoo returned no
-    reference prices for them.
+    PriceBasisError, after logging each break, when any ticker has one, even
+    if another ticker's check failed. Otherwise GuardError when any check
+    raised. Returns the tickers Yahoo returned no reference prices for.
     """
-    breaks, unchecked = check(tickers, threshold)
-    if not breaks:
-        return unchecked
+    result = check(tickers, threshold)
+    failed = ", ".join(sorted(result.errors))
 
-    for ticker, found in breaks.items():
+    for ticker, found in result.breaks.items():
         logger.error(
             f"{ticker}: {len(found)} stored daily closes differ from Yahoo's by "
             f"more than the threshold, {found['date'].min().date()} to "
@@ -198,9 +227,17 @@ def run(tickers: list[str] | None = None, threshold: float | None = None) -> lis
             f"{found['ratio'].median():.4f}. A stock split after these rows were "
             f"stored is the usual cause: rescale them before the next run."
         )
-    raise PriceBasisError(
-        "stored prices disagree with Yahoo for " + ", ".join(sorted(breaks))
-    )
+    if result.breaks:
+        message = "stored prices disagree with Yahoo for " + ", ".join(
+            sorted(result.breaks)
+        )
+        raise PriceBasisError(
+            message + (f"; could not check {failed}" if failed else "")
+        )
+    if result.errors:
+        first = next(iter(result.errors.values()))
+        raise GuardError(f"could not check {failed}") from first
+    return result.unchecked
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -219,6 +256,9 @@ def main(argv: list[str] | None = None) -> int:
         run([args.ticker.upper()] if args.ticker else None, threshold)
     except PriceBasisError as e:
         print(f"SPLIT GUARD FAILED: {e}", file=sys.stderr)
+        return 1
+    except GuardError as e:
+        print(f"SPLIT GUARD INCOMPLETE: {e} (see the log)", file=sys.stderr)
         return 1
     return 0
 

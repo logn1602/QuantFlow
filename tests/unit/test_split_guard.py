@@ -14,6 +14,7 @@ import logging
 import numpy as np
 import pandas as pd
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from quantflow.ingestion import split_guard, yfinance_fetcher
 
@@ -178,6 +179,54 @@ def test_a_threshold_outside_zero_to_one_is_rejected(bad):
     """15 meaning "15%" would silently disable the guard."""
     with pytest.raises(ValueError, match="SPLIT_GUARD_THRESHOLD"):
         split_guard.run(["AAPL"], threshold=bad)
+
+
+def _unreadable(ticker_that_fails, monkeypatch):
+    """load_daily_bars raises a database error for one ticker only."""
+    real_load = split_guard.load_daily_bars
+
+    def load(ticker, *args, **kwargs):
+        if ticker == ticker_that_fails:
+            raise OperationalError("SELECT", {}, Exception("connection dropped"))
+        return real_load(ticker, *args, **kwargs)
+
+    monkeypatch.setattr(split_guard, "load_daily_bars", load)
+
+
+def test_a_break_is_reported_even_when_another_ticker_cannot_be_read(
+    split_stored, monkeypatch
+):
+    """A database error on a later ticker used to escape the loop and discard
+    the break already found, and the scheduler then kept its earlier pass."""
+    _yahoo_serving(monkeypatch, 100.0)  # AAPL is stored at 400: a 4-for-1 split
+    _unreadable("MSFT", monkeypatch)
+    with pytest.raises(
+        split_guard.PriceBasisError, match=r"AAPL.*could not check MSFT"
+    ):
+        split_guard.run(["AAPL", "MSFT"], threshold=0.15)
+
+
+def test_a_ticker_that_cannot_be_checked_fails_the_run_after_the_rest(
+    split_stored, monkeypatch, caplog
+):
+    _yahoo_serving(monkeypatch, 400.0)  # AAPL agrees with Yahoo
+    _unreadable("MSFT", monkeypatch)
+    with (
+        caplog.at_level(logging.INFO),
+        pytest.raises(split_guard.GuardError, match="MSFT"),
+    ):
+        split_guard.run(["MSFT", "AAPL"], threshold=0.15)
+    assert "AAPL: stored prices agree with Yahoo" in caplog.text
+
+
+def test_the_cli_exits_non_zero_when_a_ticker_cannot_be_checked(
+    split_stored, monkeypatch, capsys
+):
+    _yahoo_serving(monkeypatch, 400.0)
+    _unreadable("AAPL", monkeypatch)
+    monkeypatch.setattr(split_guard, "TICKERS", ["AAPL"])
+    assert split_guard.main([]) == 1
+    assert "could not check AAPL" in capsys.readouterr().err
 
 
 def test_no_reference_from_yahoo_is_a_warning_not_a_failure(split_stored, monkeypatch):
