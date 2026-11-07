@@ -65,6 +65,8 @@ Data flows one way. `quantflow.models` depends on `quantflow.evaluation`, never 
 
 ## Evaluation
 
+> **Notice (2026-11-07): the figures in this section were scored against 09:30-bar prices, not daily closes.** From 2026-04-14 the pipeline stored only 15-minute bars and the loaders took each date's first bar, so every "actual" close in the 30-day holdout, and in the last 48 training days, was the 09:30 bar's price. Over the holdout window that price sat 0.7% to 1.9% from the day's close on average, depending on the ticker. Found by the read-only diagnostics in [scripts/diagnostics/](scripts/diagnostics/). The numbers below are left as published and will be re-measured in Phase 4.
+
 **How the evaluation set is built.** Intraday bars are collapsed to one close per trading date, giving **579 daily closes per ticker** spanning 2024-04-10 to 2026-08-04. The final **30 trading days** are held out. The split is positional on a date-sorted series — `train = df.iloc[:-30]`, `holdout = df.iloc[-30:]` — defined once in [evaluation/splits.py](src/quantflow/evaluation/splits.py). There is no random shuffle anywhere in the codebase.
 
 **What counts as success.** MAPE against actual closes, because it is unit-free and therefore comparable across tickers trading at very different prices. A model is better than another only when scored on the same window over the same horizon.
