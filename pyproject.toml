@@ -170,7 +170,7 @@ python_files       = ["test_*.py"]
 addopts            = "-q --strict-markers"
 markers = [
     "eval: end-to-end evaluation runs; slow, excluded from the default CI run",
-    "integration: requires a live database or network; excluded from the default CI run",
+    "integration: needs a disposable local Postgres (--pg-url) or the network; excluded from the default CI run",
 ]
 
 

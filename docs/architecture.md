@@ -91,10 +91,12 @@ disagree and neither is wrong.
 
 ### Price data: one row per trading date, stored raw
 
-`raw_prices` holds two kinds of bar: the daily bars seeding writes, and the
-15-minute bars every refresh writes. Everything that wants one row per
-trading date (every model, the indicator and anomaly stages, the dashboard's
-candles) goes through `db.prices.daily_bars`:
+`raw_prices` holds two kinds of bar: daily bars, stored at their exchange
+date's 00:00 UTC, and 15-minute bars on the 09:30 to 15:45 New York grid. A
+row that is neither, such as a stray 16:00 print, is left out with a warning.
+Everything that wants one row per trading date (every model, the indicator
+and anomaly stages, the dashboard's candles) goes through
+`db.prices.daily_bars`:
 
 - a date with a daily bar uses it;
 - a date with only 15-minute bars gets one bar built from them: first open,
@@ -131,21 +133,35 @@ depended on when it was fetched. Three consequences follow:
 **Splits are guarded, not absorbed.** Yahoo split-adjusts as of fetch time
 and stored rows are never rewritten, so a split after rows were stored would
 read as a crash. `quantflow.ingestion.split_guard` runs after each daily
-fetch and fails the refresh if any stored daily close differs from Yahoo's
-raw close by more than `SPLIT_GUARD_THRESHOLD` (default 15%; dividend drift
-stays far below it, any split far above). The fix is a scoped rescale of that
-ticker's earlier rows, run by hand, after which the guard passes again by
-itself.
+fetch and fails the refresh when stored daily closes differ from Yahoo's raw
+closes by more than `SPLIT_GUARD_THRESHOLD` (default 15%; dividend drift stays
+far below it, any split far above) on three or more consecutive dates. A split
+shifts every row stored before it, a long unbroken run; one or two isolated
+mismatches are a bad print on one side, and are logged as warnings instead of
+stopping every stage. The fix is a scoped rescale of that ticker's earlier
+rows, run by hand, after which the guard passes again by itself.
 
-### SQL confined to `db/`
+In the daily workflow a failing guard fails its step, so nothing after it
+runs. The scheduler has no steps, so it remembers the guard's last answer:
+the guard runs at startup, at 16:20 New York time before the model jobs, and
+after the 17:05 daily bars, and while its last answer is a break, the jobs
+that read prices (indicators, anomalies, both model jobs, the ensemble and
+the backtest) log why and skip. Ingestion and sentiment keep running.
 
-Every statement in the project lives under `quantflow.db`. `raw_prices` has
-four readers rather than one god-function, because the four callers genuinely
-need different shapes — full OHLCV indexed by timestamp, close-and-volume,
-a deduplicated daily `ds`/`y` series, a windowed frame with a date column.
-Merging them would mean either passing shape flags or returning the widest
-shape and making callers discard columns. Four named functions sharing one
-private helper is the smaller cost.
+### SQL in `db/`
+
+Every read of `raw_prices` and most writes live under `quantflow.db`. The
+exceptions sit beside their callers: the anomaly-flag and backtest-result
+writes, and some feature, display and evaluation queries. `raw_prices` has
+one definition of a trading-day bar, `daily_bars`, and every reader is a
+projection of it: daily OHLCV indexed by each date's 00:00 UTC timestamp for
+the indicator engine, close and volume for anomaly detection, a `ds`/`y`
+series for the forecasters, and a windowed frame with a date column for the
+dashboard. Projecting one shape is cheap at this size. What must exist exactly
+once is the rule for combining daily and 15-minute bars, because two copies of
+it would let the models and the dashboard disagree about a day's close.
+`load_bar_timestamps` serves the backfill, which only needs to know which dates
+already have a daily bar.
 
 ---
 
@@ -231,10 +247,12 @@ against the live database. Fresh installs are unaffected.
 The current design targets eight tickers, daily retraining, and a single
 Postgres instance. Each of these breaks at a different point.
 
-**Ingestion.** Row-by-row `INSERT ... ON CONFLICT` is fine for eight tickers
-and fails at a few hundred. `COPY` into a staging table with a merge is the
-standard fix, and it is a contained change because all writes are already in
-`db/`.
+**Ingestion.** Writes go out as one multi-row `INSERT ... ON CONFLICT` per
+chunk of up to 1,000 rows (`db/batch.py`), comfortable for eight tickers and
+well beyond. At a few hundred tickers, `COPY` into a staging table with a merge
+is the standard next step. It is a contained change because almost every write
+goes through `db/`; the anomaly flags and the backtest results are the
+exceptions.
 
 **Feature computation.** Every stage recomputes indicators over full history on
 every run. At eight tickers this is seconds. The shape that survives is
