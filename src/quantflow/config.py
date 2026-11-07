@@ -14,7 +14,10 @@ load_dotenv()
 
 # ── Database ─────────────────────────────────────────────────────────────────
 DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", 5432))
+# `or` rather than a getenv default here and for FETCH_INTERVAL_MINUTES: a
+# blank `DB_PORT=` falls back too, instead of failing int('') at import and
+# taking every entry point down.
+DB_PORT = int(os.getenv("DB_PORT") or 5432)
 DB_NAME = os.getenv("DB_NAME", "stock_pipeline")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
@@ -47,7 +50,7 @@ _raw_tickers = os.getenv("TICKERS", DEFAULT_TICKERS)
 TICKERS: list[str] = [t.strip().upper() for t in _raw_tickers.split(",") if t.strip()]
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", 15))
+FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES") or 15)
 
 # ── Split guard ───────────────────────────────────────────────────────────────
 # A fraction, not a percentage: 0.15 fails the refresh when stored daily closes

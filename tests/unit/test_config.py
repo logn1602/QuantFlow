@@ -140,6 +140,16 @@ def test_database_url_is_assembled_from_parts(monkeypatch):
     assert cfg.DATABASE_URL == "postgresql://quant:pw@db.example.com:6543/flow"
 
 
+@pytest.mark.parametrize(
+    "name, default", [("DB_PORT", 5432), ("FETCH_INTERVAL_MINUTES", 15)]
+)
+def test_a_blank_numeric_setting_falls_back_to_its_default(monkeypatch, name, default):
+    """`KEY=` with no value is how .env.example writes optional settings;
+    int('') at import took down every entry point, dashboard included."""
+    value = getattr(_reload_with(monkeypatch, **{name: ""}), name)
+    assert value == default
+
+
 def test_numeric_settings_are_coerced_to_int(monkeypatch):
     cfg = _reload_with(monkeypatch, DB_PORT="6543", FETCH_INTERVAL_MINUTES="30")
     assert cfg.DB_PORT == 6543
