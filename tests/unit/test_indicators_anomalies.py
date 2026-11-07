@@ -94,6 +94,17 @@ def test_saving_indicators_replaces_the_tickers_rows(fake_db):
     assert len(fake_db.inserts("technical_indicators")) == 1
 
 
+def test_a_concurrent_replace_skips_rows_instead_of_failing(fake_db):
+    """Two runs replacing the same ticker at once (the laptop scheduler and
+    the daily workflow): the second one's DELETE cannot see rows the first
+    committed after it started, so its plain INSERT would hit the unique key
+    and fail the whole refresh. Skipping those rows leaves the first run's
+    identical computation in place."""
+    indicators.save_indicators(_indicator_frame(["2026-03-31"]), "AAPL")
+    sql, _ = fake_db.inserts("technical_indicators")[0]
+    assert "ON CONFLICT (ticker, ts) DO NOTHING" in sql
+
+
 def test_a_failed_indicator_write_keeps_the_previous_rows(fake_db):
     stale = pd.Timestamp("2026-03-30", tz="UTC")
     fake_db.seed("technical_indicators", [{"ticker": "AAPL", "ts": stale}])

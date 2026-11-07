@@ -156,6 +156,53 @@ def test_a_failed_indicator_replace_keeps_the_previous_rows(pg):
     assert _count(pg, "SELECT rsi_14 FROM technical_indicators") == 1.0
 
 
+def test_two_runs_replacing_one_tickers_indicators_at_once_both_succeed(pg):
+    """The second run's DELETE waits on the first and cannot see the rows the
+    first commits; its INSERT must skip them rather than fail the refresh."""
+    import threading
+    import time
+
+    ts = pd.Timestamp("2026-04-10", tz="UTC")
+    columns = ("rsi_14", "macd", "macd_signal", "macd_hist", "bb_upper", "bb_middle")
+    row = {"ticker": "AAPL", "ts": ts} | dict.fromkeys(columns, 1.0)
+    row["bb_lower"] = 1.0
+    assert replace_indicators("AAPL", [row]) == 1
+
+    first = pg.connect()
+    first_txn = first.begin()
+    first.execute(
+        text("DELETE FROM technical_indicators WHERE ticker = ANY(:t)"),
+        {"t": ["AAPL"]},
+    )
+    insert_rows(first, "technical_indicators", [row | {"rsi_14": 2.0}])
+
+    outcome = {}
+
+    def second_run():
+        try:
+            outcome["written"] = replace_indicators("AAPL", [row | {"rsi_14": 3.0}])
+        except Exception as e:
+            outcome["error"] = e
+
+    worker = threading.Thread(target=second_run)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:  # until the second DELETE is blocked
+        if _count(pg, "SELECT count(*) FROM pg_locks WHERE NOT granted"):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the second run never blocked on the first")
+
+    first_txn.commit()
+    first.close()
+    worker.join(timeout=10)
+
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["written"] == 0
+    assert _count(pg, "SELECT rsi_14 FROM technical_indicators") == 2.0
+
+
 def test_daily_bars_on_the_types_the_driver_returns(pg):
     session = [
         {
