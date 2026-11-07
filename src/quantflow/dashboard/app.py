@@ -48,11 +48,18 @@ st.markdown(
 # ── Data loaders ──────────────────────────────────────────────────────────────
 
 
+# Indicator, anomaly and sentiment rows are dated by UTC calendar date, the
+# date the price candles carry (db.prices.daily_bars). A bare ts::date follows
+# the session's TimeZone instead: UTC on Supabase, but on a session west of UTC
+# every indicator and anomaly stored at 00:00 UTC sat one day left of its
+# candle. No regression test yet: this module cannot be imported in tests
+# (Known problem #5 in docs/architecture.md).
 @st.cache_data(ttl=300)
 def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
-        SELECT ts::date AS date, rsi_14, macd, macd_signal, macd_hist,
+        SELECT (ts AT TIME ZONE 'UTC')::date AS date,
+               rsi_14, macd, macd_signal, macd_hist,
                bb_upper, bb_middle, bb_lower
         FROM technical_indicators
         WHERE ticker = :ticker
@@ -69,7 +76,7 @@ def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
 def load_anomalies(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
-        SELECT ts::date AS date, close, zscore, flag
+        SELECT (ts AT TIME ZONE 'UTC')::date AS date, close, zscore, flag
         FROM anomalies
         WHERE ticker = :ticker
           AND ts >= NOW() - INTERVAL '1 day' * :days
@@ -117,7 +124,7 @@ def load_sentiment(ticker: str, days: int = 7) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
         SELECT
-            published_at::date              AS date,
+            (published_at AT TIME ZONE 'UTC')::date AS date,
             LEFT(headline, 80)              AS headline,
             sentiment,
             ROUND(compound::numeric, 3)     AS compound,
