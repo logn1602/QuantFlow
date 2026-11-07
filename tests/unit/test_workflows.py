@@ -68,11 +68,23 @@ def test_the_workflow_tracks_the_same_tickers_as_env_example():
     assert workflow.group(1) == example.group(1)
 
 
+PRICE_READING_STAGES = (
+    "python -m quantflow.features.indicators",
+    "python -m quantflow.features.anomalies",
+    "python -m quantflow.pipelines.run_models",
+    "python -m quantflow.evaluation.backtest",
+)
+
+
 def test_the_split_guard_runs_after_the_fetch_and_before_any_stage_reads_prices():
-    positions = _step_order(
-        DAILY_REFRESH,
-        "quantflow.ingestion.yfinance_fetcher --daily",
-        "python -m quantflow.ingestion.split_guard",
-        "python -m quantflow.features.indicators",
+    guard = "python -m quantflow.ingestion.split_guard"
+    fetch, guard_at = _step_order(
+        DAILY_REFRESH, "quantflow.ingestion.yfinance_fetcher --daily", guard
     )
-    assert positions == sorted(positions)
+    assert fetch < guard_at
+    for stage, at in zip(
+        PRICE_READING_STAGES,
+        _step_order(DAILY_REFRESH, *PRICE_READING_STAGES),
+        strict=True,
+    ):
+        assert guard_at < at, f"{stage} runs before the split guard"

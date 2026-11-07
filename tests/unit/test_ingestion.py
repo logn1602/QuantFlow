@@ -10,6 +10,8 @@ returned count still claims success. These tests hold the fetchers to the
 count Postgres reports, and to raising on any other write error.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -203,6 +205,37 @@ def test_cli_intraday_fetches_15min_bars(monkeypatch):
     )
     assert yfinance_fetcher.main(["--intraday"]) == 0
     assert seen == [1]
+
+
+# Through the entry points: the per-ticker `except Exception` that logged a
+# write error and carried on is gone from both fetch loops, so the error must
+# reach the CLI rather than a "Done" line counting rows that were rolled back.
+
+
+@pytest.mark.parametrize("kind, interval", [("--daily", "1d"), ("--intraday", "15m")])
+def test_a_write_error_fails_the_cli(fake_db, downloads, monkeypatch, kind, interval):
+    _, frames = downloads
+    frames["1d"] = _daily_frame(["2026-11-05"])
+    frames["15m"] = _yf_frame(3)
+    monkeypatch.setattr(
+        yfinance_fetcher, "_now", lambda: pd.Timestamp("2026-11-06 23:00", tz="UTC")
+    )
+    fake_db.fail_next_insert = DataError("INSERT", {}, Exception("numeric overflow"))
+
+    with pytest.raises(DataError):
+        yfinance_fetcher.main([kind, "--ticker", "AAPL"])
+    assert downloads[0][0]["interval"] == interval
+
+
+def test_a_failed_download_is_logged_and_writes_nothing(fake_db, monkeypatch, caplog):
+    def unreachable(ticker, **kwargs):
+        raise ConnectionError("yahoo unreachable")
+
+    monkeypatch.setattr(yfinance_fetcher.yf, "download", unreachable)
+    with caplog.at_level(logging.ERROR):
+        assert yfinance_fetcher.fetch_intraday(["AAPL"]) == {"AAPL": 0}
+    assert fake_db.inserts("raw_prices") == []
+    assert "Download failed for AAPL" in caplog.text
 
 
 # ── Alpha Vantage ─────────────────────────────────────────────────────────────

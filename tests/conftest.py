@@ -7,19 +7,30 @@ Tests are offline by design: no database, no network, no model training. The
 integration and eval markers exist for suites that need those; see
 pyproject.toml.
 
-Two fixtures enforce and support the no-database rule:
+Offline unit support:
 
   _no_database (autouse)  swaps get_engine everywhere for one that raises, so a
                           test that forgets to fake the database fails instead
                           of reaching the live Supabase instance that .env
                           points at.
+  _no_network (autouse)   makes yf.download and every requests call raise, so
+                          a test that forgets to fake Yahoo, Alpha Vantage or
+                          NewsAPI never reaches them.
   fake_db                 an in-memory stand-in that records every statement
                           and applies INSERT ... ON CONFLICT DO NOTHING the way
                           Postgres does, so a write path can be checked for what
                           it reports against what it actually wrote.
+  read_tables             canned pd.read_sql results by table name, for code
+                          that reads through pandas.
+  price_bars              raw_prices rows in the two shapes yfinance stores:
+                          daily bars at 00:00 UTC and 15-min bars on the New
+                          York session grid.
 
-price_bars builds raw_prices rows in the two shapes yfinance stores: daily bars
-at 00:00 UTC and 15-min bars on the New York session grid.
+Integration support (tests/integration, a disposable local Postgres):
+
+  --pg-url                the database to use; nothing runs without it.
+  is_local_pg_url         the check that it can only reach this machine.
+  install_engine          routes every get_engine call to the test's engine.
 """
 
 import copy
@@ -203,8 +214,13 @@ def _is_local_pg_url(url):
 
     Judged on the arguments the psycopg2 dialect hands libpq, not on the URL's
     host alone: the query string can carry host, hostaddr or service, any of
-    which sends the connection somewhere else. No connection is opened.
+    which sends the connection somewhere else. So can the environment, which
+    libpq reads for every setting the URL leaves out: PGHOSTADDR directly, and
+    PGSERVICE through a service file that sets hostaddr. No connection is
+    opened.
     """
+    import os
+
     from sqlalchemy import create_engine
     from sqlalchemy.engine import make_url
 
@@ -212,6 +228,8 @@ def _is_local_pg_url(url):
     if parsed.get_backend_name() != "postgresql":
         return False
     if {"host", "hostaddr", "service"} & set(parsed.query):
+        return False
+    if os.environ.get("PGHOSTADDR") or os.environ.get("PGSERVICE"):
         return False
     engine = create_engine(parsed)
     try:
@@ -245,6 +263,18 @@ def _no_database(monkeypatch):
         )
 
     _replace_get_engine(monkeypatch, refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    import requests
+    import yfinance
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("tests are offline: fake this network call")
+
+    monkeypatch.setattr(yfinance, "download", refuse)
+    monkeypatch.setattr(requests.Session, "request", refuse)
 
 
 @pytest.fixture
