@@ -6,7 +6,10 @@ read os.environ directly in your scripts.
 """
 
 import os
+import re
 import sys
+from datetime import UTC, date, datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -61,6 +64,19 @@ FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES") or 15)
 # import and take every entry point down, the dashboard included.
 SPLIT_GUARD_THRESHOLD = os.getenv("SPLIT_GUARD_THRESHOLD", "")
 
+# Real one-day moves that the split guard's jump check would otherwise take
+# for a split, each with the reason it was judged real. A committed file, not
+# an environment variable, so a commit carries its list: the daily workflow
+# reads the one it runs on, a local run or the scheduler its working tree,
+# with no second environment to edit. Resolved from this file rather than the
+# working directory: everywhere the guard runs (uv sync and the daily
+# workflow) installs the package editable, so this is the checkout. Read by
+# split_jump_acknowledged() when the guard runs, never at import, for the
+# same reason as SPLIT_GUARD_THRESHOLD.
+SPLIT_JUMP_ACKNOWLEDGED_FILE = (
+    Path(__file__).resolve().parents[2] / "config" / "split_jump_acknowledged.txt"
+)
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # Anchored to the working directory, not to this file. Under the old flat
@@ -69,6 +85,92 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # Every entry point runs from the repo root, so cwd reproduces the previous
 # path exactly, and an installed copy still gets somewhere sensible.
 LOG_DIR = os.getenv("LOG_DIR") or os.path.join(os.getcwd(), "logs")
+
+
+# A ticker as stored (raw_prices.ticker is VARCHAR(10)), a colon, an ISO date.
+_ACKNOWLEDGED_ENTRY = re.compile(r"([A-Z][A-Z0-9.\-]{0,9}):(\d{4}-\d{2}-\d{2})")
+
+
+def split_jump_acknowledged(path: Path | None = None) -> dict[tuple[str, date], str]:
+    """The acknowledged split-sized moves: (ticker, date) mapped to the reason.
+
+    The date is the trading date whose close moved, compared with the stored
+    close before it. Blank lines and lines starting with # are skipped; every
+    other line must read TICKER:YYYY-MM-DD followed by a # comment giving the
+    reason. Tickers are upcased, as in TICKERS. A date may not be in the
+    future: only a move that has happened can be confirmed.
+
+    Lines end at a newline only, as git and a review diff see them. Python's
+    splitlines() also ends one at a form feed, U+2028 and the like, so
+    '#<form feed>XYZ:...' would read as a comment in review and load as an
+    entry. Any control or invisible character other than a tab is refused.
+
+    Raises ValueError naming the file, and the line where there is one, for a
+    file that is missing, unreadable or not UTF-8, and for a malformed,
+    repeated or future entry: the guard then stops as misconfigured rather
+    than run on a list it misread. A missing file is not read as an empty
+    list, because the file is committed with the code.
+    """
+    path = SPLIT_JUMP_ACKNOWLEDGED_FILE if path is None else path
+    try:
+        # utf-8-sig: Notepad and other Windows editors may save with a BOM.
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        raise ValueError(
+            f"{path} not found; it is committed with the code, and a list "
+            f"with no entries is a file with only comments"
+        ) from None
+    except UnicodeDecodeError as e:
+        raise ValueError(
+            f"{path} is not UTF-8 text (byte {e.start}); save it as UTF-8"
+        ) from None
+    except OSError as e:
+        raise ValueError(f"{path} cannot be read: {e}") from None
+
+    # UTC's date is never behind New York's, so this refuses only dates that
+    # have not begun anywhere the exchange is.
+    today = datetime.now(UTC).date()
+    found: dict[tuple[str, date], str] = {}
+    first_seen: dict[tuple[str, date], int] = {}
+    for number, raw in enumerate(text.split("\n"), start=1):
+        where = f"{path}, line {number}"
+        line = raw.removesuffix("\r")
+        if not line.replace("\t", " ").isprintable():
+            raise ValueError(
+                f"{where}: contains a control or invisible character; the list "
+                f"must be plain text"
+            )
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        entry, hash_mark, reason = line.partition("#")
+        reason = reason.strip()
+        if not hash_mark or not reason:
+            raise ValueError(
+                f"{where}: give the reason after a #, as in "
+                f"'XYZ:2026-05-01  # fell 34% on earnings'"
+            )
+        match = _ACKNOWLEDGED_ENTRY.fullmatch(entry.strip().upper())
+        if match is None:
+            raise ValueError(
+                f"{where}: expected TICKER:YYYY-MM-DD before the #, "
+                f"got {entry.strip()!r}"
+            )
+        try:
+            day = date.fromisoformat(match.group(2))
+        except ValueError:
+            raise ValueError(f"{where}: {match.group(2)} is not a date") from None
+        if day > today:
+            raise ValueError(
+                f"{where}: {day} is in the future; only a move that has happened "
+                f"can be acknowledged"
+            )
+        key = (match.group(1), day)
+        if key in found:
+            raise ValueError(f"{where}: repeats line {first_seen[key]}")
+        found[key] = reason
+        first_seen[key] = number
+    return found
 
 
 def validate():

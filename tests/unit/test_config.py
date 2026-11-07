@@ -183,6 +183,25 @@ def test_split_guard_threshold_defaults_to_fifteen_percent(monkeypatch):
     assert split_guard.configured_threshold() == 0.15
 
 
+COMMITTED_ACKNOWLEDGED_LIST = (
+    Path(__file__).resolve().parents[2] / "config" / "split_jump_acknowledged.txt"
+)
+
+
+def test_the_acknowledged_moves_list_is_the_committed_file(monkeypatch):
+    """Resolved from the package rather than the working directory, so a run
+    from anywhere reads the list committed with the code. Reloaded, as at
+    import: tests/conftest.py points every test at an empty list."""
+    cfg = _reload_with(monkeypatch)
+    assert COMMITTED_ACKNOWLEDGED_LIST == cfg.SPLIT_JUMP_ACKNOWLEDGED_FILE
+
+
+def test_the_committed_acknowledged_moves_list_parses():
+    """A bad edit fails here, in CI, before the daily refresh trips on it."""
+    acknowledged = config_module.split_jump_acknowledged(COMMITTED_ACKNOWLEDGED_LIST)
+    assert all(reason.strip() for reason in acknowledged.values())
+
+
 # ── The default ticker list ───────────────────────────────────────────────────
 #
 # The tests above set TICKERS explicitly, as CI does (AAPL,MSFT), so they say

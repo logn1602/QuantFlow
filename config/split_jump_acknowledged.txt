@@ -1,0 +1,23 @@
+# Split guard: one-day moves acknowledged as real, not splits.
+#
+# The split guard (quantflow.ingestion.split_guard) fails when a stored daily
+# close is at or below 0.733 times, or at or above 1.35 times, the stored close
+# before it: the size of a 3-for-2 split or its reverse, with 10% for the day's
+# own move. That catches a split of any larger ratio, and also any real fall of
+# 26.7% or more or rise of 35% or more. Once you have confirmed such a move was
+# real, add one line for it:
+#
+#   TICKER:YYYY-MM-DD  # the reason, required
+#
+# The date is the trading date whose close moved. To confirm it, check the
+# company's announcements as well as the split events the failure lists: Yahoo
+# can be late to record a split, so "none listed" is not proof.
+#
+# An entry silences only the jump check, only for that ticker and date, and
+# only on a run where Yahoo's raw closes agree with the stored ones on that date
+# and the date before. If Yahoo disagrees (a stored row made the move, not the
+# market) or cannot be reached, the move still fails. The comparison with
+# Yahoo's prices runs on every date either way, so an entry cannot hide a split.
+#
+# Example, commented out and so not active:
+#   XYZ:2026-05-01  # fell 34% on earnings, no split announced

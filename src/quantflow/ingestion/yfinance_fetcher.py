@@ -155,6 +155,37 @@ def download(ticker: str, **kwargs) -> pd.DataFrame:
     return data
 
 
+def split_events(ticker: str, start: str) -> pd.Series | None:
+    """Yahoo's split events for one ticker from start, or None when they could
+    not be fetched; the failure is logged.
+
+    A Series of ratios by date, as yfinance gives them: new shares per old
+    share, so 10.0 is a 10-for-1 split and 0.5 a 1-for-2 reverse split.
+
+    Read from the daily history since start rather than Ticker.splits, which
+    downloads a ticker's whole history (decades of bars) and returns the same
+    empty Series whether the request failed (yfinance catches most errors) or
+    there was no split. A daily history that worked is never empty, so here
+    an empty answer means not fetched. Only read to explain a split guard
+    failure, so a failure here is never raised in place of the guard's own.
+    """
+    try:
+        history = yf.Ticker(ticker).history(
+            start=start, interval="1d", auto_adjust=False, actions=True, timeout=10
+        )
+    except Exception as e:
+        logger.warning(f"Split events unavailable for {ticker}: {e}")
+        return None
+    if history.empty or "Stock Splits" not in history.columns:
+        logger.warning(
+            f"Split events unavailable for {ticker}: Yahoo returned no daily "
+            f"history from {start}"
+        )
+        return None
+    splits = history["Stock Splits"]
+    return splits[splits > 0]
+
+
 def fetch_historical(tickers: list[str] | None = None, period: str = "2y") -> dict:
     """
     Pull raw daily OHLCV for the given tickers going back `period`.

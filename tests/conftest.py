@@ -17,6 +17,12 @@ Offline unit support:
                           request and every requests call raise, so a test
                           that forgets to fake Yahoo, Alpha Vantage or NewsAPI
                           never reaches them.
+  _no_committed_acknowledgements (autouse)
+                          points config.SPLIT_JUMP_ACKNOWLEDGED_FILE at an
+                          empty list, so no test depends on what
+                          config/split_jump_acknowledged.txt lists or breaks
+                          when it is edited. A test that needs entries writes
+                          its own file (see test_split_jump_check.py).
   fake_db                 an in-memory stand-in that records every statement
                           and applies INSERT ... ON CONFLICT DO NOTHING the way
                           Postgres does, so a write path can be checked for what
@@ -288,6 +294,26 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(yfinance, "Ticker", refuse)
     monkeypatch.setattr(yfinance.data.YfData, "_make_request", refuse)
     monkeypatch.setattr(requests.Session, "request", refuse)
+
+
+@pytest.fixture(scope="session")
+def _empty_acknowledged_list(tmp_path_factory):
+    """Shared by every test, so never written to: a test that needs entries
+    writes a file of its own."""
+    path = tmp_path_factory.mktemp("acknowledged") / "split_jump_acknowledged.txt"
+    path.write_text(
+        "# The unit suite's list: no acknowledged moves.\n", encoding="utf-8"
+    )
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _no_committed_acknowledgements(monkeypatch, _empty_acknowledged_list):
+    import quantflow.config as config
+
+    monkeypatch.setattr(
+        config, "SPLIT_JUMP_ACKNOWLEDGED_FILE", _empty_acknowledged_list
+    )
 
 
 @pytest.fixture
