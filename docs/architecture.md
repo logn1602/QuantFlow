@@ -155,6 +155,33 @@ a ticker does not report a pass. The fix after a split is a scoped rescale of
 that ticker's earlier rows, run by hand, after which the guard passes again
 by itself.
 
+The guard also fails on a split-sized one-day move: a stored daily close at
+or below 0.733 times, or at or above 1.35 times, the stored close before it.
+Those limits are 3-for-2 and its reverse, the smallest common splits, moved
+10% toward no move at all because the split day's own move compounds with the
+split; everything beyond them is flagged whatever its ratio (7-for-1,
+50-for-1, 1-for-8, a 2-for-1 on a day the stock also fell 20%), since a missed
+split costs more than a false alarm. That check needs nothing from Yahoo, so
+it still catches a split on a day the reference download fails, when the
+scheduler would otherwise reuse the previous trading day's pass (below). It
+excuses no one-day spike as a bad print: one row stored on the new basis
+among rows on the old one, such as a gap filled after a split, looks the same.
+
+A real move of that size (any fall of 26.7% or more, or rise of 35% or more)
+fails the guard too. Once it is confirmed real, its date and the reason go in
+`config/split_jump_acknowledged.txt`, a committed file rather than a setting,
+so the daily workflow reads the list of the commit it runs on and a local
+run the list in its checkout. An entry silences only this check, only for
+that ticker and date, and only on a run where the comparison with Yahoo ran
+and Yahoo's raw closes agree with the stored ones on that date and the date
+before. A move Yahoo does not show was made by a stored row, and a move
+nothing could check is not confirmed, so both still fail. The comparison runs
+on every date either way, so an entry cannot hide a split. The command's
+failure output lists Yahoo's split events for each failing ticker since its
+first stored date; a rescale uses that ratio, not the nearest common split the
+guard names, which a big move on the split day can mislead (TSLA's 5-for-1 of
+2020-08-31 sits nearer 4-for-1).
+
 In the daily workflow a failing guard fails its step, so nothing after it
 runs; `make all` runs it in the same place. The per-stage commands do not run
 it. The scheduler has no steps, so it remembers the guard's last answer: the
@@ -168,16 +195,21 @@ due.
 The jobs that read prices (indicators, anomalies, both model jobs, the
 ensemble and the backtest) then follow the guard's last answer:
 
-- After a run that checked every ticker and found no break, they run, and
+- After a run that checked every ticker and found nothing, they run, and
   that run's time is kept as the last full pass.
-- After a break, they log why and skip, until a run checks every ticker and
-  finds none.
+- After a run that found a possible unadjusted split (a basis break, or a
+  split-sized move not acknowledged and confirmed by Yahoo), they log why and
+  skip, until a run checks every ticker and finds none.
+- While the guard cannot read its settings (the threshold, or
+  `config/split_jump_acknowledged.txt`, which it reads again on every run so
+  an acknowledgement needs no restart), they skip the same way: neither check
+  can run until the settings are fixed.
 - After a run that could not check every ticker (Yahoo returned nothing for
   one, a check raised, or the run failed), they keep running only if the last
   full pass is from the current or previous NYSE trading day, in New York
   time: a Monday-morning hiccup reuses Friday's pass. Otherwise they log why
-  and skip, as after a break, until a run checks every ticker. A break
-  already found stays in force either way.
+  and skip until a run checks every ticker. A pause already in force stays
+  either way.
 
 The last full pass is kept in memory, so after a restart the price jobs wait
 until a run checks every ticker, normally the one at startup. Ingestion and

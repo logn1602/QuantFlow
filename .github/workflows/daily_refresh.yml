@@ -95,7 +95,9 @@ jobs:
 
       # Fails the refresh before any stage reads prices if stored closes no
       # longer match Yahoo's, which is what a stock split after the rows were
-      # stored looks like, or if any ticker could not be checked. Threshold:
+      # stored looks like, if a stored close moved by a split-sized amount in
+      # one day (unless listed in config/split_jump_acknowledged.txt and
+      # confirmed by Yahoo), or if any ticker could not be checked. Threshold:
       # SPLIT_GUARD_THRESHOLD, default 0.15.
       - name: Check stored prices against Yahoo (split guard)
         run: python -m quantflow.ingestion.split_guard
