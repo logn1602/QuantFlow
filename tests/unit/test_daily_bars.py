@@ -202,3 +202,52 @@ def test_no_bars_give_an_empty_frame_with_the_daily_columns():
 
     assert out.empty
     assert list(out.columns) == ["date", "open", "high", "low", "close", "volume"]
+
+
+# ── Today's session is expected, not a warning ────────────────────────────────
+
+
+def _new_york_now(monkeypatch, text):
+    now = pd.Timestamp(text, tz="America/New_York").tz_convert("UTC")
+    monkeypatch.setattr(prices, "_now", lambda: now)
+
+
+def _levels(caplog):
+    return [(r.levelno, r.getMessage()) for r in caplog.records]
+
+
+def test_todays_unfinished_session_is_logged_at_info_not_as_a_warning(
+    read_tables, two_days, monkeypatch, caplog
+):
+    """Today has no daily bar until 17:00 New York by design, so the warning
+    fired on every load all day and buried the dates that matter."""
+    _new_york_now(monkeypatch, f"{INTRADAY_DAY} 15:00")
+    read_tables["raw_prices"] = two_days
+    with caplog.at_level(logging.INFO, logger="quantflow.db.prices"):
+        prices.load_daily_close("AAPL")
+
+    levels = _levels(caplog)
+    assert not [m for level, m in levels if level >= logging.WARNING], levels
+    assert any(
+        level == logging.INFO and "AAPL: today's session" in m for level, m in levels
+    ), levels
+
+
+def test_an_earlier_date_without_a_daily_bar_still_warns_alongside_today(
+    read_tables, price_bars, monkeypatch, caplog
+):
+    _new_york_now(monkeypatch, "2026-04-14 11:00")
+    read_tables["raw_prices"] = price_bars.frame(
+        price_bars.daily(SEEDED_DAY, 98.0),
+        price_bars.session(INTRADAY_DAY, [100.0, 100.5]),  # an earlier date
+        price_bars.session("2026-04-14", [101.0, 101.5]),  # today
+    )
+    with caplog.at_level(logging.INFO, logger="quantflow.db.prices"):
+        prices.load_daily_close("AAPL")
+
+    warnings = [m for level, m in _levels(caplog) if level == logging.WARNING]
+    assert warnings == [
+        "AAPL: 1 of 3 trading dates have no daily bar; built from 15-min bars "
+        "(2026-04-13 to 2026-04-13)"
+    ]
+    assert "AAPL: today's session" in caplog.text

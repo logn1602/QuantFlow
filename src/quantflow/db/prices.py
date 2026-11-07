@@ -87,13 +87,36 @@ def classify_bars(bars: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _log_built_dates(ticker: str, built: pd.Series, total: int) -> None:
+    """Warn about the dates built from 15-min bars, except today's session.
+
+    Today has no daily bar until DAILY_BAR_FINAL_AFTER by design, so it is
+    logged at INFO. Warning on it fired on every load all day and buried the
+    dates that matter: earlier ones whose daily bar is missing.
+    """
+    today = _now().tz_convert(EXCHANGE_TZ).tz_localize(None).normalize()
+    earlier = built[built != today]
+    if (built == today).any():
+        logger.info(
+            f"{ticker}: today's session has no daily bar yet; built from its "
+            f"15-min bars so far"
+        )
+    if not earlier.empty:
+        logger.warning(
+            f"{ticker}: {len(earlier)} of {total} trading dates have no daily bar; "
+            f"built from 15-min bars "
+            f"({earlier.min().date()} to {earlier.max().date()})"
+        )
+
+
 def daily_bars(bars: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """One OHLCV row per trading date from a mix of daily and 15-min bars.
 
     bars needs ts, open, high, low, close and volume. Logs a warning naming
-    how many dates had no daily bar, because those closes come from the last
-    15-min bar rather than Yahoo's official close (they differ by a few
-    hundredths of a percent, which is why the refresh now stores daily bars).
+    how many earlier dates had no daily bar, because those closes come from
+    the last 15-min bar rather than Yahoo's official close (a finished 15:45
+    bar closes within a few hundredths of a percent of it, which is why the
+    refresh now stores daily bars). Today's session is logged at INFO.
     """
     if bars.empty:
         return pd.DataFrame(columns=DAILY_COLUMNS)
@@ -126,11 +149,7 @@ def daily_bars(bars: pd.DataFrame, ticker: str) -> pd.DataFrame:
     )
 
     if not built.empty:
-        logger.warning(
-            f"{ticker}: {len(built)} of {len(daily) + len(built)} trading dates "
-            f"have no daily bar; built from 15-min bars "
-            f"({built['date'].min().date()} to {built['date'].max().date()})"
-        )
+        _log_built_dates(ticker, built["date"], len(daily) + len(built))
 
     parts = [part[DAILY_COLUMNS] for part in (daily, built) if not part.empty]
     out = pd.concat(parts, ignore_index=True) if parts else daily[DAILY_COLUMNS]
