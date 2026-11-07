@@ -62,7 +62,20 @@ class NYSEHolidayCalendar(AbstractHolidayCalendar):
     ]
 
 
-_TRADING_DAY = CustomBusinessDay(calendar=NYSEHolidayCalendar())
+TRADING_DAY = CustomBusinessDay(calendar=NYSEHolidayCalendar())
+
+
+def exchange_dates(index) -> pd.DatetimeIndex:
+    """The exchange calendar date of each timestamp, as naive midnights.
+
+    yfinance returns daily bars as naive exchange-date midnights. An aware
+    index (older versions, or a future change) is converted to New York time
+    first, so every consumer agrees on which trading day a bar belongs to.
+    """
+    dates = pd.DatetimeIndex(index)
+    if dates.tz is not None:
+        dates = dates.tz_convert(EXCHANGE_TZ).tz_localize(None)
+    return dates.normalize()
 
 
 def next_trading_days(after, n: int) -> pd.DatetimeIndex:
@@ -75,4 +88,4 @@ def next_trading_days(after, n: int) -> pd.DatetimeIndex:
     if day.tzinfo is not None:
         day = day.tz_localize(None)
     start = day.normalize() + pd.Timedelta(days=1)
-    return pd.date_range(start=start, periods=n, freq=_TRADING_DAY)
+    return pd.date_range(start=start, periods=n, freq=TRADING_DAY)

@@ -28,11 +28,19 @@ from quantflow.config import TICKERS
 from quantflow.db.batch import frame_to_rows
 from quantflow.db.prices import RAW_PRICE_COLUMNS, insert_bars
 from quantflow.utils.logger import get_logger
-from quantflow.utils.trading_calendar import DAILY_BAR_FINAL_AFTER, EXCHANGE_TZ
+from quantflow.utils.trading_calendar import (
+    DAILY_BAR_FINAL_AFTER,
+    EXCHANGE_TZ,
+    exchange_dates,
+)
 
 logger = get_logger(__name__)
 
 SOURCE = "yfinance"
+
+# What the daily refresh requests after each close, from the CLI and the
+# scheduler alike. More than one day, so a missed run heals on the next one.
+DAILY_REFRESH_PERIOD = "5d"
 
 
 def _now() -> pd.Timestamp:
@@ -54,13 +62,25 @@ def drop_unfinished_session(data: pd.DataFrame, now: pd.Timestamp) -> pd.DataFra
     if now_local.time() >= DAILY_BAR_FINAL_AFTER:
         return data
 
-    index = pd.DatetimeIndex(data.index)
-    if index.tz is not None:
-        index = index.tz_convert(EXCHANGE_TZ).tz_localize(None)
-    unfinished = index.normalize() == now_local.normalize().tz_localize(None)
+    today = now_local.normalize().tz_localize(None)
+    unfinished = exchange_dates(data.index) == today
     if unfinished.any():
         logger.info("  Skipping today's daily bar: the session is not final yet")
     return data[~unfinished]
+
+
+def as_daily_bars(data: pd.DataFrame) -> pd.DataFrame:
+    """A daily yf.download frame re-indexed to each exchange date's 00:00 UTC.
+
+    That is the one timestamp a daily bar is stored at, whatever time zone
+    yfinance returned, so classify_bars and the backfill's undo query can rely
+    on it.
+    """
+    if data.empty:
+        return data
+    out = data.copy()
+    out.index = exchange_dates(out.index).tz_localize("UTC")
+    return out
 
 
 def bars_to_rows(df: pd.DataFrame, ticker: str) -> list[dict]:
@@ -135,7 +155,7 @@ def fetch_historical(tickers: list[str] | None = None, period: str = "2y") -> di
     for ticker in tickers:
         logger.info(f"Fetching daily bars for {ticker} ({period})")
         data = download(ticker, period=period, interval="1d", auto_adjust=False)
-        data = drop_unfinished_session(data, _now())
+        data = as_daily_bars(drop_unfinished_session(data, _now()))
         n = _upsert_prices(data, ticker)
         results[ticker] = n
         logger.info(f"  {ticker}: {n} rows inserted")
@@ -173,7 +193,9 @@ def main(argv: list[str] | None = None) -> int:
     kind.add_argument("--daily", action="store_true", help="daily bars")
     kind.add_argument("--intraday", action="store_true", help="15-min bars")
     parser.add_argument(
-        "--period", default="5d", help="period for --daily (default: 5d)"
+        "--period",
+        default=DAILY_REFRESH_PERIOD,
+        help=f"period for --daily (default: {DAILY_REFRESH_PERIOD})",
     )
     parser.add_argument("--ticker", help="one ticker instead of config.TICKERS")
     args = parser.parse_args(argv)

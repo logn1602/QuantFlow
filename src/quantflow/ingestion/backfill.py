@@ -20,6 +20,11 @@ Dates with no bars at all (missed refreshes) are counted but not filled:
 filling them adds trading days the models have never seen, which deserves its
 own decision.
 
+A ticker Yahoo returns no daily bars for (a failed download, logged by
+download()) is reported, the other tickers are still filled, and the run
+exits 1, so a Yahoo outage cannot pass for a backfill with nothing to do.
+Running again fills what is left.
+
 Usage:
     python -m quantflow.ingestion.backfill --dry-run
     python -m quantflow.ingestion.backfill
@@ -36,13 +41,16 @@ import pandas as pd
 from quantflow.config import TICKERS
 from quantflow.db.prices import classify_bars, insert_bars, load_bar_timestamps
 from quantflow.ingestion.yfinance_fetcher import (
+    as_daily_bars,
     bars_to_rows,
     download,
     drop_unfinished_session,
 )
-from quantflow.utils.logger import get_logger
+from quantflow.utils.trading_calendar import exchange_dates
 
-logger = get_logger(__name__)
+
+class BackfillError(RuntimeError):
+    """Yahoo returned no daily bars for at least one ticker that needs them."""
 
 
 @dataclass
@@ -64,26 +72,43 @@ class TickerPlan:
 
 
 def dates_needing_daily_bars(stored_ts: pd.DataFrame) -> list[pd.Timestamp]:
-    """Trading dates that have 15-min bars but no daily bar."""
+    """Trading dates that have 15-min bars but no daily bar.
+
+    Asked per date as "any 15-min bar, no daily bar" rather than "every row is
+    a 15-min bar": a stray row off the session grid is neither, and must not
+    make a date look already filled.
+    """
     if stored_ts.empty:
         return []
-    classified = classify_bars(stored_ts)
-    per_date = classified.groupby("date")["is_intraday"].agg(["all"])
-    return list(per_date.index[per_date["all"]])
+    per_date = (
+        classify_bars(stored_ts)
+        .groupby("date")
+        .agg(has_daily=("is_daily", "any"), has_intraday=("is_intraday", "any"))
+    )
+    needs = per_date["has_intraday"] & ~per_date["has_daily"]
+    return list(per_date.index[needs])
 
 
 def plan_ticker(
     ticker: str, stored_ts: pd.DataFrame, yahoo_daily: pd.DataFrame
 ) -> TickerPlan:
-    """Rows to write: Yahoo's daily bar for each date that needs one."""
+    """Rows to write: Yahoo's daily bar for each date that needs one.
+
+    yahoo_daily is a yf.download frame. Its dates are read as exchange dates
+    whatever time zone its index carries, and the rows are stamped 00:00 UTC,
+    where daily bars are stored.
+    """
     plan = TickerPlan(ticker)
     wanted = set(dates_needing_daily_bars(stored_ts))
     if not wanted:
         return plan
+    if yahoo_daily.empty:
+        plan.no_yahoo_bar = sorted(wanted)
+        return plan
 
-    yahoo_dates = pd.DatetimeIndex(yahoo_daily.index).normalize()
+    yahoo_dates = exchange_dates(yahoo_daily.index)
     keep = yahoo_dates.isin(list(wanted))
-    plan.rows = bars_to_rows(yahoo_daily[keep], ticker)
+    plan.rows = bars_to_rows(as_daily_bars(yahoo_daily)[keep], ticker)
     plan.no_yahoo_bar = sorted(wanted - set(yahoo_dates))
 
     stored_dates = set(classify_bars(stored_ts)["date"])
@@ -138,6 +163,7 @@ def run(
         else f"Backfill batch {batch.isoformat(sep=' ')}"
     )
     counts: dict[str, int] = {}
+    no_download: list[str] = []
     # Each ticker's insert commits on its own, so a failure part-way leaves
     # earlier tickers written. The undo query is printed in `finally` so it
     # reaches the operator whether or not the run completed.
@@ -156,6 +182,14 @@ def run(
                 interval="1d",
                 auto_adjust=False,
             )
+            if yahoo.empty:
+                # A failed download (download() logs why) or Yahoo serving
+                # nothing for dates it has 15-min bars for. Either way this
+                # ticker was not backfilled, which must not read as done.
+                counts[ticker] = 0
+                no_download.append(ticker)
+                print(f"  {ticker:6s} no daily bars from Yahoo; nothing written")
+                continue
             plan = plan_ticker(ticker, stored, drop_unfinished_session(yahoo, now))
 
             if dry_run:
@@ -168,10 +202,16 @@ def run(
             print(
                 f"  {ticker:6s} {_plural(counts[ticker], 'row')} {verb}, "
                 f"{plan.date_range()}; "
-                f"{_plural(len(plan.no_yahoo_bar), 'date')} Yahoo has no daily "
-                "bar for; "
+                f"{_plural(len(plan.no_yahoo_bar), 'date')} Yahoo has no final "
+                "daily bar for; "
                 f"{_plural(len(plan.gaps), 'trading date')} with no stored bars "
                 "(not filled)"
+            )
+        if no_download:
+            raise BackfillError(
+                "no daily bars from Yahoo for "
+                + ", ".join(no_download)
+                + "; run again for those tickers"
             )
     finally:
         total = sum(counts.values())
@@ -194,7 +234,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ticker", help="one ticker instead of config.TICKERS")
     args = parser.parse_args(argv)
 
-    run([args.ticker.upper()] if args.ticker else None, dry_run=args.dry_run)
+    try:
+        run([args.ticker.upper()] if args.ticker else None, dry_run=args.dry_run)
+    except BackfillError as e:
+        print(f"BACKFILL INCOMPLETE: {e}", file=sys.stderr)
+        return 1
     return 0
 
 

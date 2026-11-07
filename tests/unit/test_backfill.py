@@ -134,13 +134,13 @@ def test_a_failure_part_way_still_prints_the_undo_for_rows_already_written(
 
     read_tables["raw_prices"] = stored
     downloads = []
-    real_download = yfinance_fetcher.yf.download
+    yahoo_download = yfinance_fetcher.yf.download  # the yahoo fixture's fake
 
     def failing_on_second(ticker, **kwargs):
         downloads.append(ticker)
         if len(downloads) == 2:
             fake_db.fail_next_insert = DataError("INSERT", {}, Exception("boom"))
-        return real_download(ticker, **kwargs)
+        return yahoo_download(ticker, **kwargs)
 
     monkeypatch.setattr(yfinance_fetcher.yf, "download", failing_on_second)
 
@@ -150,6 +150,70 @@ def test_a_failure_part_way_still_prints_the_undo_for_rows_already_written(
     out = capsys.readouterr().out
     assert len(fake_db.tables["raw_prices"]) == 3  # AAPL's rows were committed
     assert backfill.undo_sql(NOW.to_pydatetime()) in out
+
+
+def test_a_date_with_a_stray_off_grid_row_still_gets_its_daily_bar(price_bars):
+    """A stray 16:00 row used to make a date look like it had a daily bar, so
+    the backfill skipped exactly the dates it exists to repair."""
+    session = price_bars.session("2026-04-13", [101.0, 101.5])
+    stray_ts = pd.Timestamp("2026-04-13 16:00", tz="America/New_York")
+    stray = {**session[-1], "ts": stray_ts.tz_convert("UTC")}
+    stored = price_bars.frame(session, stray)
+
+    assert backfill.dates_needing_daily_bars(stored) == [pd.Timestamp("2026-04-13")]
+
+
+def test_a_tz_aware_yahoo_index_still_matches_the_stored_dates(price_bars):
+    """yfinance returns naive daily indexes today; an aware one must not turn
+    every date into "Yahoo has no daily bar"."""
+    stored = price_bars.frame(price_bars.session("2026-04-13", [101.0, 101.5]))
+    index = pd.DatetimeIndex([pd.Timestamp("2026-04-13", tz="America/New_York")])
+    yahoo = pd.DataFrame(
+        {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [200.0],
+         "Adj Close": [200.0], "Volume": [5e6]},
+        index=index,
+    )  # fmt: skip
+
+    plan = backfill.plan_ticker("AAPL", stored, yahoo)
+    assert [r["close"] for r in plan.rows] == [200.0]
+    assert plan.no_yahoo_bar == []
+
+
+def _unreachable(ticker, **kwargs):
+    raise ConnectionError("yahoo unreachable")
+
+
+def test_a_failed_download_is_reported_and_the_cli_exits_non_zero(
+    fake_db, read_tables, stored, monkeypatch, capsys
+):
+    """download() turns a Yahoo failure into an empty frame. Read as "Yahoo
+    has no bar for any of these dates", the backfill reported a clean run with
+    nothing to do and exited 0."""
+    read_tables["raw_prices"] = stored
+    monkeypatch.setattr(yfinance_fetcher.yf, "download", _unreachable)
+
+    assert backfill.main(["--ticker", "AAPL"]) == 1
+    captured = capsys.readouterr()
+    assert fake_db.inserts("raw_prices") == []
+    assert "no daily bars from Yahoo" in captured.out
+    assert "BACKFILL INCOMPLETE" in captured.err
+
+
+def test_one_ticker_without_yahoo_data_does_not_stop_the_others(
+    fake_db, read_tables, stored, yahoo, monkeypatch
+):
+    read_tables["raw_prices"] = stored
+    yahoo_download = yfinance_fetcher.yf.download  # the yahoo fixture's fake
+
+    def unreachable_for_aapl(ticker, **kwargs):
+        if ticker == "AAPL":
+            return _unreachable(ticker, **kwargs)
+        return yahoo_download(ticker, **kwargs)
+
+    monkeypatch.setattr(yfinance_fetcher.yf, "download", unreachable_for_aapl)
+    with pytest.raises(backfill.BackfillError, match="AAPL"):
+        backfill.run(["AAPL", "MSFT"], now=NOW)
+    assert {r["ticker"] for r in fake_db.tables["raw_prices"]} == {"MSFT"}
 
 
 def test_a_ticker_with_nothing_to_fill_does_not_download(
