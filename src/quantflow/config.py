@@ -55,7 +55,9 @@ FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", 15))
 # Any stock split moves prices by far more (3-for-2, the smallest common ratio,
 # is 50%); dividend drift on these tickers stays under about 2% a year. See
 # quantflow/ingestion/split_guard.py, which also rejects values outside (0, 1).
-SPLIT_GUARD_THRESHOLD = float(os.getenv("SPLIT_GUARD_THRESHOLD", "0.15"))
+# `or` rather than a getenv default: a blank `SPLIT_GUARD_THRESHOLD=` falls back
+# too, instead of failing float('') at import and taking every entry point down.
+SPLIT_GUARD_THRESHOLD = float(os.getenv("SPLIT_GUARD_THRESHOLD") or 0.15)
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

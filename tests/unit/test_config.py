@@ -141,6 +141,13 @@ def test_numeric_settings_are_coerced_to_int(monkeypatch):
     assert cfg.FETCH_INTERVAL_MINUTES == 30
 
 
+def test_a_blank_split_guard_threshold_falls_back_to_the_default(monkeypatch):
+    """`KEY=` with no value is how .env.example writes optional settings. A
+    float('') at import would take down every entry point, dashboard included."""
+    cfg = _reload_with(monkeypatch, SPLIT_GUARD_THRESHOLD="")
+    assert cfg.SPLIT_GUARD_THRESHOLD == 0.15
+
+
 def test_split_guard_threshold_is_read_as_a_fraction(monkeypatch):
     cfg = _reload_with(monkeypatch, SPLIT_GUARD_THRESHOLD="0.2")
     assert cfg.SPLIT_GUARD_THRESHOLD == 0.2
