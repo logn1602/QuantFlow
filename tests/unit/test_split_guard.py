@@ -229,6 +229,19 @@ def test_the_cli_exits_non_zero_when_a_ticker_cannot_be_checked(
     assert "could not check AAPL" in capsys.readouterr().err
 
 
+def test_the_cli_exits_non_zero_when_yahoo_returns_nothing_for_a_ticker(
+    split_stored, monkeypatch, capsys
+):
+    """A guard that could not check a ticker must not report a pass: the
+    workflow and make all would carry on as if prices were verified."""
+    monkeypatch.setattr(
+        yfinance_fetcher.yf, "download", lambda ticker, **kwargs: pd.DataFrame()
+    )
+    monkeypatch.setattr(split_guard, "TICKERS", ["AAPL"])
+    assert split_guard.main([]) == 1
+    assert "no reference prices from Yahoo for AAPL" in capsys.readouterr().err
+
+
 def test_no_reference_from_yahoo_is_a_warning_not_a_failure(split_stored, monkeypatch):
     monkeypatch.setattr(
         yfinance_fetcher.yf, "download", lambda ticker, **kwargs: pd.DataFrame()

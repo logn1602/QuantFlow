@@ -253,12 +253,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SPLIT GUARD MISCONFIGURED: {e}", file=sys.stderr)
         return 1
     try:
-        run([args.ticker.upper()] if args.ticker else None, threshold)
+        unchecked = run([args.ticker.upper()] if args.ticker else None, threshold)
     except PriceBasisError as e:
         print(f"SPLIT GUARD FAILED: {e}", file=sys.stderr)
         return 1
     except GuardError as e:
         print(f"SPLIT GUARD INCOMPLETE: {e} (see the log)", file=sys.stderr)
+        return 1
+    # A ticker that could not be checked is not a pass: the workflow and
+    # make all would carry on as if its prices were verified. The scheduler
+    # calls run() instead and keeps its last answer for such a ticker.
+    if unchecked:
+        print(
+            "SPLIT GUARD INCOMPLETE: no reference prices from Yahoo for "
+            + ", ".join(unchecked)
+            + "; not checked",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
