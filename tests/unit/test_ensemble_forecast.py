@@ -17,7 +17,7 @@ from quantflow.models import ensemble
 
 LATEST_CLOSE = pd.Timestamp("2026-11-20")
 SEVEN = pd.bdate_range("2026-11-23", periods=8).drop(pd.Timestamp("2026-11-26"))[:7]
-SHIFTED = pd.bdate_range("2026-11-20", periods=7)  # starts on the known close
+SHIFTED = pd.bdate_range(LATEST_CLOSE, periods=7)  # starts on the known close
 
 
 def _base(models_dates):
@@ -53,6 +53,18 @@ def test_a_missing_base_model_fails_loudly(read_tables):
         {"arima": SEVEN, "prophet": SEVEN, "xgboost": SEVEN}
     )
     with pytest.raises(ValueError, match="lightgbm"):
+        ensemble.generate_ensemble_forecast("AAPL", _meta())
+
+
+def test_two_stored_runs_of_one_model_fail_as_misaligned_not_as_a_crash(read_tables):
+    """A CLI run or `run_models --no-clear` can leave two runs of a model in
+    the table. Pivoting them raised a bare ValueError that ensemble.run did
+    not catch, so every later ticker lost its forecast."""
+    base = _base(dict.fromkeys(ensemble.BASE_MODELS, SEVEN))
+    read_tables["forecasts"] = pd.concat(
+        [base, base[base["model"] == "arima"]], ignore_index=True
+    )
+    with pytest.raises(ensemble.ForecastAlignmentError, match="more than one"):
         ensemble.generate_ensemble_forecast("AAPL", _meta())
 
 

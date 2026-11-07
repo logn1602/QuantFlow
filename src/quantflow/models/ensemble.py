@@ -58,6 +58,7 @@ from quantflow.evaluation.out_of_fold import (
     expanding_window_predictions,
 )
 from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
+from quantflow.models import FORECAST_DAYS
 from quantflow.models.statistical import prophet_settings
 from quantflow.utils.logger import get_logger
 
@@ -65,7 +66,6 @@ warnings.filterwarnings("ignore")
 
 logger = get_logger("ensemble")
 
-FORECAST_DAYS = 7
 META_WARMUP_DAYS = DEFAULT_WARMUP_DAYS
 
 # Column order of the stacked holdout frame. The meta-learner's weight
@@ -133,7 +133,9 @@ def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
     their predictions into a single DataFrame for meta-learner training.
 
     All models predict the same 30 close prices (the last 30 in the series):
-    - ARIMA/Prophet: forecast(steps=30) from train end
+    - ARIMA: forecast(steps=30) from the end of the train split
+    - Prophet: predict on the 30 holdout dates themselves, so its column
+      lines up with actual across market holidays
     - XGBoost/LightGBM: predict(X_holdout) where target = close.shift(-1)
 
     Returns DataFrame: [actual, arima, prophet, xgboost, lightgbm]
@@ -355,11 +357,23 @@ def check_forecast_dates(df: pd.DataFrame, models: list[str], horizon: int) -> l
     dated one day off silently cost the published forecast a day. That only
     happens when an upstream run is broken, so it must stop the run rather
     than be smoothed over.
+
+    It also refuses more than one row per model and date. Two predictions for
+    one date cannot be combined into one ensemble row, and the pivot used to
+    fail on them with a pandas error that stopped the remaining tickers.
     """
     dates = {m: sorted(set(df.loc[df["model"] == m, "forecast_date"])) for m in models}
     missing = [m for m, d in dates.items() if not d]
     if missing:
         raise ForecastAlignmentError(f"no forecasts stored for {', '.join(missing)}")
+
+    base = df[df["model"].isin(models)]
+    repeated = base[base.duplicated(["model", "forecast_date"])]
+    if not repeated.empty:
+        twice = sorted(set(repeated["model"]))
+        raise ForecastAlignmentError(
+            f"more than one stored forecast per date for {', '.join(twice)}"
+        )
 
     reference = dates[models[0]]
     if len(reference) != horizon or any(d != reference for d in dates.values()):
@@ -386,27 +400,27 @@ def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     """
     df = load_base_forecasts(ticker, BASE_MODELS)
     try:
-        check_forecast_dates(df, BASE_MODELS, FORECAST_DAYS)
+        dates = check_forecast_dates(df, BASE_MODELS, FORECAST_DAYS)
     except ForecastAlignmentError as e:
         raise ForecastAlignmentError(f"{ticker}: {e}") from e
 
-    pivot = df.pivot(index="forecast_date", columns="model", values="predicted_close")
-    lower = df.pivot(index="forecast_date", columns="model", values="lower_bound")
-    upper = df.pivot(index="forecast_date", columns="model", values="upper_bound")
+    # One row per model and date is guaranteed by the check, so each pivot is
+    # complete: dates down, the base models across in the meta-learner's order.
+    def wide(column: str) -> pd.DataFrame:
+        table = df.pivot(index="forecast_date", columns="model", values=column)
+        return table.reindex(index=dates, columns=BASE_MODELS)
 
-    required = BASE_MODELS
-    pivot = pivot.reindex(columns=required)
-    lower = lower.reindex(columns=required).reindex(pivot.index).fillna(0)
-    upper = upper.reindex(columns=required).reindex(pivot.index).fillna(0)
+    pivot = wide("predicted_close")
+    lower = wide("lower_bound").fillna(0)
+    upper = wide("upper_bound").fillna(0)
 
-    X_future = pivot[required].values
-    ensemble_preds = meta_model.predict(X_future)
+    ensemble_preds = meta_model.predict(pivot.values)
 
     # Weighted CI propagation using |coef| / sum(|coef|)
     abs_coefs = np.abs(meta_model.coef_)
     coef_weights = abs_coefs / abs_coefs.sum()
-    ens_lower = (lower[required].values * coef_weights).sum(axis=1)
-    ens_upper = (upper[required].values * coef_weights).sum(axis=1)
+    ens_lower = (lower.values * coef_weights).sum(axis=1)
+    ens_upper = (upper.values * coef_weights).sum(axis=1)
 
     return pd.DataFrame(
         {

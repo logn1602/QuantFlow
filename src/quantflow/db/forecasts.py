@@ -22,9 +22,11 @@ logger = get_logger(__name__)
 def _as_date(value):
     """Coerce a forecast date to datetime.date.
 
-    Callers pass pd.Timestamp (ARIMA/Prophet via bdate_range), numpy
-    datetime64, or an already-converted date. Strings are passed through for
-    Postgres to parse, matching the previous ensemble behaviour.
+    ARIMA and Prophet pass datetime.date already; the boosters pass the
+    pd.Timestamp values next_trading_days returns; the ensemble passes the
+    forecast_date values it read back. numpy datetime64 is accepted too.
+    Strings are passed through for Postgres to parse, matching the previous
+    ensemble behaviour.
     """
     if isinstance(value, str):
         return value
@@ -66,14 +68,27 @@ def save_forecasts(df: pd.DataFrame) -> int:
 
 
 def load_base_forecasts(ticker: str, models: list[str]) -> pd.DataFrame:
-    """Stored forecasts for the given models: model, forecast_date and the
-    predicted close with its bounds. The ensemble's input."""
+    """Each model's most recent stored forecast run: model, forecast_date and
+    the predicted close with its bounds. The ensemble's input.
+
+    Only the latest run_at per model, the rule the dashboard uses. The table
+    keeps every run (run_at is part of its key), so after a run with
+    --no-clear, reading every row gave the ensemble two predictions per date.
+    """
     query = text("""
-        SELECT model, forecast_date, predicted_close, lower_bound, upper_bound
-        FROM forecasts
-        WHERE ticker = :ticker
-          AND model = ANY(:models)
-        ORDER BY forecast_date, model
+        SELECT f.model, f.forecast_date, f.predicted_close,
+               f.lower_bound, f.upper_bound
+        FROM forecasts f
+        JOIN (
+            SELECT model, MAX(run_at) AS run_at
+            FROM forecasts
+            WHERE ticker = :ticker
+              AND model = ANY(:models)
+            GROUP BY model
+        ) latest
+          ON f.model = latest.model AND f.run_at = latest.run_at
+        WHERE f.ticker = :ticker
+        ORDER BY f.forecast_date, f.model
     """)
     with get_engine().connect() as conn:
         return pd.read_sql(query, conn, params={"ticker": ticker, "models": models})
