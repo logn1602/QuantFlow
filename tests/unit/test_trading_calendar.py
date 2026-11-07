@@ -11,7 +11,11 @@ full-day closures.
 import pandas as pd
 import pytest
 
-from quantflow.utils.trading_calendar import NYSEHolidayCalendar, next_trading_days
+from quantflow.utils.trading_calendar import (
+    NYSEHolidayCalendar,
+    next_trading_days,
+    previous_trading_day,
+)
 
 NYSE_2025 = [
     "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18", "2025-05-26",
@@ -87,3 +91,24 @@ def test_one_off_closures_are_not_covered():
     so a forecast made just before one still lists that day."""
     holidays = NYSEHolidayCalendar().holidays("2025-01-01", "2025-01-31")
     assert pd.Timestamp("2025-01-09") not in holidays
+
+
+@pytest.mark.parametrize(
+    "day, expected",
+    [
+        ("2026-11-10", "2026-11-09"),  # a Tuesday: the Monday before
+        ("2026-11-09", "2026-11-06"),  # a Monday: the Friday before
+        ("2026-11-07", "2026-11-06"),  # a Saturday
+        ("2026-11-27", "2026-11-25"),  # the day after Thanksgiving
+        ("2026-09-08", "2026-09-04"),  # the day after Labor Day
+        ("2026-01-02", "2025-12-31"),  # the day after New Year's Day
+    ],
+)
+def test_the_previous_trading_day_skips_weekends_and_holidays(day, expected):
+    assert previous_trading_day(pd.Timestamp(day)) == pd.Timestamp(expected)
+
+
+def test_the_previous_trading_day_accepts_a_tz_aware_timestamp():
+    """Only the calendar date counts, as for next_trading_days."""
+    got = previous_trading_day(pd.Timestamp("2026-11-09 20:00", tz="UTC"))
+    assert got == pd.Timestamp("2026-11-06")

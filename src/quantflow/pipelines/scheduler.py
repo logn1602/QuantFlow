@@ -23,6 +23,7 @@ Usage:
 import sys
 from datetime import datetime, time, timedelta
 
+import pandas as pd
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -34,7 +35,11 @@ from quantflow.db.forecasts import clear_forecasts as db_clear_forecasts
 from quantflow.ingestion import split_guard
 from quantflow.ingestion.yfinance_fetcher import DAILY_REFRESH_PERIOD
 from quantflow.utils.logger import get_logger
-from quantflow.utils.trading_calendar import DAILY_BAR_FINAL_AFTER, EXCHANGE_TZ
+from quantflow.utils.trading_calendar import (
+    DAILY_BAR_FINAL_AFTER,
+    EXCHANGE_TZ,
+    previous_trading_day,
+)
 
 logger = get_logger(__name__)
 
@@ -77,12 +82,32 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] | None = None):
 # After a stock split, every row stored before it sits on the old share basis
 # (see ingestion/split_guard.py). Indicators, anomaly flags, forecasts and the
 # backtest computed from that mix would be wrong, and they are stored. So the
-# jobs that read prices skip while the split guard's last answer was a break.
+# jobs that read prices skip while _price_basis_error says why:
+#
+#   - a guard run found a break: paused until a run checks every ticker and
+#     finds none;
+#   - a guard run could not check every ticker (Yahoo returned nothing for
+#     one, a check raised, or the run failed): the last full pass is reused
+#     only if it is from the current or previous NYSE trading day. Otherwise
+#     the jobs pause, as for a break, until a run checks every ticker. A break
+#     already found stays either way.
+#
 # The guard keeps no state of its own; this is the scheduler remembering its
-# last answer. It starts empty, and start() runs the guard before any job
-# that reads prices.
+# answers, in memory. Both start empty, so after a restart the price jobs
+# wait for the startup run to check every ticker.
 
 _price_basis_error: str | None = None
+# When a guard run last checked every ticker and found no break.
+_last_full_pass: pd.Timestamp | None = None
+
+
+def _now() -> pd.Timestamp:
+    """The current time; a seam so tests can fix it."""
+    return pd.Timestamp.now(tz="UTC")
+
+
+def _exchange_date(ts: pd.Timestamp) -> pd.Timestamp:
+    return ts.tz_convert(EXCHANGE_TZ).tz_localize(None).normalize()
 
 
 def _guard_times() -> str:
@@ -90,7 +115,8 @@ def _guard_times() -> str:
 
 
 def _paused_for_prices(job: str) -> bool:
-    """True, after logging why, while stored prices are on more than one basis."""
+    """True, after logging why, while the price jobs are paused: a break, or
+    an incomplete check with no recent full pass."""
     if _price_basis_error is None:
         return False
     logger.error(
@@ -128,12 +154,12 @@ def run_yfinance_job():
 def run_split_guard_job():
     """Check stored prices against Yahoo's, and pause or resume the price jobs.
 
-    Only a basis break pauses them. Any other failure, such as the database
-    being unreachable, is logged and leaves the last answer standing. So does a
-    ticker the guard could not check: it is logged, a break that is outstanding
-    stays, and a pass is not confirmed for it either.
+    The rules are in the "Price-basis gate" comment above: a break pauses
+    them; a run that checks every ticker and finds no break resumes them and
+    is recorded as the last full pass; a run that cannot check every ticker
+    reuses that pass only if it is from the current or previous trading day.
     """
-    global _price_basis_error
+    global _price_basis_error, _last_full_pass
     logger.info("--- Split guard job started ---")
     try:
         unchecked = split_guard.run()
@@ -143,20 +169,51 @@ def run_split_guard_job():
         return
     except Exception as e:
         logger.exception(f"Split guard job failed: {type(e).__name__}: {e}")
+        _after_an_incomplete_check(f"the split guard failed ({type(e).__name__})")
         return
 
     if unchecked:
-        logger.warning(
-            f"Split guard could not check {', '.join(unchecked)} (no reference "
-            f"prices from Yahoo); keeping its last answer for them"
+        _after_an_incomplete_check(
+            f"the split guard could not check {', '.join(unchecked)} "
+            f"(no reference prices from Yahoo)"
         )
-        if _price_basis_error is not None:
-            logger.warning("Price jobs stay paused")
-            return
+        return
+
+    _last_full_pass = _now()
     if _price_basis_error is not None:
         logger.info("Split guard passes again; price jobs resume")
     _price_basis_error = None
     logger.info("--- Split guard job done ---")
+
+
+def _after_an_incomplete_check(what: str) -> None:
+    """Pause the price jobs unless the last full pass is recent enough.
+
+    Recent enough means from the current or previous NYSE trading day, in
+    New York time, so a short Yahoo or database hiccup does not stop a day of
+    models while a check from days ago is not taken as a pass.
+    """
+    global _price_basis_error
+    if _price_basis_error is not None:
+        logger.warning(f"{what}; price jobs stay paused ({_price_basis_error})")
+        return
+
+    previous = previous_trading_day(_exchange_date(_now()))
+    if _last_full_pass is not None and _exchange_date(_last_full_pass) >= previous:
+        logger.warning(
+            f"{what}; reusing the full pass from {_last_full_pass:%Y-%m-%d %H:%M} UTC"
+        )
+        return
+
+    if _last_full_pass is None:
+        since = "there has been no full pass since the scheduler started"
+    else:
+        since = (
+            f"the last full pass ({_exchange_date(_last_full_pass).date()}) is "
+            f"older than the previous trading day ({previous.date()})"
+        )
+    _price_basis_error = f"{what}, and {since}"
+    logger.error(f"--- {_price_basis_error}. Price jobs paused ---")
 
 
 def run_daily_bars_job():

@@ -85,6 +85,18 @@ def exchange_dates(index) -> pd.DatetimeIndex:
     return dates.normalize()
 
 
+def previous_trading_day(day) -> pd.Timestamp:
+    """The last NYSE trading day strictly before `day`, as a naive midnight.
+
+    day may be a date, a naive timestamp, or a tz-aware one; only its
+    calendar date is used.
+    """
+    d = pd.Timestamp(day)
+    if d.tzinfo is not None:
+        d = d.tz_localize(None)
+    return d.normalize() - TRADING_DAY
+
+
 def next_trading_days(after, n: int) -> pd.DatetimeIndex:
     """The n NYSE trading days strictly after `after`, as naive midnights.
 

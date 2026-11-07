@@ -262,7 +262,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     # A ticker that could not be checked is not a pass: the workflow and
     # make all would carry on as if its prices were verified. The scheduler
-    # calls run() instead and keeps its last answer for such a ticker.
+    # calls run() instead; the price-basis gate in pipelines/scheduler.py
+    # pauses its price jobs unless its last full pass is from the current or
+    # previous trading day.
     if unchecked:
         print(
             "SPLIT GUARD INCOMPLETE: no reference prices from Yahoo for "

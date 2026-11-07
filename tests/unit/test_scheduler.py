@@ -6,14 +6,16 @@ After a stock split, every stored row before it sits on the old share basis,
 and anything computed from that mix is wrong and gets stored. The daily
 workflow stops at its split-guard step; the scheduler has no steps, so it
 remembers the guard's last answer and the jobs that read prices skip while it
-is a break. These tests pin who pauses, what resumes, and that the daemon
-never dies over it.
+is a break, or while the guard could not check every ticker and its last full
+pass is older than the previous trading day. These tests pin who pauses, what
+resumes, and that the daemon never dies over it.
 """
 
 import importlib
 import logging
 from datetime import time
 
+import pandas as pd
 import pytest
 from sqlalchemy.exc import OperationalError
 
@@ -31,11 +33,22 @@ PRICE_JOBS = [
 ]
 
 
+# Monday 2026-11-09 09:45 New York, and passes on the trading days before it.
+MONDAY_0945 = pd.Timestamp("2026-11-09 09:45", tz="America/New_York").tz_convert("UTC")
+FRIDAY_PASS = pd.Timestamp("2026-11-06 17:10", tz="America/New_York").tz_convert("UTC")
+THURSDAY_PASS = pd.Timestamp("2026-11-05 17:10", tz="America/New_York").tz_convert(
+    "UTC"
+)
+
+
 @pytest.fixture(autouse=True)
 def open_gate(monkeypatch):
-    """Each test starts with no outstanding break and restores the module
-    state afterwards, since the gate is a module global."""
+    """Each test starts with no outstanding break and no full pass yet, at a
+    fixed time, and restores the module state afterwards, since the gate is
+    module globals."""
     monkeypatch.setattr(scheduler, "_price_basis_error", None)
+    monkeypatch.setattr(scheduler, "_last_full_pass", None)
+    monkeypatch.setattr(scheduler, "_now", lambda: MONDAY_0945)
     monkeypatch.setattr(scheduler, "_clear_model_forecasts", lambda models: 0)
 
 
@@ -94,31 +107,86 @@ def test_a_passing_guard_resumes_the_price_jobs(monkeypatch, work):
     assert len(work) == len(PRICE_JOBS)
 
 
-def test_a_pass_that_could_not_check_every_ticker_keeps_a_break_standing(
-    monkeypatch, work
+# A guard run that could not check every ticker, three ways.
+INCOMPLETE = [
+    pytest.param(["AAPL"], id="yahoo-returned-nothing"),
+    pytest.param(split_guard.GuardError("could not check AAPL"), id="a-check-raised"),
+    pytest.param(
+        OperationalError("SELECT", {}, Exception("down")), id="the-run-failed"
+    ),
+]
+
+
+@pytest.mark.parametrize("answer", INCOMPLETE)
+def test_an_incomplete_check_reuses_a_pass_from_the_previous_trading_day(
+    monkeypatch, work, answer
 ):
-    _guard_answers(monkeypatch, split_guard.PriceBasisError("disagree for AAPL"))
+    """Friday's full pass still stands on Monday morning, so a Yahoo or
+    database hiccup does not stop a day of models."""
+    monkeypatch.setattr(scheduler, "_last_full_pass", FRIDAY_PASS)
+    _guard_answers(monkeypatch, answer)
+    scheduler.run_split_guard_job()  # must not raise
+
+    _run_price_jobs()
+    assert work == [job for job, _, _ in PRICE_JOBS]
+
+
+@pytest.mark.parametrize("answer", INCOMPLETE)
+def test_an_incomplete_check_pauses_when_the_last_pass_is_older(
+    monkeypatch, work, caplog, answer
+):
+    """A guard that could not check a ticker is not a pass. An older pass
+    used to be kept however old it was, so the price jobs ran on prices no
+    one had checked for days."""
+    monkeypatch.setattr(scheduler, "_last_full_pass", THURSDAY_PASS)
+    _guard_answers(monkeypatch, answer)
     scheduler.run_split_guard_job()
-    _guard_answers(monkeypatch, ["AAPL"])  # Yahoo returned nothing for AAPL
+
+    with caplog.at_level(logging.ERROR):
+        _run_price_jobs()
+    assert work == []
+    assert "older than the previous trading day (2026-11-06)" in caplog.text
+
+
+@pytest.mark.parametrize("answer", INCOMPLETE)
+def test_an_incomplete_check_pauses_when_there_was_no_full_pass_since_startup(
+    monkeypatch, work, answer
+):
+    _guard_answers(monkeypatch, answer)
     scheduler.run_split_guard_job()
 
     _run_price_jobs()
     assert work == []
 
 
-@pytest.mark.parametrize(
-    "outstanding", [None, "stored prices are on more than one basis"]
-)
-def test_a_guard_failure_that_is_not_a_break_leaves_the_last_answer(
-    monkeypatch, caplog, outstanding
-):
-    """A database blip neither pauses the price jobs nor clears a real break."""
-    monkeypatch.setattr(scheduler, "_price_basis_error", outstanding)
-    _guard_answers(monkeypatch, OperationalError("SELECT", {}, Exception("down")))
+@pytest.mark.parametrize("answer", INCOMPLETE)
+def test_an_incomplete_check_keeps_a_break_standing(monkeypatch, work, answer):
+    monkeypatch.setattr(scheduler, "_last_full_pass", FRIDAY_PASS)
+    _guard_answers(monkeypatch, split_guard.PriceBasisError("disagree for AAPL"))
+    scheduler.run_split_guard_job()
+    _guard_answers(monkeypatch, answer)
+    scheduler.run_split_guard_job()
 
+    _run_price_jobs()
+    assert work == []
+
+
+def test_a_failed_run_is_logged_with_its_error(monkeypatch, caplog):
+    monkeypatch.setattr(scheduler, "_last_full_pass", FRIDAY_PASS)
+    _guard_answers(monkeypatch, OperationalError("SELECT", {}, Exception("down")))
     scheduler.run_split_guard_job()  # must not raise
-    assert scheduler._price_basis_error == outstanding
     assert "Split guard job failed: OperationalError" in caplog.text
+
+
+def test_a_full_pass_is_recorded_and_resumes_the_jobs(monkeypatch, work):
+    _guard_answers(monkeypatch, ["AAPL"])
+    scheduler.run_split_guard_job()  # no full pass since startup: paused
+    _guard_answers(monkeypatch, [])
+    scheduler.run_split_guard_job()
+
+    _run_price_jobs()
+    assert len(work) == len(PRICE_JOBS)
+    assert scheduler._last_full_pass == MONDAY_0945
 
 
 def test_the_daily_bars_job_runs_the_guard_after_the_fetch(monkeypatch, work):
