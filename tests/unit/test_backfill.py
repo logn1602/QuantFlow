@@ -137,7 +137,7 @@ def test_nothing_after_the_last_completed_session_is_wanted(
     15-min bars are not yet a date to fill, and it is not reported as one
     Yahoo has no final bar for."""
     read_tables["raw_prices"] = price_bars.frame(
-        stored.drop(columns=["date", "ds", "y"]).to_dict("records"),
+        stored.to_dict("records"),
         price_bars.session(NO_BARS_AT_ALL, [102.0, 102.5]),
     )
     backfill.run(["AAPL"], now=pd.Timestamp("2026-04-16 15:00", tz="UTC"))
@@ -185,9 +185,7 @@ def test_running_again_writes_nothing(fake_db, read_tables, stored, yahoo, price
     # The table as the second run sees it: the first run's daily bars included.
     filled = [{k: r[k] for k in ("ts", "open", "high", "low", "close", "volume")}
               for r in fake_db.tables["raw_prices"]]  # fmt: skip
-    read_tables["raw_prices"] = price_bars.frame(
-        stored.drop(columns=["date", "ds", "y"]).to_dict("records"), filled
-    )
+    read_tables["raw_prices"] = price_bars.frame(stored.to_dict("records"), filled)
     assert backfill.run(["AAPL"], now=NOW) == {"AAPL": 0}
     assert len(fake_db.inserts("raw_prices")) == 1
 

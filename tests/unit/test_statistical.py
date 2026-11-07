@@ -55,15 +55,6 @@ class FakeProphet:
         self.history = df.copy()
         return self
 
-    def make_future_dataframe(self, periods, freq="D", include_history=True):
-        """Prophet's own implementation, so pre-fix code behaves as it did."""
-        last = self.history["ds"].max()
-        dates = pd.date_range(start=last, periods=periods + 1, freq=freq)
-        dates = dates[dates > last][:periods]
-        if include_history:
-            dates = np.concatenate((np.array(self.history["ds"]), dates))
-        return pd.DataFrame({"ds": dates})
-
     def predict(self, df):
         ds = pd.to_datetime(df["ds"])
         yhat = np.array([self.truth.get(d, 0.0) for d in ds])
