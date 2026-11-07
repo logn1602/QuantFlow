@@ -58,6 +58,18 @@ logger = get_logger("sentiment")
 FINBERT_MODEL = "ProsusAI/finbert"
 FINBERT_REVISION = "4556d13015211d73dccd3fdd39d39232506f3e43"
 
+# FinBERT reads at most 512 tokens, and the pipeline truncates to that itself
+# (truncation=True, max_length=FINBERT_MAX_TOKENS). Headlines are also cut to
+# FINBERT_INPUT_CHARS characters first: an older cap on the text handed to the
+# tokenizer, not a token limit.
+FINBERT_MAX_TOKENS = 512
+FINBERT_INPUT_CHARS = 512
+
+# Storage caps on feed text. The columns are TEXT, so these bound what a feed
+# can make the pipeline store rather than enforce the schema.
+MAX_HEADLINE_CHARS = 1000
+MAX_URL_CHARS = 500
+
 # ── RSS feed URLs per ticker ──────────────────────────────────────────────────
 # Per-symbol feeds only. A general-market feed listed under one ticker credits
 # every market headline to that ticker's sentiment features; MarketWatch's
@@ -123,7 +135,7 @@ def get_finbert():
                 top_k=None,  # return all 3 class scores
                 device=-1,  # CPU (use 0 for GPU if available)
                 truncation=True,
-                max_length=512,
+                max_length=FINBERT_MAX_TOKENS,
             )
             logger.info("FinBERT loaded successfully")
         except Exception as e:
@@ -167,7 +179,7 @@ def analyze_headline(headline: str) -> dict | None:
         return None
 
     try:
-        return _score(model(headline[:512])[0])  # truncate to 512 tokens
+        return _score(model(headline[:FINBERT_INPUT_CHARS])[0])
     except Exception as e:
         logger.warning(f"FinBERT failed on headline: {e}")
         return None
@@ -183,7 +195,8 @@ def analyze_batch(headlines: list[str]) -> list[dict | None]:
         return [None] * len(headlines)
 
     try:
-        return [_score(results) for results in model([h[:512] for h in headlines])]
+        clipped = [h[:FINBERT_INPUT_CHARS] for h in headlines]
+        return [_score(results) for results in model(clipped)]
     except Exception as e:
         logger.warning(f"Batch FinBERT failed: {e}")
         return [analyze_headline(h) for h in headlines]
@@ -314,30 +327,40 @@ def save_sentiment(articles: list[dict], ticker: str) -> int:
     """
     Save analyzed articles to news_sentiment table.
     Returns rows actually written: headlines already stored are skipped and
-    not counted, and any other write error raises.
-    """
-    rows: dict[tuple, dict] = {}
-    for article in articles:
-        headline = _clean_text(article["headline"], 1000)
-        if not headline:
-            continue
-        row = {
-            "ticker": ticker,
-            "source": article["source"],
-            "published_at": article["published_at"],
-            "headline": headline,
-            "url": _clean_text(article.get("url"), 500),
-            "sentiment": article["sentiment"],
-            "score_pos": article["score_pos"],
-            "score_neg": article["score_neg"],
-            "score_neu": article["score_neu"],
-            "compound": article["compound"],
-        }
-        # RSS and NewsAPI can return the same headline at the same time; keep
-        # the first so one INSERT never carries the same key twice.
-        rows.setdefault((row["headline"], row["published_at"]), row)
+    not counted, and any other write error raises. An article whose headline
+    is empty once cleaned (no title, or only NUL bytes) is not news, and is
+    skipped with a log line.
 
-    return insert_sentiment(list(rows.values()))
+    RSS and NewsAPI can return the same headline at the same time, so one
+    batch can carry a key twice. ON CONFLICT DO NOTHING writes it once and
+    counts it once on Postgres (tests/integration checks this), so no
+    de-duplication is needed here.
+    """
+    rows = []
+    empty = 0
+    for article in articles:
+        headline = _clean_text(article["headline"], MAX_HEADLINE_CHARS)
+        if not headline:
+            empty += 1
+            continue
+        rows.append(
+            {
+                "ticker": ticker,
+                "source": article["source"],
+                "published_at": article["published_at"],
+                "headline": headline,
+                "url": _clean_text(article.get("url"), MAX_URL_CHARS),
+                "sentiment": article["sentiment"],
+                "score_pos": article["score_pos"],
+                "score_neg": article["score_neg"],
+                "score_neu": article["score_neu"],
+                "compound": article["compound"],
+            }
+        )
+
+    if empty:
+        logger.info(f"  {ticker}: skipped {empty} articles with no headline text")
+    return insert_sentiment(rows)
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────

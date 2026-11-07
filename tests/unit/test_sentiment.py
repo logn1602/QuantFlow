@@ -70,6 +70,14 @@ def test_untrusted_feed_text_cannot_break_the_batched_insert(fake_db):
             row[field].encode("utf-8")  # a lone surrogate raises here, as in psycopg2
 
 
+def test_a_headline_that_is_empty_after_cleaning_is_not_written(fake_db):
+    """An RSS item with no title, or one made only of NUL bytes, cleans to an
+    empty string: not news, and not a row."""
+    articles = [_article(""), _article("\x00\x00"), _article("real one")]
+    assert sentiment.save_sentiment(articles, "AAPL") == 1
+    assert [r["headline"] for r in fake_db.tables["news_sentiment"]] == ["real one"]
+
+
 def test_the_same_headline_twice_in_one_run_is_stored_once(fake_db):
     """RSS and NewsAPI can both return a headline with the same timestamp."""
     articles = [_article("dup", "rss"), _article("dup", "newsapi")]
