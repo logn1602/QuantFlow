@@ -29,7 +29,7 @@ PRICE_JOBS = [
     ("run_forecasting_job", "quantflow.models.statistical", "run"),
     ("run_xgboost_job", "quantflow.models.boosting", "run"),
     ("run_ensemble_job", "quantflow.models.ensemble", "run"),
-    ("run_backtest_job", "quantflow.evaluation.backtest", "run"),
+    ("run_backtest_job", "quantflow.pipelines.backtest", "run"),
 ]
 
 

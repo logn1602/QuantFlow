@@ -70,7 +70,7 @@ ensemble:
 	python -m quantflow.models.ensemble
 
 backtest:
-	python -m quantflow.evaluation.backtest
+	python -m quantflow.pipelines.backtest
 
 sentiment:
 	python -m quantflow.features.sentiment
@@ -101,7 +101,7 @@ all:
 	python -m quantflow.features.anomalies
 	python -m quantflow.features.sentiment
 	python -m quantflow.pipelines.run_models
-	python -m quantflow.evaluation.backtest
+	python -m quantflow.pipelines.backtest
 	@echo "Pipeline complete. Launch dashboard with: make dashboard"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
