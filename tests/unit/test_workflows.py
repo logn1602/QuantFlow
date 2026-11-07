@@ -109,3 +109,63 @@ def test_make_all_runs_the_split_guard_before_any_stage_reads_prices():
         strict=True,
     ):
         assert guard_at < at, f"{stage} runs before the split guard"
+
+
+def _steps(workflow):
+    """Each step's text keyed by its name, in workflow order."""
+    parts = re.split(r"^      - name: (.+)$", workflow, flags=re.MULTILINE)
+    return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+
+STEPS = _steps(DAILY_REFRESH)
+SENTIMENT = "Analyze news sentiment"
+
+
+def _condition(step):
+    match = re.search(r"^\s+if: (.+)$", STEPS[step], re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def test_daily_refresh_runs_one_at_a_time_without_cancelling():
+    """A manual run started during the scheduled one interleaved its writes
+    with it. A running refresh is never cancelled; the newer one waits."""
+    assert re.search(
+        r"^concurrency:\n  group: daily-refresh\n  cancel-in-progress: false$",
+        DAILY_REFRESH,
+        re.MULTILINE,
+    )
+
+
+def test_a_failed_sentiment_step_fails_the_run_but_the_models_still_run():
+    """FinBERT not loading fails the sentiment step, and so the run, but the
+    models still train, on the sentiment already stored."""
+    assert re.search(r"^\s+id: sentiment$", STEPS[SENTIMENT], re.MULTILINE)
+    assert "continue-on-error" not in STEPS[SENTIMENT]
+    assert _condition("Run all 5 forecasting models") == (
+        "${{ !cancelled() && steps.sentiment.outcome != 'skipped' }}"
+    )
+    assert _condition("Run strategy backtest") == (
+        "${{ !cancelled() && steps.models.outcome == 'success' }}"
+    )
+
+
+def test_a_failed_split_guard_still_stops_every_stage_after_it():
+    """The models run after a failed sentiment step because that step ran, and
+    it runs only if every step before it succeeded. A plain !cancelled() on
+    the models would run them after a failed guard too."""
+    names = list(STEPS)
+    guard = names.index("Check stored prices against Yahoo (split guard)")
+    for name in names[guard : names.index(SENTIMENT) + 1]:
+        assert _condition(name) is None, name
+        assert "continue-on-error" not in STEPS[name], name
+
+
+def test_the_finbert_model_is_cached_by_the_revision_the_code_pins():
+    from quantflow.features.sentiment import FINBERT_REVISION
+
+    cache = STEPS["Cache the FinBERT model"]
+    assert "uses: actions/cache@v4" in cache
+    assert "path: ~/.cache/huggingface" in cache
+    assert FINBERT_REVISION in cache
+    names = list(STEPS)
+    assert names.index("Cache the FinBERT model") < names.index(SENTIMENT)
