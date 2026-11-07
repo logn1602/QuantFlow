@@ -17,6 +17,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from quantflow.db.connection import get_engine
+from quantflow.db.prices import load_daily_bars
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,30 +27,29 @@ def load_features(ticker: str) -> pd.DataFrame:
     """
     Load and merge all available signals for a ticker:
     prices + technical indicators + anomalies + sentiment
+
+    Prices come from load_daily_bars, the same one-row-per-trading-date
+    series the statistical models read, so every model sees the same close.
     """
+    # Base prices
+    prices = load_daily_bars(ticker)
+    if prices.empty:
+        logger.warning(f"No price data for {ticker}")
+        return pd.DataFrame()
+
     engine = get_engine()
 
+    # Every date below is the UTC calendar date, the same one load_daily_bars
+    # gives each price row. A bare ts::date uses the session's TimeZone
+    # instead: UTC on Supabase, but on a server set to New York it moved every
+    # indicator, anomaly score and sentiment average to the previous day's
+    # price row.
     with engine.connect() as conn:
-        # Base prices
-        prices = pd.read_sql(
-            text("""
-            SELECT ts::date AS date, open, high, low, close, volume
-            FROM raw_prices
-            WHERE ticker = :t AND source = 'yfinance'
-            ORDER BY ts ASC
-        """),
-            conn,
-            params={"t": ticker},
-        )
-
-        if prices.empty:
-            logger.warning(f"No price data for {ticker}")
-            return pd.DataFrame()
-
         # Technical indicators
         indicators = pd.read_sql(
             text("""
-            SELECT ts::date AS date, rsi_14, macd, macd_signal, macd_hist,
+            SELECT (ts AT TIME ZONE 'UTC')::date AS date,
+                   rsi_14, macd, macd_signal, macd_hist,
                    bb_upper, bb_middle, bb_lower
             FROM technical_indicators
             WHERE ticker = :t
@@ -62,7 +62,7 @@ def load_features(ticker: str) -> pd.DataFrame:
         # Anomalies
         anomalies = pd.read_sql(
             text("""
-            SELECT ts::date AS date, zscore
+            SELECT (ts AT TIME ZONE 'UTC')::date AS date, zscore
             FROM anomalies
             WHERE ticker = :t
             ORDER BY ts ASC
@@ -75,22 +75,19 @@ def load_features(ticker: str) -> pd.DataFrame:
         sentiment = pd.read_sql(
             text("""
             SELECT
-                published_at::date                  AS date,
+                (published_at AT TIME ZONE 'UTC')::date AS date,
                 AVG(compound)                       AS sentiment_compound,
                 COUNT(*) FILTER (WHERE sentiment='positive') AS pos_count,
                 COUNT(*) FILTER (WHERE sentiment='negative') AS neg_count,
                 COUNT(*)                            AS article_count
             FROM news_sentiment
             WHERE ticker = :t
-            GROUP BY published_at::date
+            GROUP BY (published_at AT TIME ZONE 'UTC')::date
             ORDER BY date ASC
         """),
             conn,
             params={"t": ticker},
         )
-
-    prices["date"] = pd.to_datetime(prices["date"])
-    prices = prices.drop_duplicates("date").sort_values("date").reset_index(drop=True)
 
     indicators["date"] = pd.to_datetime(indicators["date"])
     indicators = indicators.drop_duplicates("date")
@@ -108,10 +105,15 @@ def load_features(ticker: str) -> pd.DataFrame:
     return df
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+def engineer_features(df: pd.DataFrame, drop_unlabeled: bool = True) -> pd.DataFrame:
     """
     Build the full feature matrix from raw merged data.
-    All features are derived from past data only — no future leakage.
+    All features are derived from past data only: no future leakage.
+
+    drop_unlabeled=False keeps the newest row, whose target (the next day's
+    close) is unknown. Training and scoring must not see it; the live
+    forecast needs exactly it, because its features describe the latest
+    trading day and its target is the first day to forecast.
     """
     df = df.copy().sort_values("date").reset_index(drop=True)
 
@@ -167,8 +169,11 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         int
     )  # 1=up, 0=down
 
-    # Drop rows with NaN targets or insufficient history
-    df = df.dropna(subset=["target_price", "close_lag_10", "rolling_mean_20"])
+    # Drop rows with insufficient history, and rows with no known target
+    # unless the caller asked to keep the newest one.
+    df = df.dropna(subset=["close_lag_10", "rolling_mean_20"])
+    if drop_unlabeled:
+        df = df.dropna(subset=["target_price"])
 
     return df
 

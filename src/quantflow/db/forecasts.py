@@ -12,28 +12,21 @@ import datetime as _dt
 import pandas as pd
 from sqlalchemy import text
 
+from quantflow.db.batch import insert_rows
 from quantflow.db.connection import get_engine
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_INSERT = text("""
-    INSERT INTO forecasts
-        (ticker, model, forecast_date, predicted_close,
-         lower_bound, upper_bound, run_at)
-    VALUES
-        (:ticker, :model, :forecast_date, :predicted_close,
-         :lower_bound, :upper_bound, :run_at)
-    ON CONFLICT DO NOTHING
-""")
-
 
 def _as_date(value):
     """Coerce a forecast date to datetime.date.
 
-    Callers pass pd.Timestamp (ARIMA/Prophet via bdate_range), numpy
-    datetime64, or an already-converted date. Strings are passed through for
-    Postgres to parse, matching the previous ensemble behaviour.
+    ARIMA and Prophet pass datetime.date already; the boosters pass the
+    pd.Timestamp values next_trading_days returns; the ensemble passes the
+    forecast_date values it read back. numpy datetime64 is accepted too.
+    Strings are passed through for Postgres to parse, matching the previous
+    ensemble behaviour.
     """
     if isinstance(value, str):
         return value
@@ -45,39 +38,60 @@ def _as_date(value):
 
 
 def save_forecasts(df: pd.DataFrame) -> int:
-    """Insert forecast rows, skipping conflicts. Returns rows inserted.
+    """Insert forecast rows, skipping conflicts. Returns rows written.
 
-    Rows are inserted one at a time inside a single transaction, and a failing
-    row is logged and skipped rather than aborting the batch — one malformed
-    forecast should not discard a whole model run.
+    One batched INSERT inside one transaction. Any error other than a skipped
+    conflict raises and rolls the whole forecast back, so a model run never
+    reports forecasts it did not store. It used to catch errors row by row
+    instead, which cannot work on Postgres: the first failure aborts the
+    transaction, every later row fails with it, and the commit rolls all of
+    them back.
     """
     if df.empty:
         return 0
 
-    engine = get_engine()
-    inserted = 0
     run_at = _dt.datetime.now()
+    rows = [
+        {
+            "ticker": row["ticker"],
+            "model": row["model"],
+            "forecast_date": _as_date(row["ds"]),
+            "predicted_close": round(float(row["predicted_close"]), 4),
+            "lower_bound": round(float(row["lower_bound"]), 4),
+            "upper_bound": round(float(row["upper_bound"]), 4),
+            "run_at": run_at,
+        }
+        for row in df.to_dict("records")
+    ]
+    with get_engine().begin() as conn:
+        return insert_rows(conn, "forecasts", rows, skip_conflicts=True)
 
-    with engine.begin() as conn:
-        for _, row in df.iterrows():
-            try:
-                conn.execute(
-                    _INSERT,
-                    {
-                        "ticker": row["ticker"],
-                        "model": row["model"],
-                        "forecast_date": _as_date(row["ds"]),
-                        "predicted_close": round(float(row["predicted_close"]), 4),
-                        "lower_bound": round(float(row["lower_bound"]), 4),
-                        "upper_bound": round(float(row["upper_bound"]), 4),
-                        "run_at": run_at,
-                    },
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped: {e}")
 
-    return inserted
+def load_base_forecasts(ticker: str, models: list[str]) -> pd.DataFrame:
+    """Each model's most recent stored forecast run: model, forecast_date and
+    the predicted close with its bounds. The ensemble's input.
+
+    Only the latest run_at per model, the rule the dashboard uses. The table
+    keeps every run (run_at is part of its key), so after a run with
+    --no-clear, reading every row gave the ensemble two predictions per date.
+    """
+    query = text("""
+        SELECT f.model, f.forecast_date, f.predicted_close,
+               f.lower_bound, f.upper_bound
+        FROM forecasts f
+        JOIN (
+            SELECT model, MAX(run_at) AS run_at
+            FROM forecasts
+            WHERE ticker = :ticker
+              AND model = ANY(:models)
+            GROUP BY model
+        ) latest
+          ON f.model = latest.model AND f.run_at = latest.run_at
+        WHERE f.ticker = :ticker
+        ORDER BY f.forecast_date, f.model
+    """)
+    with get_engine().connect() as conn:
+        return pd.read_sql(query, conn, params={"ticker": ticker, "models": models})
 
 
 def clear_forecasts(tickers: list[str], models: list[str] | None = None) -> int:

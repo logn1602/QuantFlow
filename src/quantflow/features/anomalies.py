@@ -26,7 +26,7 @@ from sqlalchemy import text
 
 from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
-from quantflow.db.prices import load_close_volume as load_prices
+from quantflow.db.prices import load_daily_close_volume as load_prices
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("anomaly_detection")
@@ -123,7 +123,8 @@ def detect_iqr_anomalies(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 def save_anomalies(df: pd.DataFrame) -> int:
     """
     Replace the stored anomaly flags for every ticker present in df.
-    Returns number of rows inserted.
+    Returns the rows actually written: a row ON CONFLICT DO NOTHING skips is
+    not counted. Still one INSERT per row; batching it is a later cleanup.
 
     Why replace rather than append: each run recomputes the full series from
     scratch, and both detectors are history-dependent — the rolling Z-score
@@ -160,7 +161,9 @@ def save_anomalies(df: pd.DataFrame) -> int:
             )
 
         for ts, row in df.iterrows():
-            conn.execute(
+            # rowcount, not one per statement: a row ON CONFLICT DO NOTHING
+            # skipped was written by nobody and is not counted.
+            inserted += conn.execute(
                 text("""
                     INSERT INTO anomalies
                         (ticker, ts, close, zscore, flag)
@@ -175,8 +178,7 @@ def save_anomalies(df: pd.DataFrame) -> int:
                     "zscore": round(float(row["zscore"]), 4),
                     "flag": row["flag"],
                 },
-            )
-            inserted += 1
+            ).rowcount
 
     return inserted
 

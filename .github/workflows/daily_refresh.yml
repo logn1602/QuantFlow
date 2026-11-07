@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+# One refresh at a time: a manual run started during the scheduled one would
+# interleave its writes with it. A running refresh is never cancelled; the
+# newer one waits for it.
+concurrency:
+  group: daily-refresh
+  cancel-in-progress: false
+
 jobs:
   refresh-data:
     runs-on: ubuntu-latest
@@ -52,10 +59,11 @@ jobs:
           pip install -e . --no-deps
 
       # Runs before any data step so a logic regression fails fast, before
-      # touching the database. The suite is offline by design — no secrets,
-      # no DB, no network.
+      # touching the database. The suite is offline by design: no secrets,
+      # no DB, no network. Same selection as CI, which leaves the eval and
+      # integration suites out.
       - name: Run tests
-        run: pytest -q
+        run: pytest -m "not eval and not integration"
 
       # pip-audit cannot run on the maintainer's Windows box (pandas 2.2.2 has
       # no wheel there and its sdist needs a Visual Studio toolchain), so this
@@ -70,14 +78,27 @@ jobs:
           pip-audit --requirement requirements.txt
         continue-on-error: true
 
-      - name: Fetch latest price data
+      - name: Fetch latest 15-min bars
         env:
           # yfinance needs no key. ALPHA_VANTAGE_API_KEY is kept here because
           # this is the ingestion step that would consume it if the Alpha
           # Vantage fetcher were enabled; no step reads it today.
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
-        run: |
-          python -c "from quantflow.ingestion.yfinance_fetcher import fetch_intraday; fetch_intraday()"
+        run: python -m quantflow.ingestion.yfinance_fetcher --intraday
+
+      # The daily bar carries Yahoo's official close and full-day volume; the
+      # loaders only build a day from 15-min bars where no daily bar exists.
+      # 22:30 UTC is after 17:00 New York in both EST and EDT, so today's bar
+      # is final by the time this runs. Five days heals any missed run.
+      - name: Fetch daily bars
+        run: python -m quantflow.ingestion.yfinance_fetcher --daily
+
+      # Fails the refresh before any stage reads prices if stored closes no
+      # longer match Yahoo's, which is what a stock split after the rows were
+      # stored looks like, or if any ticker could not be checked. Threshold:
+      # SPLIT_GUARD_THRESHOLD, default 0.15.
+      - name: Check stored prices against Yahoo (split guard)
+        run: python -m quantflow.ingestion.split_guard
 
       - name: Compute technical indicators
         run: python -m quantflow.features.indicators
@@ -85,15 +106,34 @@ jobs:
       - name: Detect anomalies
         run: python -m quantflow.features.anomalies
 
+      # FinBERT, about 440 MB, downloads from Hugging Face on first use. The key
+      # is the revision the code pins (FINBERT_REVISION in
+      # features/sentiment.py), so a new revision downloads once. actions/cache
+      # saves only when the whole job succeeds.
+      - name: Cache the FinBERT model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: finbert-${{ runner.os }}-4556d13015211d73dccd3fdd39d39232506f3e43
+
+      # Exits 1 when FinBERT cannot be loaded, which fails the run.
       - name: Analyze news sentiment
+        id: sentiment
         env:
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
         run: python -m quantflow.features.sentiment
 
+      # Runs after a failed sentiment step too, on the sentiment already
+      # stored; the run still shows as failed. It requires that the sentiment
+      # step ran rather than only !cancelled(): sentiment runs only when every
+      # step before it succeeded, so a failed split guard still stops this.
       - name: Run all 5 forecasting models
+        id: models
+        if: ${{ !cancelled() && steps.sentiment.outcome != 'skipped' }}
         run: python -m quantflow.pipelines.run_models
 
       - name: Run strategy backtest
+        if: ${{ !cancelled() && steps.models.outcome == 'success' }}
         run: python -m quantflow.evaluation.backtest
 
       - name: Summary

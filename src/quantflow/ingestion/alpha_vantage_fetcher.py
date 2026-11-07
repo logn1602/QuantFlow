@@ -11,10 +11,10 @@ import time
 
 import pandas as pd
 import requests
-from sqlalchemy import text
 
 from quantflow.config import ALPHA_VANTAGE_API_KEY, TICKERS
-from quantflow.db.connection import get_engine
+from quantflow.db.batch import frame_to_rows
+from quantflow.db.prices import RAW_PRICE_COLUMNS, insert_bars
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,45 +22,24 @@ logger = get_logger(__name__)
 BASE_URL = "https://www.alphavantage.co/query"
 SOURCE = "alpha_vantage"
 
-# Free tier allows 25 req/day — add a small delay between calls to be safe
+# Free tier allows 25 req/day, so add a small delay between calls to be safe
 REQUEST_DELAY_SECONDS = 12
 
 
 def _upsert_prices(df: pd.DataFrame, ticker: str) -> int:
-    """Insert rows into raw_prices, skip duplicates. Returns rows inserted."""
+    """Insert rows into raw_prices. Returns rows actually written.
+
+    Rows already stored are skipped by ON CONFLICT and not counted. Any other
+    write error raises; the fetch loops below only catch HTTP errors.
+    """
     if df.empty:
         return 0
 
-    engine = get_engine()
-    inserted = 0
-
-    with engine.begin() as conn:
-        for _, row in df.iterrows():
-            try:
-                conn.execute(
-                    text("""
-                        INSERT INTO raw_prices
-                            (ticker, source, ts, open, high, low, close, volume)
-                        VALUES
-                            (:ticker, :source, :ts, :open, :high, :low, :close, :volume)
-                        ON CONFLICT (ticker, source, ts) DO NOTHING
-                    """),
-                    {
-                        "ticker": ticker,
-                        "source": SOURCE,
-                        "ts": row["ts"],
-                        "open": row["open"],
-                        "high": row["high"],
-                        "low": row["low"],
-                        "close": row["close"],
-                        "volume": row["volume"],
-                    },
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped for {ticker}: {e}")
-
-    return inserted
+    frame = df.assign(
+        ticker=ticker, source=SOURCE, ts=pd.to_datetime(df["ts"], utc=True)
+    )
+    frame = frame.dropna(subset=["close"]).drop_duplicates(subset="ts")
+    return insert_bars(frame_to_rows(frame, RAW_PRICE_COLUMNS))
 
 
 def fetch_intraday(tickers: list[str] | None = None, interval: str = "15min") -> dict:

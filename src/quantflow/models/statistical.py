@@ -37,15 +37,41 @@ from quantflow.db.metrics import save_model_metrics
 from quantflow.db.prices import load_daily_close as load_prices
 from quantflow.evaluation.metrics import regression_metrics
 from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
+from quantflow.models import FORECAST_DAYS
 from quantflow.utils.logger import get_logger
+from quantflow.utils.trading_calendar import next_trading_days
 
 warnings.filterwarnings("ignore")
 
 logger = get_logger("forecasting")
 
-FORECAST_DAYS = 7
 ARIMA_ORDER = (5, 1, 0)
 MLFLOW_EXP = "stock_forecasting"
+
+
+# Prophet's own 'auto' setting turns yearly seasonality off below this span
+# (prophet/forecaster.py). Forcing it on with less fits a yearly curve to a
+# single season, which then repeats in every forecast.
+MIN_YEARLY_SPAN = pd.Timedelta(days=730)
+
+
+def prophet_settings(history: pd.DataFrame) -> dict:
+    """Constructor arguments for every Prophet fit: the holdout fit, the live
+    fit and the ensemble's holdout fit. One definition, so the model that is
+    scored and the model that forecasts cannot drift apart.
+
+    Yearly seasonality depends on how much history this particular fit sees,
+    so a ticker near the two-year mark can have it in the live fit and not in
+    the holdout fit, which trains on 30 fewer days.
+    """
+    span = history["ds"].max() - history["ds"].min()
+    return {
+        "daily_seasonality": False,
+        "weekly_seasonality": True,
+        "yearly_seasonality": bool(span >= MIN_YEARLY_SPAN),
+        "changepoint_prior_scale": 0.05,
+        "interval_width": 0.95,
+    }
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -90,10 +116,9 @@ def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         forecast_mean = forecast_result.predicted_mean
         conf_int = forecast_result.conf_int(alpha=0.05)
 
-        last_date = df["ds"].iloc[-1]
-        future_dates = pd.bdate_range(
-            start=last_date + pd.Timedelta(days=1), periods=FORECAST_DAYS
-        )
+        # Trading days, not weekdays: a forecast must not promise a close on
+        # a market holiday.
+        future_dates = next_trading_days(df["ds"].iloc[-1], FORECAST_DAYS)
 
         forecast_df = pd.DataFrame(
             {
@@ -135,40 +160,27 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
     train, holdout = train_holdout_split(df, copy=True)
 
     try:
-        model = Prophet(
-            daily_seasonality=False,
-            weekly_seasonality=True,
-            yearly_seasonality=True,
-            changepoint_prior_scale=0.05,
-            interval_width=0.95,
-        )
+        model = Prophet(**prophet_settings(train))
         model.fit(train)
 
-        holdout_future = model.make_future_dataframe(periods=HOLDOUT_DAYS, freq="B")
-        holdout_forecast = model.predict(holdout_future)
-        holdout_preds = holdout_forecast["yhat"].iloc[-HOLDOUT_DAYS:]
-        metrics = compute_metrics(
-            holdout["y"].reset_index(drop=True),
-            holdout_preds.reset_index(drop=True),
-        )
+        # Predict on the holdout's own dates. make_future_dataframe(freq="B")
+        # stepped through every weekday, so after a market holiday inside the
+        # window each prediction was scored against the next trading day's
+        # close, and the final close was never predicted at all.
+        holdout_preds = model.predict(holdout[["ds"]])["yhat"]
+        metrics = compute_metrics(holdout["y"].to_numpy(), holdout_preds.to_numpy())
         logger.info(
-            f"  Prophet {ticker} holdout — "
+            f"  Prophet {ticker} holdout: "
             f"RMSE: {metrics['rmse']} | MAE: {metrics['mae']} | MAPE: {metrics['mape']}%"
         )
 
-        full_model = Prophet(
-            daily_seasonality=False,
-            weekly_seasonality=True,
-            yearly_seasonality=True,
-            changepoint_prior_scale=0.05,
-            interval_width=0.95,
-        )
+        full_model = Prophet(**prophet_settings(df))
         full_model.fit(df)
 
-        future = full_model.make_future_dataframe(periods=FORECAST_DAYS, freq="B")
-        forecast = full_model.predict(future)
-
-        forecast_future = forecast[forecast["ds"] > df["ds"].max()].head(FORECAST_DAYS)
+        future = pd.DataFrame(
+            {"ds": next_trading_days(df["ds"].iloc[-1], FORECAST_DAYS)}
+        )
+        forecast_future = full_model.predict(future)
 
         forecast_df = pd.DataFrame(
             {

@@ -65,6 +65,8 @@ Data flows one way. `quantflow.models` depends on `quantflow.evaluation`, never 
 
 ## Evaluation
 
+> **Notice (2026-11-07): the figures in this section were scored against 09:30-bar prices, not daily closes.** From 2026-04-14 the pipeline stored only 15-minute bars and the loaders took each date's first bar, so every "actual" close in the 30-day holdout, and in the last 48 training days, was the 09:30 bar's price. Over the holdout window that price sat 0.7% to 1.9% from the day's close on average, depending on the ticker. Found by the read-only diagnostics in [scripts/diagnostics/](scripts/diagnostics/). The numbers below are left as published and will be re-measured in Phase 4.
+
 **How the evaluation set is built.** Intraday bars are collapsed to one close per trading date, giving **579 daily closes per ticker** spanning 2024-04-10 to 2026-08-04. The final **30 trading days** are held out. The split is positional on a date-sorted series — `train = df.iloc[:-30]`, `holdout = df.iloc[-30:]` — defined once in [evaluation/splits.py](src/quantflow/evaluation/splits.py). There is no random shuffle anywhere in the codebase.
 
 **What counts as success.** MAPE against actual closes, because it is unit-free and therefore comparable across tickers trading at very different prices. A model is better than another only when scored on the same window over the same horizon.
@@ -135,6 +137,8 @@ Every number above was measured on **2026-08-04** and is recorded in `mlflow.db`
 ```bash
 make seed && make indicators && make anomalies && make sentiment && make models && make backtest
 ```
+
+These per-stage targets skip the split guard (see Local below); `make all` runs it.
 
 Read them back with `mlflow ui` (http://localhost:5000), or from the `model_metrics` and `backtest_results` tables. Figures shift as new market data arrives; regenerate rather than trusting a stale copy.
 
@@ -217,7 +221,12 @@ cp .env.example .env
 ```
 
 Run the full pipeline. `make all` seeds roughly two years of history first, so
-the first run takes several minutes; later runs skip rows that already exist:
+the first run takes several minutes; later runs skip rows that already exist.
+Like the daily workflow, it stops before any stage reads prices if the split
+guard finds stored prices that no longer match Yahoo's, or cannot check a
+ticker. The per-stage commands (`make indicators`, `make models` and the
+`python -m quantflow....` modules behind them) skip the split guard; run
+`python -m quantflow.ingestion.split_guard` first when using them on their own:
 
 ```bash
 make all
@@ -281,13 +290,14 @@ docs/architecture.md       Design decisions and trade-offs
 | Variable | Required | Description |
 |---|---|---|
 | `DB_PASSWORD` | **yes** | Postgres password; the pipeline exits without it |
-| `TICKERS` | **yes** | Comma-separated; defaults to `AAPL,MSFT,GOOGL,NVDA` |
+| `TICKERS` | **yes** | Comma-separated; defaults to `AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM` |
 | `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` | no | Default to `localhost:5432/stock_pipeline` as `postgres` |
 | `DB_SSLMODE` | no | Default `require`; see below |
 | `DB_SSLROOTCERT` | no | CA bundle path, needed only for `verify-ca` / `verify-full` |
 | `ALPHA_VANTAGE_API_KEY` | no | Only for the Alpha Vantage fetcher |
 | `NEWS_API_KEY` | no | Without it, sentiment uses the RSS feed only |
 | `FETCH_INTERVAL_MINUTES` | no | Scheduler interval, default 15 |
+| `SPLIT_GUARD_THRESHOLD` | no | Fraction, default `0.15`. The daily refresh fails if stored daily closes differ from Yahoo's raw closes by more than this on three or more consecutive dates (a stock split after the rows were stored) |
 | `LOG_LEVEL` | no | Default `INFO` |
 
 **Database TLS.** `DB_SSLMODE` defaults to `require` rather than libpq's `prefer`, because `prefer` falls back to cleartext silently — no exception, no log line — if the peer declines TLS, and this database is a public endpoint reached from a laptop, a CI runner and Streamlit Cloud. `require` encrypts but does not authenticate the peer. `verify-full` is the recommended upgrade; it needs `DB_SSLROOTCERT` pointing at Supabase's CA file, because the pooler certificate is signed by a private CA present in neither the system trust store nor certifi.

@@ -5,7 +5,7 @@ Phase 6 — News Sentiment Analysis Engine
 
 Pulls financial news from two sources:
   1. NewsAPI       : Structured API, 100 req/day free tier
-  2. RSS Feeds     : Yahoo Finance, Reuters, MarketWatch — completely free
+  2. RSS Feeds     : Yahoo Finance per-symbol headlines, free
 
 Analyzes headlines using FinBERT:
   - ProsusAI/finbert — pre-trained on financial news
@@ -23,6 +23,7 @@ Usage:
 """
 
 import argparse
+import sys
 import time
 import warnings
 from datetime import UTC, datetime, timedelta
@@ -33,6 +34,7 @@ from sqlalchemy import text
 
 from quantflow.config import NEWS_API_KEY, TICKERS
 from quantflow.db.connection import get_engine
+from quantflow.db.sentiment import insert_sentiment
 from quantflow.utils.logger import get_logger
 
 # Applied after imports rather than before them: nothing imported here
@@ -41,6 +43,11 @@ from quantflow.utils.logger import get_logger
 warnings.filterwarnings("ignore")
 
 logger = get_logger("sentiment")
+
+
+class FinBERTUnavailableError(RuntimeError):
+    """FinBERT could not be loaded, so no headline can be scored."""
+
 
 # ── FinBERT model ─────────────────────────────────────────────────────────────
 # Pinned to an exact commit for REPRODUCIBILITY, not security. The RCE angle
@@ -57,11 +64,25 @@ logger = get_logger("sentiment")
 FINBERT_MODEL = "ProsusAI/finbert"
 FINBERT_REVISION = "4556d13015211d73dccd3fdd39d39232506f3e43"
 
+# FinBERT reads at most 512 tokens, and the pipeline truncates to that itself
+# (truncation=True, max_length=FINBERT_MAX_TOKENS). Headlines are also cut to
+# FINBERT_INPUT_CHARS characters first: an older cap on the text handed to the
+# tokenizer, not a token limit.
+FINBERT_MAX_TOKENS = 512
+FINBERT_INPUT_CHARS = 512
+
+# Storage caps on feed text. The columns are TEXT, so these bound what a feed
+# can make the pipeline store rather than enforce the schema.
+MAX_HEADLINE_CHARS = 1000
+MAX_URL_CHARS = 500
+
 # ── RSS feed URLs per ticker ──────────────────────────────────────────────────
+# Per-symbol feeds only. A general-market feed listed under one ticker credits
+# every market headline to that ticker's sentiment features; MarketWatch's
+# realtime headlines used to sit under AAPL that way.
 RSS_FEEDS = {
     "AAPL": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL&region=US&lang=en-US",
-        "https://feeds.marketwatch.com/marketwatch/realtimeheadlines/",
     ],
     "MSFT": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=MSFT&region=US&lang=en-US",
@@ -120,7 +141,7 @@ def get_finbert():
                 top_k=None,  # return all 3 class scores
                 device=-1,  # CPU (use 0 for GPU if available)
                 truncation=True,
-                max_length=512,
+                max_length=FINBERT_MAX_TOKENS,
             )
             logger.info("FinBERT loaded successfully")
         except Exception as e:
@@ -129,91 +150,59 @@ def get_finbert():
     return _finbert_pipeline
 
 
-def analyze_headline(headline: str) -> dict:
+def _score(results: list[dict]) -> dict:
+    """FinBERT's label scores for one headline as the stored fields.
+
+    Compound score = positive probability - negative probability, and the
+    dominant label is the stored sentiment.
+    """
+    scores = {r["label"].lower(): r["score"] for r in results}
+    score_pos = scores.get("positive", 0.0)
+    score_neg = scores.get("negative", 0.0)
+    score_neu = scores.get("neutral", 0.0)
+    return {
+        "sentiment": max(scores, key=lambda label: scores[label]),
+        "score_pos": round(score_pos, 4),
+        "score_neg": round(score_neg, 4),
+        "score_neu": round(score_neu, 4),
+        "compound": round(score_pos - score_neg, 4),
+    }
+
+
+# A headline FinBERT could not score gets None, never a made-up neutral score.
+# Stored as "neutral" with compound 0.0 it would be indistinguishable from news
+# that really was neutral, and it would feed the model's sentiment features.
+
+
+def analyze_headline(headline: str) -> dict | None:
     """
     Run FinBERT on a single headline.
-    Returns dict with sentiment, score_pos, score_neg, score_neu, compound.
+    Returns dict with sentiment, score_pos, score_neg, score_neu, compound,
+    or None when FinBERT is unavailable or fails on this headline.
     """
     model = get_finbert()
     if model is None:
-        return {
-            "sentiment": "neutral",
-            "score_pos": 0.33,
-            "score_neg": 0.33,
-            "score_neu": 0.34,
-            "compound": 0.0,
-        }
+        return None
 
     try:
-        results = model(headline[:512])[0]  # truncate to 512 tokens
-
-        scores = {r["label"].lower(): r["score"] for r in results}
-        score_pos = scores.get("positive", 0.0)
-        score_neg = scores.get("negative", 0.0)
-        score_neu = scores.get("neutral", 0.0)
-
-        # Compound score: positive signal - negative signal
-        compound = round(score_pos - score_neg, 4)
-
-        # Dominant sentiment
-        sentiment = max(scores, key=lambda label: scores[label])
-
-        return {
-            "sentiment": sentiment,
-            "score_pos": round(score_pos, 4),
-            "score_neg": round(score_neg, 4),
-            "score_neu": round(score_neu, 4),
-            "compound": compound,
-        }
+        return _score(model(headline[:FINBERT_INPUT_CHARS])[0])
     except Exception as e:
         logger.warning(f"FinBERT failed on headline: {e}")
-        return {
-            "sentiment": "neutral",
-            "score_pos": 0.33,
-            "score_neg": 0.33,
-            "score_neu": 0.34,
-            "compound": 0.0,
-        }
+        return None
 
 
-def analyze_batch(headlines: list[str]) -> list[dict]:
-    """Run FinBERT on a batch of headlines (faster than one at a time)."""
+def analyze_batch(headlines: list[str]) -> list[dict | None]:
+    """Run FinBERT on a batch of headlines (faster than one at a time).
+    Entries are None for headlines that could not be scored."""
+    if not headlines:
+        return []
     model = get_finbert()
-    if model is None or not headlines:
-        return [
-            {
-                "sentiment": "neutral",
-                "score_pos": 0.33,
-                "score_neg": 0.33,
-                "score_neu": 0.34,
-                "compound": 0.0,
-            }
-        ] * len(headlines)
+    if model is None:
+        return [None] * len(headlines)
 
     try:
-        # Truncate each headline
-        truncated = [h[:512] for h in headlines]
-        batch_results = model(truncated)
-
-        output = []
-        for results in batch_results:
-            scores = {r["label"].lower(): r["score"] for r in results}
-            score_pos = scores.get("positive", 0.0)
-            score_neg = scores.get("negative", 0.0)
-            score_neu = scores.get("neutral", 0.0)
-            compound = round(score_pos - score_neg, 4)
-            sentiment = max(scores, key=lambda label: scores[label])
-            output.append(
-                {
-                    "sentiment": sentiment,
-                    "score_pos": round(score_pos, 4),
-                    "score_neg": round(score_neg, 4),
-                    "score_neu": round(score_neu, 4),
-                    "compound": compound,
-                }
-            )
-        return output
-
+        clipped = [h[:FINBERT_INPUT_CHARS] for h in headlines]
+        return [_score(results) for results in model(clipped)]
     except Exception as e:
         logger.warning(f"Batch FinBERT failed: {e}")
         return [analyze_headline(h) for h in headlines]
@@ -327,48 +316,57 @@ def fetch_newsapi(ticker: str) -> list[dict]:
 # ── Database write ────────────────────────────────────────────────────────────
 
 
+def _clean_text(value: str | None, limit: int) -> str:
+    """Feed text made safe to bind: no NUL bytes, no code points UTF-8 cannot
+    encode (lone surrogates become "?"), at most `limit` characters.
+
+    Headlines and URLs come from third-party feeds. psycopg2 rejects both
+    defects on the client side, before anything reaches the server, so in one
+    batched INSERT a single malformed article would fail the whole write and
+    stop the daily refresh with it.
+    """
+    cleaned = (value or "").replace("\x00", "")
+    return cleaned.encode("utf-8", "replace").decode("utf-8")[:limit]
+
+
 def save_sentiment(articles: list[dict], ticker: str) -> int:
     """
     Save analyzed articles to news_sentiment table.
-    Skips duplicates. Returns rows inserted.
+    Returns rows actually written: headlines already stored are skipped and
+    not counted, and any other write error raises. An article whose headline
+    is empty once cleaned (no title, or only NUL bytes) is not news, and is
+    skipped with a log line.
+
+    RSS and NewsAPI can return the same headline at the same time, so one
+    batch can carry a key twice. ON CONFLICT DO NOTHING writes it once and
+    counts it once on Postgres (tests/integration checks this), so no
+    de-duplication is needed here.
     """
-    if not articles:
-        return 0
+    rows = []
+    empty = 0
+    for article in articles:
+        headline = _clean_text(article["headline"], MAX_HEADLINE_CHARS)
+        if not headline:
+            empty += 1
+            continue
+        rows.append(
+            {
+                "ticker": ticker,
+                "source": article["source"],
+                "published_at": article["published_at"],
+                "headline": headline,
+                "url": _clean_text(article.get("url"), MAX_URL_CHARS),
+                "sentiment": article["sentiment"],
+                "score_pos": article["score_pos"],
+                "score_neg": article["score_neg"],
+                "score_neu": article["score_neu"],
+                "compound": article["compound"],
+            }
+        )
 
-    engine = get_engine()
-    inserted = 0
-
-    with engine.begin() as conn:
-        for article in articles:
-            try:
-                conn.execute(
-                    text("""
-                        INSERT INTO news_sentiment
-                            (ticker, source, published_at, headline, url,
-                             sentiment, score_pos, score_neg, score_neu, compound)
-                        VALUES
-                            (:ticker, :source, :published_at, :headline, :url,
-                             :sentiment, :score_pos, :score_neg, :score_neu, :compound)
-                        ON CONFLICT (ticker, headline, published_at) DO NOTHING
-                    """),
-                    {
-                        "ticker": ticker,
-                        "source": article["source"],
-                        "published_at": article["published_at"],
-                        "headline": article["headline"][:1000],
-                        "url": article.get("url", "")[:500],
-                        "sentiment": article["sentiment"],
-                        "score_pos": article["score_pos"],
-                        "score_neg": article["score_neg"],
-                        "score_neu": article["score_neu"],
-                        "compound": article["compound"],
-                    },
-                )
-                inserted += 1
-            except Exception as e:
-                logger.warning(f"Row skipped: {e}")
-
-    return inserted
+    if empty:
+        logger.info(f"  {ticker}: skipped {empty} articles with no headline text")
+    return insert_sentiment(rows)
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
@@ -457,9 +455,15 @@ def run(tickers: list[str] | None = None) -> dict:
     tickers = tickers or TICKERS
     results = {}
 
-    # Preload FinBERT once before the loop
+    # Preload FinBERT once before the loop. Without it nothing is written:
+    # storing unscored headlines as neutral would read as real neutral news.
+    # It raises rather than returning zeros, so the CLI exits non-zero and the
+    # scheduler logs a failed job instead of "0 rows saved".
     logger.info("Preloading FinBERT model...")
-    get_finbert()
+    if get_finbert() is None:
+        raise FinBERTUnavailableError(
+            "FinBERT could not be loaded, so no sentiment rows were written"
+        )
 
     for ticker in tickers:
         logger.info(f"Processing sentiment for {ticker}...")
@@ -479,12 +483,20 @@ def run(tickers: list[str] | None = None) -> dict:
         logger.info(f"  Running FinBERT on {len(headlines)} headlines...")
         scores = analyze_batch(headlines)
 
-        # Merge scores back into articles
-        for article, score in zip(all_articles, scores, strict=False):
-            article.update(score)
+        # Merge scores back into articles; unscored headlines are not stored
+        scored = [
+            {**article, **score}
+            for article, score in zip(all_articles, scores, strict=True)
+            if score is not None
+        ]
+        if len(scored) < len(all_articles):
+            logger.warning(
+                f"  {ticker}: {len(all_articles) - len(scored)} headlines FinBERT "
+                f"could not score were not stored"
+            )
 
         # Save to DB
-        n = save_sentiment(all_articles, ticker)
+        n = save_sentiment(scored, ticker)
         results[ticker] = n
         logger.info(f"  {ticker}: {n} sentiment rows saved")
 
@@ -496,27 +508,45 @@ def run(tickers: list[str] | None = None) -> dict:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+
+def main(argv: list[str] | None = None) -> int:
+    """Exits 1 when FinBERT cannot be loaded, so the daily refresh shows a
+    failed run; its later steps still run, on the sentiment already stored."""
     parser = argparse.ArgumentParser(description="News sentiment analysis engine")
     parser.add_argument("--ticker", type=str, help="Single ticker (e.g. AAPL)")
     parser.add_argument("--show", type=str, help="Print sentiment for a ticker")
     parser.add_argument("--summary", action="store_true", help="Market-wide overview")
     parser.add_argument("--rows", type=int, default=15, help="Rows to show")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.summary:
         show_summary()
-    elif args.show:
+        return 0
+    if args.show:
         show_sentiment(args.show.upper(), n=args.rows)
-    elif args.ticker:
-        results = run([args.ticker.upper()])
-        print(f"\nDone: {results}")
-    else:
+        return 0
+
+    tickers = [args.ticker.upper()] if args.ticker else None
+    if tickers is None:
         logger.info("Running sentiment pipeline for all tickers...")
-        results = run()
-        total = sum(results.values())
-        logger.info(f"Complete. Total sentiment rows saved: {total}")
-        for ticker, n in results.items():
-            print(f"  {ticker}: {n} rows")
-        print("\nTo view results:  python sentiment.py --show AAPL")
-        print("Market overview:  python sentiment.py --summary")
+    try:
+        results = run(tickers)
+    except FinBERTUnavailableError as e:
+        logger.error(str(e))
+        print(f"SENTIMENT FAILED: {e}", file=sys.stderr)
+        return 1
+
+    if tickers:
+        print(f"\nDone: {results}")
+        return 0
+    total = sum(results.values())
+    logger.info(f"Complete. Total sentiment rows saved: {total}")
+    for ticker, n in results.items():
+        print(f"  {ticker}: {n} rows")
+    print("\nTo view results:  python sentiment.py --show AAPL")
+    print("Market overview:  python sentiment.py --summary")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

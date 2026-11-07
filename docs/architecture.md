@@ -89,15 +89,124 @@ and the value printed to the console can disagree in the last digit — which is
 exactly the kind of discrepancy that costs an hour when two dashboards
 disagree and neither is wrong.
 
-### SQL confined to `db/`
+### Price data: one row per trading date, stored raw
 
-Every statement in the project lives under `quantflow.db`. `raw_prices` has
-four readers rather than one god-function, because the four callers genuinely
-need different shapes — full OHLCV indexed by timestamp, close-and-volume,
-a deduplicated daily `ds`/`y` series, a windowed frame with a date column.
-Merging them would mean either passing shape flags or returning the widest
-shape and making callers discard columns. Four named functions sharing one
-private helper is the smaller cost.
+`raw_prices` holds two kinds of bar: daily bars, stored at their exchange
+date's 00:00 UTC, and 15-minute bars on the 09:30 to 15:45 New York grid. A
+row that is neither, such as a stray 16:00 print, is left out with a warning.
+Both kinds are stored only once final, because `ON CONFLICT DO NOTHING` never
+corrects a stored row: today's daily bar after 17:00 New York, and a 15-minute
+bar two minutes after its quarter hour ends. Yahoo serves both while they are
+still trading, with the latest price as the close and the volume so far.
+Everything that wants one row per trading date (every model, the indicator
+and anomaly stages, the dashboard's candles) goes through
+`db.prices.daily_bars`:
+
+- a date with a daily bar uses it;
+- a date with only 15-minute bars gets one bar built from them: first open,
+  highest high, lowest low, last close, summed volume. Each load warns, per
+  ticker, how many earlier dates took this path. Today's session, which has
+  no daily bar until 17:00 New York by design, is logged at INFO instead.
+
+The loaders used to keep each date's first row by timestamp instead. Seeded
+dates were fine, since their midnight daily bar sorts first, but every date
+after the seed had only 15-minute bars, so its "close" was the close of the
+09:30 bar. The daily refresh now also stores Yahoo's daily bar after every
+close, and `python -m quantflow.ingestion.backfill` gives every NYSE trading
+day without a daily bar its official one, from each ticker's first stored date
+to the last completed session: the dates with only 15-minute bars, and the
+trading days with no bars at all (a gap between the seed and the first
+15-minute refresh, or days the refresh did not run). Run it with `--dry-run`
+first, which lists the empty days it would fill; a real run prints an undo
+query that deletes exactly the rows it wrote.
+
+**Prices are stored raw.** Both fetchers request `auto_adjust=False`: bars
+are split-adjusted, as Yahoo serves everything, but not dividend-adjusted.
+Yahoo never dividend-adjusts 15-minute bars, so adjusted daily bars sat on a
+different basis from the 15-minute bars of the same date, and a stored value
+depended on when it was fetched. Three consequences follow:
+
+- Raw prices drop on each ex-dividend date by roughly the dividend, a
+  fraction of a percent per quarter for the dividend payers here (AMZN and
+  TSLA pay none). The models see that as an ordinary down move.
+- Backtest returns exclude dividends, for the strategy and for buy-and-hold
+  alike. The comparison between the two stays like-for-like, but neither
+  figure is a total return.
+- History stored before this change was seeded with `auto_adjust=True`, so
+  it is dividend-adjusted as of the seed date. The bars just before the seed
+  carry an adjustment factor of 1, so that segment joins the raw rows after
+  it without a jump; within it, earlier prices sit slightly below what
+  actually traded. A fresh seed is raw throughout, so a new install's
+  numbers can differ slightly from the live database's.
+
+**Splits are guarded, not absorbed.** Yahoo split-adjusts as of fetch time
+and stored rows are never rewritten, so a split after rows were stored would
+read as a crash. `quantflow.ingestion.split_guard` runs after each daily
+fetch and fails the refresh when stored daily closes differ from Yahoo's raw
+closes by more than `SPLIT_GUARD_THRESHOLD` (default 15%; dividend drift stays
+far below it, any split far above) on three or more consecutive dates. A split
+shifts every row stored before it, a long unbroken run; one or two isolated
+mismatches are a bad print on one side, and are logged as warnings instead of
+stopping every stage. A ticker whose check raises (the database or Yahoo
+misbehaving) is logged and the others are still checked, so it never hides
+another ticker's break. The command fails on a break, on an error, and on a
+ticker Yahoo returned no reference prices for: a guard that could not check
+a ticker does not report a pass. The fix after a split is a scoped rescale of
+that ticker's earlier rows, run by hand, after which the guard passes again
+by itself.
+
+In the daily workflow a failing guard fails its step, so nothing after it
+runs; `make all` runs it in the same place. The per-stage commands do not run
+it. The scheduler has no steps, so it remembers the guard's last answer: the
+guard runs at startup, at 09:45 and 16:20 New York time, and after the 17:05
+daily bars. The 09:45 run pauses the intraday price jobs on the day a split
+takes effect, before the session's first 15-minute bar is final; the 16:20
+run comes before the model jobs. These cron jobs run however late they
+start, so a laptop that wakes after 16:20 checks before any model job still
+due.
+
+The jobs that read prices (indicators, anomalies, both model jobs, the
+ensemble and the backtest) then follow the guard's last answer:
+
+- After a run that checked every ticker and found no break, they run, and
+  that run's time is kept as the last full pass.
+- After a break, they log why and skip, until a run checks every ticker and
+  finds none.
+- After a run that could not check every ticker (Yahoo returned nothing for
+  one, a check raised, or the run failed), they keep running only if the last
+  full pass is from the current or previous NYSE trading day, in New York
+  time: a Monday-morning hiccup reuses Friday's pass. Otherwise they log why
+  and skip, as after a break, until a run checks every ticker. A break
+  already found stays in force either way.
+
+The last full pass is kept in memory, so after a restart the price jobs wait
+until a run checks every ticker, normally the one at startup. Ingestion and
+sentiment keep running throughout.
+
+**Forecast dates follow the NYSE calendar.** `utils/trading_calendar.py`
+builds it from pandas' holiday rules, so it needs no calendar package, and
+follows the exchange rather than the federal list: Good Friday and
+Juneteenth are closed, Columbus Day and Veterans Day are open, and a
+Saturday holiday closes the Friday before, except New Year's Day. Tests
+check it against the exchange's published lists for 2025 to 2027. One-off
+closures, such as the national day of mourning on 2025-01-09 or a weather
+closure, cannot be known in advance and are not covered: a forecast made
+just before one still lists that day.
+
+### SQL in `db/`
+
+Every read of `raw_prices` and most writes live under `quantflow.db`. The
+exceptions sit beside their callers: the anomaly-flag and backtest-result
+writes, and some feature, display and evaluation queries. `raw_prices` has
+one definition of a trading-day bar, `daily_bars`, and every reader is a
+projection of it: daily OHLCV indexed by each date's 00:00 UTC timestamp for
+the indicator engine, close and volume for anomaly detection, a `ds`/`y`
+series for the forecasters, and a windowed frame with a date column for the
+dashboard. Projecting one shape is cheap at this size. What must exist exactly
+once is the rule for combining daily and 15-minute bars, because two copies of
+it would let the models and the dashboard disagree about a day's close.
+`load_bar_timestamps` serves the backfill, which only needs to know which dates
+already have a daily bar.
 
 ---
 
@@ -183,10 +292,12 @@ against the live database. Fresh installs are unaffected.
 The current design targets eight tickers, daily retraining, and a single
 Postgres instance. Each of these breaks at a different point.
 
-**Ingestion.** Row-by-row `INSERT ... ON CONFLICT` is fine for eight tickers
-and fails at a few hundred. `COPY` into a staging table with a merge is the
-standard fix, and it is a contained change because all writes are already in
-`db/`.
+**Ingestion.** Writes go out as one multi-row `INSERT ... ON CONFLICT` per
+chunk of up to 1,000 rows (`db/batch.py`), comfortable for eight tickers and
+well beyond. At a few hundred tickers, `COPY` into a staging table with a merge
+is the standard next step. It is a contained change because almost every write
+goes through `db/`; the anomaly flags and the backtest results are the
+exceptions.
 
 **Feature computation.** Every stage recomputes indicators over full history on
 every run. At eight tickers this is seconds. The shape that survives is

@@ -9,6 +9,8 @@ patched copy never leaks into another test module.
 """
 
 import importlib
+import re
+from pathlib import Path
 
 import pytest
 
@@ -16,8 +18,13 @@ import quantflow.config as config_module
 
 
 @pytest.fixture(autouse=True)
-def restore_config():
+def restore_config(monkeypatch):
     yield
+    # Undo the test's environment first. Fixture teardown runs in reverse
+    # setup order, and conftest's autouse fixtures set monkeypatch up before
+    # this one, so without the undo the reload below still saw the patched
+    # environment and left that copy of config behind for every later module.
+    monkeypatch.undo()
     importlib.reload(config_module)
 
 
@@ -133,10 +140,94 @@ def test_database_url_is_assembled_from_parts(monkeypatch):
     assert cfg.DATABASE_URL == "postgresql://quant:pw@db.example.com:6543/flow"
 
 
+@pytest.mark.parametrize(
+    "name, default", [("DB_PORT", 5432), ("FETCH_INTERVAL_MINUTES", 15)]
+)
+def test_a_blank_numeric_setting_falls_back_to_its_default(monkeypatch, name, default):
+    """`KEY=` with no value is how .env.example writes optional settings;
+    int('') at import took down every entry point, dashboard included."""
+    value = getattr(_reload_with(monkeypatch, **{name: ""}), name)
+    assert value == default
+
+
 def test_numeric_settings_are_coerced_to_int(monkeypatch):
     cfg = _reload_with(monkeypatch, DB_PORT="6543", FETCH_INTERVAL_MINUTES="30")
     assert cfg.DB_PORT == 6543
     assert cfg.FETCH_INTERVAL_MINUTES == 30
+
+
+@pytest.mark.parametrize("raw", ["", "15%", "fifteen"])
+def test_a_bad_split_guard_threshold_does_not_break_the_config_import(monkeypatch, raw):
+    """`KEY=` with no value is how .env.example writes optional settings, and
+    "15%" is an easy slip. Parsed at import, either took down every entry
+    point, the dashboard included. split_guard parses it instead."""
+    kept = _reload_with(monkeypatch, SPLIT_GUARD_THRESHOLD=raw).SPLIT_GUARD_THRESHOLD
+    assert kept == raw
+
+
+def _reload_with_defaults(monkeypatch, *unset):
+    """Reload config with the given variables absent from the environment
+    and from .env, so the code defaults are what gets read."""
+    import dotenv
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    for key in unset:
+        monkeypatch.delenv(key, raising=False)
+    return importlib.reload(config_module)
+
+
+def test_split_guard_threshold_defaults_to_fifteen_percent(monkeypatch):
+    from quantflow.ingestion import split_guard
+
+    _reload_with_defaults(monkeypatch, "SPLIT_GUARD_THRESHOLD")
+    assert split_guard.configured_threshold() == 0.15
+
+
+# ── The default ticker list ───────────────────────────────────────────────────
+#
+# The tests above set TICKERS explicitly, as CI does (AAPL,MSFT), so they say
+# nothing about the fallback. The fallback used to be four tickers while
+# .env.example, the daily workflow and the README all track eight.
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _env_example_tickers():
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+    match = re.search(r"^TICKERS=(.+)$", text, re.MULTILINE)
+    assert match, "no TICKERS line in .env.example"
+    return match.group(1).strip().split(",")
+
+
+def test_the_default_ticker_list_is_the_tracked_eight(monkeypatch):
+    cfg = _reload_with_defaults(monkeypatch, "TICKERS")
+    assert cfg.TICKERS == [
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "AMZN",
+        "NVDA",
+        "TSLA",
+        "META",
+        "JPM",
+    ]
+
+
+def test_the_default_ticker_list_matches_env_example(monkeypatch):
+    default = _reload_with_defaults(monkeypatch, "TICKERS").TICKERS
+    assert default == _env_example_tickers()
+
+
+def _readme_default_tickers():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    match = re.search(r"^\| `TICKERS` \|.*defaults to `([^`]+)`", text, re.MULTILINE)
+    assert match, "no TICKERS row with a default in the README's settings table"
+    return match.group(1).split(",")
+
+
+def test_the_readme_documents_the_default_ticker_list(monkeypatch):
+    default = _reload_with_defaults(monkeypatch, "TICKERS").TICKERS
+    assert default == _readme_default_tickers()
 
 
 # ── require_or_exit() ─────────────────────────────────────────────────────────

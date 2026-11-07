@@ -14,7 +14,10 @@ load_dotenv()
 
 # ── Database ─────────────────────────────────────────────────────────────────
 DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", 5432))
+# `or` rather than a getenv default here and for FETCH_INTERVAL_MINUTES: a
+# blank `DB_PORT=` falls back too, instead of failing int('') at import and
+# taking every entry point down.
+DB_PORT = int(os.getenv("DB_PORT") or 5432)
 DB_NAME = os.getenv("DB_NAME", "stock_pipeline")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
@@ -39,11 +42,24 @@ ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 # ── Tickers ───────────────────────────────────────────────────────────────────
-_raw_tickers = os.getenv("TICKERS", "AAPL,MSFT,GOOGL,NVDA")
+# The fallback when TICKERS is unset: the same eight that .env.example, the
+# daily workflow and the README track. tests/unit/test_config.py and
+# test_workflows.py fail if they drift apart.
+DEFAULT_TICKERS = "AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM"
+_raw_tickers = os.getenv("TICKERS", DEFAULT_TICKERS)
 TICKERS: list[str] = [t.strip().upper() for t in _raw_tickers.split(",") if t.strip()]
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", 15))
+FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES") or 15)
+
+# ── Split guard ───────────────────────────────────────────────────────────────
+# A fraction, not a percentage: 0.15 fails the refresh when stored daily closes
+# differ from Yahoo's raw closes by more than 15%. Kept as the raw text and
+# parsed by quantflow.ingestion.split_guard.configured_threshold, which applies
+# the default for a blank value and rejects anything else that is not a
+# fraction between 0 and 1. Parsed here, a typo such as "15%" would fail at
+# import and take every entry point down, the dashboard included.
+SPLIT_GUARD_THRESHOLD = os.getenv("SPLIT_GUARD_THRESHOLD", "")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

@@ -49,7 +49,7 @@ from sqlalchemy import text
 
 from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
-from quantflow.db.forecasts import save_forecasts
+from quantflow.db.forecasts import load_base_forecasts, save_forecasts
 from quantflow.db.metrics import save_model_metrics
 from quantflow.db.prices import load_daily_close as load_prices
 from quantflow.evaluation.metrics import mape as _mape
@@ -57,14 +57,15 @@ from quantflow.evaluation.out_of_fold import (
     DEFAULT_WARMUP_DAYS,
     expanding_window_predictions,
 )
-from quantflow.evaluation.splits import HOLDOUT_DAYS
+from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
+from quantflow.models import FORECAST_DAYS
+from quantflow.models.statistical import prophet_settings
 from quantflow.utils.logger import get_logger
 
 warnings.filterwarnings("ignore")
 
 logger = get_logger("ensemble")
 
-FORECAST_DAYS = 7
 META_WARMUP_DAYS = DEFAULT_WARMUP_DAYS
 
 # Column order of the stacked holdout frame. The meta-learner's weight
@@ -86,21 +87,17 @@ def _arima_holdout(price_df: pd.DataFrame) -> np.ndarray:
 
 
 def _prophet_holdout(price_df: pd.DataFrame) -> np.ndarray:
-    """Fit Prophet on train split, return 30-day holdout predictions."""
+    """Fit Prophet on train split, return predictions for the 30 holdout dates.
+
+    Predicted on the holdout's own dates rather than weekday steps, so this
+    column lines up row for row with `actual` across market holidays.
+    """
     from prophet import Prophet
 
-    train = price_df.iloc[:-HOLDOUT_DAYS].copy()
-    model = Prophet(
-        daily_seasonality=False,
-        weekly_seasonality=True,
-        yearly_seasonality=True,
-        changepoint_prior_scale=0.05,
-        interval_width=0.95,
-    )
+    train, holdout = train_holdout_split(price_df, copy=True)
+    model = Prophet(**prophet_settings(train))
     model.fit(train)
-    future = model.make_future_dataframe(periods=HOLDOUT_DAYS, freq="B")
-    forecast = model.predict(future)
-    return forecast["yhat"].iloc[-HOLDOUT_DAYS:].values
+    return model.predict(holdout[["ds"]])["yhat"].to_numpy()
 
 
 def _xgb_lgb_holdout(ticker: str) -> dict:
@@ -136,7 +133,9 @@ def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
     their predictions into a single DataFrame for meta-learner training.
 
     All models predict the same 30 close prices (the last 30 in the series):
-    - ARIMA/Prophet: forecast(steps=30) from train end
+    - ARIMA: forecast(steps=30) from the end of the train split
+    - Prophet: predict on the 30 holdout dates themselves, so its column
+      lines up with actual across market holidays
     - XGBoost/LightGBM: predict(X_holdout) where target = close.shift(-1)
 
     Returns DataFrame: [actual, arima, prophet, xgboost, lightgbm]
@@ -346,51 +345,82 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
 # ── Forecast generation ───────────────────────────────────────────────────────
 
 
+class ForecastAlignmentError(ValueError):
+    """The stored base forecasts do not cover the same forecast dates."""
+
+
+def check_forecast_dates(df: pd.DataFrame, models: list[str], horizon: int) -> list:
+    """The forecast dates every base model shares, or ForecastAlignmentError.
+
+    Each model must cover exactly the same `horizon` dates. The ensemble used
+    to pivot by date and drop any date one model lacked, so a base model
+    dated one day off silently cost the published forecast a day. That only
+    happens when an upstream run is broken, so it must stop the run rather
+    than be smoothed over.
+
+    It also refuses more than one row per model and date. Two predictions for
+    one date cannot be combined into one ensemble row, and the pivot used to
+    fail on them with a pandas error that stopped the remaining tickers.
+    """
+    dates = {m: sorted(set(df.loc[df["model"] == m, "forecast_date"])) for m in models}
+    missing = [m for m, d in dates.items() if not d]
+    if missing:
+        raise ForecastAlignmentError(f"no forecasts stored for {', '.join(missing)}")
+
+    base = df[df["model"].isin(models)]
+    repeated = base[base.duplicated(["model", "forecast_date"])]
+    if not repeated.empty:
+        twice = sorted(set(repeated["model"]))
+        raise ForecastAlignmentError(
+            f"more than one stored forecast per date for {', '.join(twice)}"
+        )
+
+    reference = dates[models[0]]
+    if len(reference) != horizon or any(d != reference for d in dates.values()):
+        detail = "; ".join(
+            f"{m}: {len(d)} dates, {d[0]} to {d[-1]}" for m, d in dates.items()
+        )
+        raise ForecastAlignmentError(
+            f"base forecasts do not cover the same {horizon} dates ({detail})"
+        )
+    return reference
+
+
 def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     """
     Load 7-day base model forecasts from DB and apply meta-learner to produce
     ensemble predictions. Confidence intervals are propagated as a weighted
     average of base model bounds, using the NNLS weights. Those weights are
-    already non-negative and sum to 1, so normalising |w| is a no-op here —
+    already non-negative and sum to 1, so normalising |w| is a no-op here;
     it is kept because it makes the CI propagation independent of how the
     meta-learner was fitted.
+
+    Raises ForecastAlignmentError unless all four base models cover the same
+    seven dates.
     """
-    engine = get_engine()
-    query = text("""
-        SELECT model, forecast_date, predicted_close, lower_bound, upper_bound
-        FROM forecasts
-        WHERE ticker = :t
-          AND model IN ('arima', 'prophet', 'xgboost', 'lightgbm')
-        ORDER BY forecast_date, model
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"t": ticker})
+    df = load_base_forecasts(ticker, BASE_MODELS)
+    try:
+        dates = check_forecast_dates(df, BASE_MODELS, FORECAST_DAYS)
+    except ForecastAlignmentError as e:
+        raise ForecastAlignmentError(f"{ticker}: {e}") from e
 
-    if df.empty:
-        logger.warning(f"{ticker}: no base forecasts in DB — run run_models.py first")
-        return pd.DataFrame()
+    # One row per model and date is guaranteed by the check, so each pivot is
+    # complete: dates down, the base models across in the meta-learner's order.
+    def wide(column: str) -> pd.DataFrame:
+        table = df.pivot(index="forecast_date", columns="model", values=column)
+        return table.reindex(index=dates, columns=BASE_MODELS)
 
-    pivot = df.pivot(index="forecast_date", columns="model", values="predicted_close")
-    lower = df.pivot(index="forecast_date", columns="model", values="lower_bound")
-    upper = df.pivot(index="forecast_date", columns="model", values="upper_bound")
+    pivot = wide("predicted_close")
+    lower = wide("lower_bound").fillna(0)
+    upper = wide("upper_bound").fillna(0)
 
-    required = BASE_MODELS
-    pivot = pivot.reindex(columns=required).dropna()
-    lower = lower.reindex(columns=required).reindex(pivot.index).fillna(0)
-    upper = upper.reindex(columns=required).reindex(pivot.index).fillna(0)
-
-    if pivot.empty:
-        logger.warning(f"{ticker}: one or more base models missing from DB")
-        return pd.DataFrame()
-
-    X_future = pivot[required].values
-    ensemble_preds = meta_model.predict(X_future)
+    ensemble_preds = meta_model.predict(pivot.values)
 
     # Weighted CI propagation using |coef| / sum(|coef|)
     abs_coefs = np.abs(meta_model.coef_)
     coef_weights = abs_coefs / abs_coefs.sum()
-    ens_lower = (lower[required].values * coef_weights).sum(axis=1)
-    ens_upper = (upper[required].values * coef_weights).sum(axis=1)
+    ens_lower = (lower.values * coef_weights).sum(axis=1)
+    ens_upper = (upper.values * coef_weights).sum(axis=1)
 
     return pd.DataFrame(
         {
@@ -495,6 +525,7 @@ def show_results(ticker: str):
 def run(tickers: list | None = None) -> dict:
     tickers = tickers or TICKERS
     results = {}
+    misaligned: list[str] = []
 
     for ticker in tickers:
         logger.info(f"{'=' * 50}")
@@ -546,9 +577,14 @@ def run(tickers: list | None = None) -> dict:
         )
 
         logger.info("Generating 7-day ensemble forecast...")
-        forecast_df = generate_ensemble_forecast(ticker, meta_model)
-        if forecast_df.empty:
-            logger.error(f"{ticker}: forecast failed — ensure run_models.py ran first")
+        try:
+            forecast_df = generate_ensemble_forecast(ticker, meta_model)
+        except ForecastAlignmentError as e:
+            # Carried to the end of the loop: one ticker's broken base run
+            # should not cost the others their forecast, but the run must
+            # still fail rather than publish a short or shifted forecast.
+            logger.error(f"{e}; no ensemble forecast written")
+            misaligned.append(ticker)
             results[ticker] = 0
             continue
 
@@ -559,6 +595,11 @@ def run(tickers: list | None = None) -> dict:
 
         results[ticker] = n
 
+    if misaligned:
+        raise ForecastAlignmentError(
+            f"no ensemble forecast for {', '.join(misaligned)}: "
+            "base forecasts do not cover the same dates (see the log above)"
+        )
     return results
 
 
