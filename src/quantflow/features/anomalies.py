@@ -35,6 +35,9 @@ logger = get_logger("anomaly_detection")
 ZSCORE_WINDOW = 30  # rolling window for mean/std calculation (trading days)
 ZSCORE_THRESHOLD = 2.0  # flag if |z-score| exceeds this value
 IQR_MULTIPLIER = 1.5  # standard IQR fence multiplier
+# Decimal places the anomalies table keeps for close and zscore (NUMERIC(_, 4)),
+# applied before writing so what a run reads back is what it computed.
+STORED_DECIMALS = 4
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -117,6 +120,21 @@ def detect_iqr_anomalies(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return anomalies[["ticker", "close", "zscore", "flag"]]
 
 
+def detect_anomalies(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Both detectors' flags for one ticker, one row per date, in date order.
+
+    df is load_prices' daily close and volume, indexed by each date's 00:00
+    UTC timestamp. A date both detectors flag keeps the Z-score row, which
+    comes first: that is the rule run() has always stored, and the features
+    read back whichever zscore was stored.
+    """
+    combined = pd.concat(
+        [detect_zscore_anomalies(df, ticker), detect_iqr_anomalies(df, ticker)]
+    )
+    combined = combined[~combined.index.duplicated(keep="first")]
+    return combined.sort_index()
+
+
 # ── Database write ────────────────────────────────────────────────────────────
 
 
@@ -174,8 +192,8 @@ def save_anomalies(df: pd.DataFrame) -> int:
                 {
                     "ticker": row["ticker"],
                     "ts": ts,
-                    "close": round(float(row["close"]), 4),
-                    "zscore": round(float(row["zscore"]), 4),
+                    "close": round(float(row["close"]), STORED_DECIMALS),
+                    "zscore": round(float(row["zscore"]), STORED_DECIMALS),
                     "flag": row["flag"],
                 },
             ).rowcount
@@ -267,16 +285,7 @@ def run(tickers: list[str] | None = None) -> dict:
             results[ticker] = 0
             continue
 
-        # Run both detection methods
-        zscore_anomalies = detect_zscore_anomalies(df, ticker)
-        iqr_anomalies = detect_iqr_anomalies(df, ticker)
-
-        # Merge and deduplicate by timestamp
-        combined = pd.concat([zscore_anomalies, iqr_anomalies])
-        combined = combined[~combined.index.duplicated(keep="first")]
-        combined = combined.sort_index()
-
-        n = save_anomalies(combined)
+        n = save_anomalies(detect_anomalies(df, ticker))
         results[ticker] = n
         logger.info(f"  {ticker}: {n} anomalies flagged")
 
