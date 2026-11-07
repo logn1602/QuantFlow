@@ -23,6 +23,7 @@ Usage:
 """
 
 import argparse
+import sys
 import time
 import warnings
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,11 @@ from quantflow.utils.logger import get_logger
 warnings.filterwarnings("ignore")
 
 logger = get_logger("sentiment")
+
+
+class FinBERTUnavailableError(RuntimeError):
+    """FinBERT could not be loaded, so no headline can be scored."""
+
 
 # ── FinBERT model ─────────────────────────────────────────────────────────────
 # Pinned to an exact commit for REPRODUCIBILITY, not security. The RCE angle
@@ -449,14 +455,15 @@ def run(tickers: list[str] | None = None) -> dict:
     tickers = tickers or TICKERS
     results = {}
 
-    # Preload FinBERT once before the loop
+    # Preload FinBERT once before the loop. Without it nothing is written:
+    # storing unscored headlines as neutral would read as real neutral news.
+    # It raises rather than returning zeros, so the CLI exits non-zero and the
+    # scheduler logs a failed job instead of "0 rows saved".
     logger.info("Preloading FinBERT model...")
     if get_finbert() is None:
-        logger.error(
-            "FinBERT could not be loaded: writing no sentiment rows. Storing "
-            "unscored headlines as neutral would read as real neutral news."
+        raise FinBERTUnavailableError(
+            "FinBERT could not be loaded, so no sentiment rows were written"
         )
-        return dict.fromkeys(tickers, 0)
 
     for ticker in tickers:
         logger.info(f"Processing sentiment for {ticker}...")
@@ -501,27 +508,45 @@ def run(tickers: list[str] | None = None) -> dict:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+
+def main(argv: list[str] | None = None) -> int:
+    """Exits 1 when FinBERT cannot be loaded, so the daily refresh shows a
+    failed run; its later steps still run, on the sentiment already stored."""
     parser = argparse.ArgumentParser(description="News sentiment analysis engine")
     parser.add_argument("--ticker", type=str, help="Single ticker (e.g. AAPL)")
     parser.add_argument("--show", type=str, help="Print sentiment for a ticker")
     parser.add_argument("--summary", action="store_true", help="Market-wide overview")
     parser.add_argument("--rows", type=int, default=15, help="Rows to show")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.summary:
         show_summary()
-    elif args.show:
+        return 0
+    if args.show:
         show_sentiment(args.show.upper(), n=args.rows)
-    elif args.ticker:
-        results = run([args.ticker.upper()])
-        print(f"\nDone: {results}")
-    else:
+        return 0
+
+    tickers = [args.ticker.upper()] if args.ticker else None
+    if tickers is None:
         logger.info("Running sentiment pipeline for all tickers...")
-        results = run()
-        total = sum(results.values())
-        logger.info(f"Complete. Total sentiment rows saved: {total}")
-        for ticker, n in results.items():
-            print(f"  {ticker}: {n} rows")
-        print("\nTo view results:  python sentiment.py --show AAPL")
-        print("Market overview:  python sentiment.py --summary")
+    try:
+        results = run(tickers)
+    except FinBERTUnavailableError as e:
+        logger.error(str(e))
+        print(f"SENTIMENT FAILED: {e}", file=sys.stderr)
+        return 1
+
+    if tickers:
+        print(f"\nDone: {results}")
+        return 0
+    total = sum(results.values())
+    logger.info(f"Complete. Total sentiment rows saved: {total}")
+    for ticker, n in results.items():
+        print(f"  {ticker}: {n} rows")
+    print("\nTo view results:  python sentiment.py --show AAPL")
+    print("Market overview:  python sentiment.py --summary")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

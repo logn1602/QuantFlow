@@ -134,8 +134,19 @@ def news(monkeypatch):
 def test_nothing_is_written_when_finbert_fails_to_load(fake_db, news, monkeypatch):
     monkeypatch.setattr(sentiment, "get_finbert", lambda: None)
 
-    assert sentiment.run(["AAPL"]) == {"AAPL": 0}
+    with pytest.raises(sentiment.FinBERTUnavailableError):
+        sentiment.run(["AAPL"])
     assert fake_db.tables["news_sentiment"] == []
+
+
+def test_the_cli_exits_non_zero_when_finbert_cannot_load(
+    fake_db, news, monkeypatch, capsys
+):
+    """It logged an error and exited 0, so the daily refresh showed green with
+    stale sentiment."""
+    monkeypatch.setattr(sentiment, "get_finbert", lambda: None)
+    assert sentiment.main(["--ticker", "AAPL"]) == 1
+    assert "FinBERT" in capsys.readouterr().err
 
 
 def test_a_headline_finbert_cannot_score_is_not_written(fake_db, news, monkeypatch):
