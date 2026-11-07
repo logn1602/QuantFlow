@@ -13,9 +13,16 @@ Offline unit support:
                           test that forgets to fake the database fails instead
                           of reaching the live Supabase instance that .env
                           points at.
-  _no_network (autouse)   makes yf.download and every requests call raise, so
-                          a test that forgets to fake Yahoo, Alpha Vantage or
-                          NewsAPI never reaches them.
+  _no_network (autouse)   makes yf.download, yf.Ticker, every other yfinance
+                          request and every requests call raise, so a test
+                          that forgets to fake Yahoo, Alpha Vantage or NewsAPI
+                          never reaches them.
+  _no_committed_acknowledgements (autouse)
+                          points config.SPLIT_JUMP_ACKNOWLEDGED_FILE at an
+                          empty list, so no test depends on what
+                          config/split_jump_acknowledged.txt lists or breaks
+                          when it is edited. A test that needs entries writes
+                          its own file (see test_split_jump_check.py).
   fake_db                 an in-memory stand-in that records every statement
                           and applies INSERT ... ON CONFLICT DO NOTHING the way
                           Postgres does, so a write path can be checked for what
@@ -272,12 +279,41 @@ def _no_database(monkeypatch):
 def _no_network(monkeypatch):
     import requests
     import yfinance
+    import yfinance.data
 
     def refuse(*args, **kwargs):
         raise RuntimeError("tests are offline: fake this network call")
 
     monkeypatch.setattr(yfinance, "download", refuse)
+    # yfinance sends its own requests through curl_cffi, not requests, so
+    # refusing download and requests alone let yf.Ticker(...).splits and every
+    # other yfinance call reach Yahoo. Ticker is refused outright, and
+    # YfData._make_request, which every yfinance request goes through (as of
+    # 1.7.0), catches the other ways in. Should an upgrade rename it, this
+    # setattr fails every test rather than letting requests through.
+    monkeypatch.setattr(yfinance, "Ticker", refuse)
+    monkeypatch.setattr(yfinance.data.YfData, "_make_request", refuse)
     monkeypatch.setattr(requests.Session, "request", refuse)
+
+
+@pytest.fixture(scope="session")
+def _empty_acknowledged_list(tmp_path_factory):
+    """Shared by every test, so never written to: a test that needs entries
+    writes a file of its own."""
+    path = tmp_path_factory.mktemp("acknowledged") / "split_jump_acknowledged.txt"
+    path.write_text(
+        "# The unit suite's list: no acknowledged moves.\n", encoding="utf-8"
+    )
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _no_committed_acknowledgements(monkeypatch, _empty_acknowledged_list):
+    import quantflow.config as config
+
+    monkeypatch.setattr(
+        config, "SPLIT_JUMP_ACKNOWLEDGED_FILE", _empty_acknowledged_list
+    )
 
 
 @pytest.fixture

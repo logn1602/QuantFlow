@@ -84,13 +84,17 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] | None = None):
 # backtest computed from that mix would be wrong, and they are stored. So the
 # jobs that read prices skip while _price_basis_error says why:
 #
-#   - a guard run found a break: paused until a run checks every ticker and
-#     finds none;
+#   - a guard run found a possible unadjusted split (a basis break, or a
+#     split-sized move that is not acknowledged and confirmed by Yahoo):
+#     paused until a run checks every ticker and finds none;
+#   - the guard cannot read its settings (the threshold, or
+#     config/split_jump_acknowledged.txt, which it reads on every run): paused
+#     the same way, since neither check can run until they are fixed;
 #   - a guard run could not check every ticker (Yahoo returned nothing for
 #     one, a check raised, or the run failed): the last full pass is reused
 #     only if it is from the current or previous NYSE trading day. Otherwise
-#     the jobs pause, as for a break, until a run checks every ticker. A break
-#     already found stays either way.
+#     the jobs pause until a run checks every ticker. A pause already in place
+#     stays either way.
 #
 # The guard keeps no state of its own; this is the scheduler remembering its
 # answers, in memory. Both start empty, so after a restart the price jobs
@@ -115,8 +119,9 @@ def _guard_times() -> str:
 
 
 def _paused_for_prices(job: str) -> bool:
-    """True, after logging why, while the price jobs are paused: a break, or
-    an incomplete check with no recent full pass."""
+    """True, after logging why, while the price jobs are paused: a possible
+    unadjusted split, settings the guard cannot read, or an incomplete check
+    with no recent full pass."""
     if _price_basis_error is None:
         return False
     logger.error(
@@ -152,20 +157,27 @@ def run_yfinance_job():
 
 
 def run_split_guard_job():
-    """Check stored prices against Yahoo's, and pause or resume the price jobs.
+    """Run the split guard, and pause or resume the price jobs.
 
-    The rules are in the "Price-basis gate" comment above: a break pauses
-    them; a run that checks every ticker and finds no break resumes them and
-    is recorded as the last full pass; a run that cannot check every ticker
-    reuses that pass only if it is from the current or previous trading day.
+    The rules are in the "Price-basis gate" comment above: a possible
+    unadjusted split, or settings the guard cannot read, pauses them; a run
+    that checks every ticker and finds nothing resumes them and is recorded
+    as the last full pass; a run that cannot check every ticker reuses that
+    pass only if it is from the current or previous trading day.
     """
     global _price_basis_error, _last_full_pass
     logger.info("--- Split guard job started ---")
     try:
         unchecked = split_guard.run()
     except split_guard.PriceBasisError as e:
-        _price_basis_error = f"stored prices are on more than one basis ({e})"
+        _price_basis_error = f"the split guard found a possible unadjusted split ({e})"
         logger.error(f"--- Split guard failed: {e}. Price jobs paused ---")
+        return
+    except split_guard.GuardMisconfigured as e:
+        # Not a hiccup to ride out on a recent pass: the list is read again
+        # on every run, and until it is fixed neither check runs.
+        _price_basis_error = f"the split guard cannot read its settings ({e})"
+        logger.error(f"--- Split guard misconfigured: {e}. Price jobs paused ---")
         return
     except Exception as e:
         logger.exception(f"Split guard job failed: {type(e).__name__}: {e}")
@@ -174,8 +186,8 @@ def run_split_guard_job():
 
     if unchecked:
         _after_an_incomplete_check(
-            f"the split guard could not check {', '.join(unchecked)} "
-            f"(no reference prices from Yahoo)"
+            f"the split guard could not compare {', '.join(unchecked)} with "
+            f"Yahoo (no reference prices)"
         )
         return
 
@@ -368,6 +380,7 @@ def start():
 
     try:
         split_guard.configured_threshold()
+        config.split_jump_acknowledged()
     except ValueError as e:
         logger.error(f"{e}. Exiting.")
         sys.exit(1)

@@ -87,7 +87,12 @@ def test_a_split_pauses_every_job_that_reads_prices(monkeypatch, work, caplog):
     with caplog.at_level(logging.ERROR):
         _run_price_jobs()
     assert work == []
-    assert caplog.text.count("skipped: stored prices are on more than one basis") == 6
+    # Worded for both checks: the jump check also fails on a real move that
+    # is waiting to be acknowledged.
+    assert (
+        caplog.text.count("skipped: the split guard found a possible unadjusted split")
+        == 6
+    )
 
 
 def test_without_a_break_every_price_job_runs(monkeypatch, work):
@@ -169,6 +174,32 @@ def test_an_incomplete_check_keeps_a_break_standing(monkeypatch, work, answer):
 
     _run_price_jobs()
     assert work == []
+
+
+@pytest.mark.parametrize("broken", ["no-reason", "missing", "a-directory"])
+def test_an_acknowledged_moves_list_broken_while_running_pauses_the_price_jobs(
+    monkeypatch, tmp_path, work, caplog, broken
+):
+    """The guard reads the list again on every run, so an acknowledgement
+    takes effect without a restart. A list it cannot read must then pause the
+    price jobs, as it stops the daemon at startup, not pass for a hiccup:
+    until it is fixed neither check runs, and reusing Friday's pass would let
+    a split through."""
+    path = tmp_path / "split_jump_acknowledged.txt"
+    if broken == "no-reason":
+        path.write_text("AAPL:2026-05-11\n", encoding="utf-8")
+    elif broken == "a-directory":
+        path.mkdir()
+    monkeypatch.setattr(scheduler.config, "SPLIT_JUMP_ACKNOWLEDGED_FILE", path)
+    monkeypatch.setattr(split_guard, "configured_threshold", lambda raw=None: 0.15)
+    monkeypatch.setattr(scheduler, "_last_full_pass", FRIDAY_PASS)
+
+    scheduler.run_split_guard_job()  # the real guard, which stops at the list
+
+    with caplog.at_level(logging.ERROR):
+        _run_price_jobs()
+    assert work == []
+    assert "split_jump_acknowledged.txt" in caplog.text
 
 
 def test_a_failed_run_is_logged_with_its_error(monkeypatch, caplog):
@@ -278,6 +309,26 @@ def test_the_guard_and_the_daily_bars_still_run_when_their_slot_was_missed(
     previous day's answer. Both jobs are safe to run late."""
     assert scheduled[job]["misfire_grace_time"] is None
     assert scheduled[job]["coalesce"] is True
+
+
+def test_the_scheduler_exits_at_startup_on_a_bad_acknowledged_moves_list(
+    monkeypatch, tmp_path
+):
+    """Like a bad threshold: a daemon started with a list it cannot read
+    should stop at once, not fail every guard run and pause its price jobs."""
+    bad = tmp_path / "split_jump_acknowledged.txt"
+    bad.write_text("AAPL:2026-05-11\n", encoding="utf-8")  # no reason given
+    monkeypatch.setattr(scheduler.config, "SPLIT_JUMP_ACKNOWLEDGED_FILE", bad)
+    monkeypatch.setattr(scheduler.config, "validate", lambda: True)
+    monkeypatch.setattr(scheduler.config, "require_or_exit", lambda: None)
+    monkeypatch.setattr(split_guard, "configured_threshold", lambda raw=None: 0.15)
+    monkeypatch.setattr(
+        scheduler, "test_connection", lambda: pytest.fail("connected before the list")
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        scheduler.start()
+    assert exited.value.code == 1
 
 
 def test_each_guard_run_is_scheduled_at_its_new_york_time(scheduled):

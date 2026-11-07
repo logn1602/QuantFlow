@@ -133,7 +133,12 @@ def test_an_isolated_bad_print_is_logged_and_the_run_passes(
     read_tables, price_bars, monkeypatch, caplog
 ):
     closes = [400.0] * len(DAYS)
-    closes[3] = 4000.0  # one bad stored bar
+    # One bad stored bar, 20% above the close: past the 15% threshold against
+    # Yahoo but short of a split-sized move (1.35 times), so only the basis
+    # check sees it. A bigger print would also fail the jump check
+    # (test_split_jump_check.py), which excuses no split-sized one-day move,
+    # however briefly it lasts.
+    closes[3] = 480.0
     read_tables["raw_prices"] = price_bars.frame(
         [
             price_bars.daily(d.date().isoformat(), c)

@@ -223,8 +223,8 @@ cp .env.example .env
 Run the full pipeline. `make all` seeds roughly two years of history first, so
 the first run takes several minutes; later runs skip rows that already exist.
 Like the daily workflow, it stops before any stage reads prices if the split
-guard finds stored prices that no longer match Yahoo's, or cannot check a
-ticker. The per-stage commands (`make indicators`, `make models` and the
+guard finds stored prices that no longer match Yahoo's or that moved by a
+split-sized amount in one day, or cannot check a ticker. The per-stage commands (`make indicators`, `make models` and the
 `python -m quantflow....` modules behind them) skip the split guard; run
 `python -m quantflow.ingestion.split_guard` first when using them on their own:
 
@@ -299,6 +299,8 @@ docs/architecture.md       Design decisions and trade-offs
 | `FETCH_INTERVAL_MINUTES` | no | Scheduler interval, default 15 |
 | `SPLIT_GUARD_THRESHOLD` | no | Fraction, default `0.15`. The daily refresh fails if stored daily closes differ from Yahoo's raw closes by more than this on three or more consecutive dates (a stock split after the rows were stored) |
 | `LOG_LEVEL` | no | Default `INFO` |
+
+**Acknowledged price moves.** The split guard also fails on any split-sized one-day move: a stored daily close at or below 0.733 times, or at or above 1.35 times, the one before it. That catches a split of any ratio from 3-for-2 up, and a real fall of 26.7% or more, or rise of 35% or more, fails it too. Once a move is confirmed real, list it in [config/split_jump_acknowledged.txt](config/split_jump_acknowledged.txt), one `TICKER:YYYY-MM-DD  # reason` per line. An entry counts only on a run where Yahoo's raw closes agree with the stored ones on that date and the day before, so it cannot excuse a bad stored row, and on a day Yahoo cannot be reached the move fails again. It is a committed file rather than a variable: the daily workflow reads the list of the commit it runs on, a local run the one in its checkout.
 
 **Database TLS.** `DB_SSLMODE` defaults to `require` rather than libpq's `prefer`, because `prefer` falls back to cleartext silently — no exception, no log line — if the peer declines TLS, and this database is a public endpoint reached from a laptop, a CI runner and Streamlit Cloud. `require` encrypts but does not authenticate the peer. `verify-full` is the recommended upgrade; it needs `DB_SSLROOTCERT` pointing at Supabase's CA file, because the pooler certificate is signed by a private CA present in neither the system trust store nor certifi.
 
