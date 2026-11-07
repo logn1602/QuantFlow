@@ -1,7 +1,8 @@
 """US equity market time.
 
 The one place that knows which time zone the exchange keeps, when a
-session's daily bar can be treated as final, and which days it trades.
+session's daily bar or a 15-min bar can be treated as final, and which days
+it trades.
 """
 
 import datetime as dt
@@ -28,6 +29,12 @@ EXCHANGE_TZ = "America/New_York"
 # today's daily bar as final: stored any earlier, it is a snapshot of a session
 # still trading, and with ON CONFLICT DO NOTHING it would never be corrected.
 DAILY_BAR_FINAL_AFTER = dt.time(17, 0)
+
+# A 15-min bar covers the quarter hour starting at its timestamp. Yahoo also
+# serves the bar still trading, holding the latest price as its close and the
+# volume so far, so a bar counts as final two minutes after its quarter hour
+# ends, measured from the bar's own timestamp.
+INTRADAY_BAR_FINAL_AFTER = dt.timedelta(minutes=15 + 2)
 
 
 class NYSEHolidayCalendar(AbstractHolidayCalendar):

@@ -4,7 +4,7 @@ ingestion/yfinance_fetcher.py
 Fetches OHLCV data from Yahoo Finance via yfinance.
 - fetch_historical(): daily candles: 2 years to seed the DB, or the last few
                       days after each close (--daily)
-- fetch_intraday():   the last 5 days of 15-min candles (--intraday)
+- fetch_intraday():   the last 5 days of finished 15-min candles (--intraday)
 
 Prices are stored raw (auto_adjust=False): split-adjusted, as Yahoo serves
 every bar, but not dividend-adjusted. Yahoo never dividend-adjusts 15-min
@@ -31,6 +31,7 @@ from quantflow.utils.logger import get_logger
 from quantflow.utils.trading_calendar import (
     DAILY_BAR_FINAL_AFTER,
     EXCHANGE_TZ,
+    INTRADAY_BAR_FINAL_AFTER,
     exchange_dates,
 )
 
@@ -66,6 +67,24 @@ def drop_unfinished_session(data: pd.DataFrame, now: pd.Timestamp) -> pd.DataFra
     unfinished = exchange_dates(data.index) == today
     if unfinished.any():
         logger.info("  Skipping today's daily bar: the session is not final yet")
+    return data[~unfinished]
+
+
+def drop_unfinished_bars(data: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
+    """data without the 15-min bars whose quarter hour may still be trading.
+
+    Yahoo returns the bar in progress as well, with the latest price as its
+    close and the volume so far. Stored then, ON CONFLICT DO NOTHING would keep
+    that part-bar for good, and every day built from 15-min bars would end on
+    part of a bar and sum part of the day's volume. The next fetch stores it
+    once INTRADAY_BAR_FINAL_AFTER has passed.
+    """
+    if data.empty:
+        return data
+    starts = pd.to_datetime(data.index, utc=True)
+    unfinished = starts + INTRADAY_BAR_FINAL_AFTER > now
+    if unfinished.any():
+        logger.info(f"  Skipping {int(unfinished.sum())} 15-min bars still trading")
     return data[~unfinished]
 
 
@@ -166,7 +185,8 @@ def fetch_historical(tickers: list[str] | None = None, period: str = "2y") -> di
 def fetch_intraday(tickers: list[str] | None = None) -> dict:
     """
     Pull the last 5 days of 15-min candles.
-    Designed to run on a schedule every 15 minutes.
+    Designed to run on a schedule every 15 minutes. A bar still trading is
+    left for a later run (drop_unfinished_bars).
 
     Args:
         tickers: list of ticker symbols. Defaults to config.TICKERS
@@ -180,6 +200,7 @@ def fetch_intraday(tickers: list[str] | None = None) -> dict:
     for ticker in tickers:
         logger.info(f"Fetching intraday data for {ticker}")
         data = download(ticker, period="5d", interval="15m", auto_adjust=False)
+        data = drop_unfinished_bars(data, _now())
         n = _upsert_prices(data, ticker)
         results[ticker] = n
         logger.info(f"  {ticker}: {n} new rows")

@@ -207,6 +207,35 @@ def test_cli_intraday_fetches_15min_bars(monkeypatch):
     assert seen == [1]
 
 
+def _new_york(text):
+    return pd.Timestamp(text, tz="America/New_York").tz_convert("UTC")
+
+
+def test_a_15min_bar_still_in_progress_is_not_stored(fake_db, downloads, monkeypatch):
+    """Yahoo serves the current quarter hour's bar while it is still trading,
+    with the latest price as its close and the volume so far. Stored then, ON
+    CONFLICT DO NOTHING kept that part-bar for good, and every day built from
+    15-min bars ended on part of a bar and summed part of the volume."""
+    _, frames = downloads
+    frames["15m"] = _yf_frame(3, start="2026-11-06 09:30")  # 09:30, 09:45, 10:00
+    monkeypatch.setattr(yfinance_fetcher, "_now", lambda: _new_york("2026-11-06 10:05"))
+
+    assert yfinance_fetcher.fetch_intraday(["AAPL"]) == {"AAPL": 2}
+    assert [r["ts"] for r in fake_db.tables["raw_prices"]] == [
+        _new_york("2026-11-06 09:30"),
+        _new_york("2026-11-06 09:45"),
+    ]
+
+
+def test_every_15min_bar_is_stored_once_its_quarter_hour_is_over(
+    fake_db, downloads, monkeypatch
+):
+    _, frames = downloads
+    frames["15m"] = _yf_frame(26, start="2026-11-06 09:30")  # the whole session
+    monkeypatch.setattr(yfinance_fetcher, "_now", lambda: _new_york("2026-11-06 16:05"))
+    assert yfinance_fetcher.fetch_intraday(["AAPL"]) == {"AAPL": 26}
+
+
 # Through the entry points: the per-ticker `except Exception` that logged a
 # write error and carried on is gone from both fetch loops, so the error must
 # reach the CLI rather than a "Done" line counting rows that were rolled back.
