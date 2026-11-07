@@ -96,6 +96,7 @@ scheduler:
 all:
 	@echo "Running full QuantFlow pipeline..."
 	python -m quantflow.pipelines.seed
+	python -m quantflow.ingestion.split_guard
 	python -m quantflow.features.indicators
 	python -m quantflow.features.anomalies
 	python -m quantflow.features.sentiment

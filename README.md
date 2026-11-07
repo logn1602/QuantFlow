@@ -217,7 +217,9 @@ cp .env.example .env
 ```
 
 Run the full pipeline. `make all` seeds roughly two years of history first, so
-the first run takes several minutes; later runs skip rows that already exist:
+the first run takes several minutes; later runs skip rows that already exist.
+Like the daily workflow, it stops before any stage reads prices if the split
+guard finds stored prices that no longer match Yahoo's:
 
 ```bash
 make all

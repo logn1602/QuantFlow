@@ -158,3 +158,43 @@ def test_the_guard_runs_before_the_model_chain_and_daily_bars_after_the_close():
     guard_at, daily_bars_at = scheduler.SPLIT_GUARD_AT, scheduler.DAILY_BARS_AT
     assert guard_at < time(16, 30)  # the forecasting job
     assert daily_bars_at == time(17, 5)  # DAILY_BAR_FINAL_AFTER + 5 min
+
+
+class _RecordingScheduler:
+    """Stands in for BlockingScheduler: records each job, runs nothing."""
+
+    def __init__(self, **kwargs):
+        self.jobs = {}
+
+    def add_job(self, func, trigger, id, **kwargs):
+        self.jobs[id] = {"trigger": trigger, **kwargs}
+
+    def start(self):
+        pass
+
+
+@pytest.fixture
+def scheduled(monkeypatch):
+    """The jobs start() registers, with config, the database and the jobs
+    that run at startup faked out."""
+    recorder = _RecordingScheduler()
+    monkeypatch.setattr(scheduler, "BlockingScheduler", lambda **kwargs: recorder)
+    monkeypatch.setattr(scheduler.config, "validate", lambda: True)
+    monkeypatch.setattr(scheduler.config, "require_or_exit", lambda: None)
+    monkeypatch.setattr(scheduler, "test_connection", lambda: True)
+    monkeypatch.setattr(split_guard, "configured_threshold", lambda raw=None: 0.15)
+    for job in ("run_yfinance_job", "run_split_guard_job", "run_indicators_job"):
+        monkeypatch.setattr(scheduler, job, lambda: None)
+    scheduler.start()
+    return recorder.jobs
+
+
+@pytest.mark.parametrize("job", ["split_guard", "yfinance_daily"])
+def test_the_guard_and_the_daily_bars_still_run_when_their_slot_was_missed(
+    scheduled, job
+):
+    """APScheduler skips a run that starts more than a second late, so a laptop
+    waking at 16:25 skipped the 16:20 guard and the model chain ran on the
+    previous day's answer. Both jobs are safe to run late."""
+    assert scheduled[job]["misfire_grace_time"] is None
+    assert scheduled[job]["coalesce"] is True

@@ -1,6 +1,7 @@
 """tests/unit/test_workflows.py
 
-Checks on the GitHub Actions workflows, read as text.
+Checks on the GitHub Actions workflows and the Makefile's full-pipeline
+target, read as text.
 
 The workflows decide what runs in production and in CI, and nothing else
 tests them: a step that is dropped or reordered still produces a green run.
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 DAILY_REFRESH = (WORKFLOWS / "daily_refresh.yml").read_text(encoding="utf-8")
 CI = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
 
 
 def _step_order(workflow, *runs):
@@ -85,6 +87,25 @@ def test_the_split_guard_runs_after_the_fetch_and_before_any_stage_reads_prices(
     for stage, at in zip(
         PRICE_READING_STAGES,
         _step_order(DAILY_REFRESH, *PRICE_READING_STAGES),
+        strict=True,
+    ):
+        assert guard_at < at, f"{stage} runs before the split guard"
+
+
+def test_make_all_runs_the_split_guard_before_any_stage_reads_prices():
+    """make all is the README's re-runnable full pipeline, run against the
+    same database as the workflow, so it needs the same guard."""
+    target = re.search(r"^all:\n((?:\t.*\n)+)", MAKEFILE, re.MULTILINE)
+    assert target, "no all: target in the Makefile"
+    seed, guard_at = _step_order(
+        target.group(1),
+        "python -m quantflow.pipelines.seed",
+        "python -m quantflow.ingestion.split_guard",
+    )
+    assert seed < guard_at
+    for stage, at in zip(
+        PRICE_READING_STAGES,
+        _step_order(target.group(1), *PRICE_READING_STAGES),
         strict=True,
     ):
         assert guard_at < at, f"{stage} runs before the split guard"

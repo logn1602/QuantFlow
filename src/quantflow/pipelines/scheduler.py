@@ -319,6 +319,10 @@ def start():
     )
 
     # ── Daily at 4:20 PM ET: split guard, before the model chain ─────────────
+    # Both this job and the next run however late they start (one run for any
+    # number of missed slots). APScheduler otherwise skips a run that starts
+    # more than a second late, so a laptop waking at 16:25 skipped the guard
+    # and the model chain ran on the previous day's answer.
     scheduler.add_job(
         run_split_guard_job,
         trigger=CronTrigger(
@@ -326,6 +330,8 @@ def start():
         ),
         id="split_guard",
         replace_existing=True,
+        misfire_grace_time=None,
+        coalesce=True,
     )
 
     # ── Daily at 5:05 PM ET: official daily bars, then the split guard ───────
@@ -337,6 +343,8 @@ def start():
         ),
         id="yfinance_daily",
         replace_existing=True,
+        misfire_grace_time=None,
+        coalesce=True,
     )
 
     # Alpha Vantage offset by 5 min to avoid rate limit collision
