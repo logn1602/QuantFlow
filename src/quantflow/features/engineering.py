@@ -39,11 +39,17 @@ def load_features(ticker: str) -> pd.DataFrame:
 
     engine = get_engine()
 
+    # Every date below is the UTC calendar date, the same one load_daily_bars
+    # gives each price row. A bare ts::date uses the session's TimeZone
+    # instead: UTC on Supabase, but on a server set to New York it moved every
+    # indicator, anomaly score and sentiment average to the previous day's
+    # price row.
     with engine.connect() as conn:
         # Technical indicators
         indicators = pd.read_sql(
             text("""
-            SELECT ts::date AS date, rsi_14, macd, macd_signal, macd_hist,
+            SELECT (ts AT TIME ZONE 'UTC')::date AS date,
+                   rsi_14, macd, macd_signal, macd_hist,
                    bb_upper, bb_middle, bb_lower
             FROM technical_indicators
             WHERE ticker = :t
@@ -56,7 +62,7 @@ def load_features(ticker: str) -> pd.DataFrame:
         # Anomalies
         anomalies = pd.read_sql(
             text("""
-            SELECT ts::date AS date, zscore
+            SELECT (ts AT TIME ZONE 'UTC')::date AS date, zscore
             FROM anomalies
             WHERE ticker = :t
             ORDER BY ts ASC
@@ -69,14 +75,14 @@ def load_features(ticker: str) -> pd.DataFrame:
         sentiment = pd.read_sql(
             text("""
             SELECT
-                published_at::date                  AS date,
+                (published_at AT TIME ZONE 'UTC')::date AS date,
                 AVG(compound)                       AS sentiment_compound,
                 COUNT(*) FILTER (WHERE sentiment='positive') AS pos_count,
                 COUNT(*) FILTER (WHERE sentiment='negative') AS neg_count,
                 COUNT(*)                            AS article_count
             FROM news_sentiment
             WHERE ticker = :t
-            GROUP BY published_at::date
+            GROUP BY (published_at AT TIME ZONE 'UTC')::date
             ORDER BY date ASC
         """),
             conn,
