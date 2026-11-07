@@ -5,7 +5,7 @@ APScheduler job runner. Runs the full QuantFlow pipeline on schedule.
 
 Jobs:
   - yFinance intraday      : every 15 min (market hours)
-  - Split guard            : at startup, 4:20 PM ET, and after the daily bars
+  - Split guard            : at startup, 9:45 AM and 4:20 PM ET, after the daily bars
   - yFinance daily bars    : daily after the close (5:05 PM ET)
   - Alpha Vantage intraday : every 15 min, offset by 5 min
   - Technical indicators   : every 15 min (after price fetch)
@@ -38,9 +38,13 @@ from quantflow.utils.trading_calendar import DAILY_BAR_FINAL_AFTER, EXCHANGE_TZ
 
 logger = get_logger(__name__)
 
-# Before the 4:30 PM model chain, so a split revealed by the day's bars stops
-# it rather than being modelled.
-SPLIT_GUARD_AT = time(16, 20)
+# When the split guard runs, besides at startup and after the daily bars:
+#   09:45  early in the session. On the day a split takes effect Yahoo's history
+#          is already adjusted, so the 15-minute and hourly price jobs pause
+#          before the session's first 15-min bar is final (09:47).
+#   16:20  before the 4:30 PM model chain, so a split revealed by the day's
+#          bars stops it rather than being modelled.
+SPLIT_GUARD_TIMES = (time(9, 45), time(16, 20))
 # Five minutes after today's daily bar is final.
 DAILY_BARS_AT = (
     datetime.combine(datetime.min, DAILY_BAR_FINAL_AFTER) + timedelta(minutes=5)
@@ -81,14 +85,18 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] | None = None):
 _price_basis_error: str | None = None
 
 
+def _guard_times() -> str:
+    return " and ".join(f"{at:%H:%M}" for at in SPLIT_GUARD_TIMES)
+
+
 def _paused_for_prices(job: str) -> bool:
     """True, after logging why, while stored prices are on more than one basis."""
     if _price_basis_error is None:
         return False
     logger.error(
         f"{job} skipped: {_price_basis_error}. It resumes once the split guard "
-        f"passes; the guard re-checks at {SPLIT_GUARD_AT:%H:%M} and after the "
-        f"daily bars ({DAILY_BARS_AT:%H:%M} New York time)."
+        f"passes; the guard re-checks at {_guard_times()} and after the daily "
+        f"bars ({DAILY_BARS_AT:%H:%M} New York time)."
     )
     return True
 
@@ -121,8 +129,9 @@ def run_split_guard_job():
     """Check stored prices against Yahoo's, and pause or resume the price jobs.
 
     Only a basis break pauses them. Any other failure, such as the database
-    being unreachable, is logged and leaves the last answer standing, and so
-    does a pass that could not check every ticker while a break is outstanding.
+    being unreachable, is logged and leaves the last answer standing. So does a
+    ticker the guard could not check: it is logged, a break that is outstanding
+    stays, and a pass is not confirmed for it either.
     """
     global _price_basis_error
     logger.info("--- Split guard job started ---")
@@ -136,13 +145,15 @@ def run_split_guard_job():
         logger.exception(f"Split guard job failed: {type(e).__name__}: {e}")
         return
 
-    if _price_basis_error is not None:
-        if unchecked:
-            logger.warning(
-                f"Split guard could not re-check {', '.join(unchecked)}; "
-                f"price jobs stay paused"
-            )
+    if unchecked:
+        logger.warning(
+            f"Split guard could not check {', '.join(unchecked)} (no reference "
+            f"prices from Yahoo); keeping its last answer for them"
+        )
+        if _price_basis_error is not None:
+            logger.warning("Price jobs stay paused")
             return
+    if _price_basis_error is not None:
         logger.info("Split guard passes again; price jobs resume")
     _price_basis_error = None
     logger.info("--- Split guard job done ---")
@@ -318,21 +329,20 @@ def start():
         replace_existing=True,
     )
 
-    # ── Daily at 4:20 PM ET: split guard, before the model chain ─────────────
-    # Both this job and the next run however late they start (one run for any
+    # ── Daily at 9:45 AM and 4:20 PM ET: split guard (see SPLIT_GUARD_TIMES) ─
+    # These jobs and the next run however late they start (one run for any
     # number of missed slots). APScheduler otherwise skips a run that starts
     # more than a second late, so a laptop waking at 16:25 skipped the guard
     # and the model chain ran on the previous day's answer.
-    scheduler.add_job(
-        run_split_guard_job,
-        trigger=CronTrigger(
-            hour=SPLIT_GUARD_AT.hour, minute=SPLIT_GUARD_AT.minute, timezone=EXCHANGE_TZ
-        ),
-        id="split_guard",
-        replace_existing=True,
-        misfire_grace_time=None,
-        coalesce=True,
-    )
+    for at in SPLIT_GUARD_TIMES:
+        scheduler.add_job(
+            run_split_guard_job,
+            trigger=CronTrigger(hour=at.hour, minute=at.minute, timezone=EXCHANGE_TZ),
+            id=f"split_guard_{at:%H%M}",
+            replace_existing=True,
+            misfire_grace_time=None,
+            coalesce=True,
+        )
 
     # ── Daily at 5:05 PM ET: official daily bars, then the split guard ───────
     # After DAILY_BAR_FINAL_AFTER (5:00 PM ET), so today's bar is stored.
@@ -425,7 +435,7 @@ def start():
     logger.info("QuantFlow scheduler started. Jobs:")
     logger.info(f"  Price ingestion  : every {FETCH_INTERVAL_MINUTES} min")
     logger.info(
-        f"  Split guard      : at startup, {SPLIT_GUARD_AT:%H:%M} ET and after the "
+        f"  Split guard      : at startup, {_guard_times()} ET and after the "
         f"daily bars; while it fails, the jobs that read prices skip"
     )
     logger.info(f"  Daily bars       : daily at {DAILY_BARS_AT:%H:%M} ET")

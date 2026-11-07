@@ -155,9 +155,19 @@ def test_a_failed_daily_fetch_still_runs_the_guard(monkeypatch, caplog):
 
 
 def test_the_guard_runs_before_the_model_chain_and_daily_bars_after_the_close():
-    guard_at, daily_bars_at = scheduler.SPLIT_GUARD_AT, scheduler.DAILY_BARS_AT
-    assert guard_at < time(16, 30)  # the forecasting job
+    _, chain_check = scheduler.SPLIT_GUARD_TIMES
+    daily_bars_at = scheduler.DAILY_BARS_AT
+    assert chain_check < time(16, 30)  # the forecasting job
     assert daily_bars_at == time(17, 5)  # DAILY_BAR_FINAL_AFTER + 5 min
+
+
+def test_the_guard_runs_early_in_the_session_too():
+    """On the day a split takes effect, the 15-minute indicator job and the
+    hourly anomaly job read the mixed basis from the open until 16:20. A check
+    at 09:45 pauses them before the session's first 15-min bar is final
+    (09:47), so the new basis never mixes in."""
+    open_check, _ = scheduler.SPLIT_GUARD_TIMES
+    assert open_check == time(9, 45)
 
 
 class _RecordingScheduler:
@@ -189,7 +199,9 @@ def scheduled(monkeypatch):
     return recorder.jobs
 
 
-@pytest.mark.parametrize("job", ["split_guard", "yfinance_daily"])
+@pytest.mark.parametrize(
+    "job", ["split_guard_0945", "split_guard_1620", "yfinance_daily"]
+)
 def test_the_guard_and_the_daily_bars_still_run_when_their_slot_was_missed(
     scheduled, job
 ):
@@ -198,3 +210,13 @@ def test_the_guard_and_the_daily_bars_still_run_when_their_slot_was_missed(
     previous day's answer. Both jobs are safe to run late."""
     assert scheduled[job]["misfire_grace_time"] is None
     assert scheduled[job]["coalesce"] is True
+
+
+def test_each_guard_run_is_scheduled_at_its_new_york_time(scheduled):
+    for job, (hour, minute) in [
+        ("split_guard_0945", (9, 45)),
+        ("split_guard_1620", (16, 20)),
+    ]:
+        trigger = scheduled[job]["trigger"]
+        assert f"hour='{hour}', minute='{minute}'" in str(trigger), trigger
+        assert str(trigger.timezone) == "America/New_York"
