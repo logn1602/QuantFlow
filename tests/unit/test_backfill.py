@@ -124,6 +124,34 @@ def test_the_undo_query_targets_exactly_one_batch():
     assert "TIME '00:00'" in sql  # only midnight daily bars, which is all it writes
 
 
+def test_a_failure_part_way_still_prints_the_undo_for_rows_already_written(
+    fake_db, read_tables, stored, yahoo, monkeypatch, capsys
+):
+    """Each ticker's insert commits on its own, so a failure on the second
+    ticker leaves the first one's rows in place. The undo query must still
+    reach the operator."""
+    from sqlalchemy.exc import DataError
+
+    read_tables["raw_prices"] = stored
+    downloads = []
+    real_download = yfinance_fetcher.yf.download
+
+    def failing_on_second(ticker, **kwargs):
+        downloads.append(ticker)
+        if len(downloads) == 2:
+            fake_db.fail_next_insert = DataError("INSERT", {}, Exception("boom"))
+        return real_download(ticker, **kwargs)
+
+    monkeypatch.setattr(yfinance_fetcher.yf, "download", failing_on_second)
+
+    with pytest.raises(DataError):
+        backfill.run(["AAPL", "MSFT"], now=NOW)
+
+    out = capsys.readouterr().out
+    assert len(fake_db.tables["raw_prices"]) == 3  # AAPL's rows were committed
+    assert backfill.undo_sql(NOW.to_pydatetime()) in out
+
+
 def test_a_ticker_with_nothing_to_fill_does_not_download(
     fake_db, read_tables, price_bars, yahoo
 ):

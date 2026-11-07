@@ -138,42 +138,49 @@ def run(
         else f"Backfill batch {batch.isoformat(sep=' ')}"
     )
     counts: dict[str, int] = {}
-    for ticker in tickers:
-        stored = load_bar_timestamps(ticker)
-        wanted = dates_needing_daily_bars(stored)
-        if not wanted:
-            counts[ticker] = 0
-            print(f"  {ticker:6s} nothing to backfill")
-            continue
+    # Each ticker's insert commits on its own, so a failure part-way leaves
+    # earlier tickers written. The undo query is printed in `finally` so it
+    # reaches the operator whether or not the run completed.
+    try:
+        for ticker in tickers:
+            stored = load_bar_timestamps(ticker)
+            wanted = dates_needing_daily_bars(stored)
+            if not wanted:
+                counts[ticker] = 0
+                print(f"  {ticker:6s} nothing to backfill")
+                continue
 
-        yahoo = download(
-            ticker,
-            start=min(wanted).date().isoformat(),
-            interval="1d",
-            auto_adjust=False,
-        )
-        plan = plan_ticker(ticker, stored, drop_unfinished_session(yahoo, now))
+            yahoo = download(
+                ticker,
+                start=min(wanted).date().isoformat(),
+                interval="1d",
+                auto_adjust=False,
+            )
+            plan = plan_ticker(ticker, stored, drop_unfinished_session(yahoo, now))
 
-        if dry_run:
-            counts[ticker] = len(plan.rows)
-            verb = "to insert"
-        else:
-            rows = [{**row, "inserted_at": batch} for row in plan.rows]
-            counts[ticker] = insert_bars(rows)
-            verb = "written"
+            if dry_run:
+                counts[ticker] = len(plan.rows)
+                verb = "to insert"
+            else:
+                rows = [{**row, "inserted_at": batch} for row in plan.rows]
+                counts[ticker] = insert_bars(rows)
+                verb = "written"
+            print(
+                f"  {ticker:6s} {_plural(counts[ticker], 'row')} {verb}, "
+                f"{plan.date_range()}; "
+                f"{_plural(len(plan.no_yahoo_bar), 'date')} Yahoo has no daily "
+                "bar for; "
+                f"{_plural(len(plan.gaps), 'trading date')} with no stored bars "
+                "(not filled)"
+            )
+    finally:
+        total = sum(counts.values())
         print(
-            f"  {ticker:6s} {_plural(counts[ticker], 'row')} {verb}, "
-            f"{plan.date_range()}; "
-            f"{_plural(len(plan.no_yahoo_bar), 'date')} Yahoo has no daily bar for; "
-            f"{_plural(len(plan.gaps), 'trading date')} with no stored bars "
-            "(not filled)"
+            f"Total: {_plural(total, 'row')} {'to insert' if dry_run else 'written'}."
         )
-
-    total = sum(counts.values())
-    print(f"Total: {_plural(total, 'row')} {'to insert' if dry_run else 'written'}.")
-    if not dry_run and total:
-        print("\nTo undo exactly these rows, run:\n")
-        print(undo_sql(batch))
+        if not dry_run and total:
+            print("\nTo undo exactly these rows, run:\n")
+            print(undo_sql(batch))
     return counts
 
 
