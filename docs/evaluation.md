@@ -190,9 +190,29 @@ live path will use the same function instead of reading `technical_indicators` a
 change no live feature value; the snapshot carries the stored rows so that is checked
 once, not assumed.
 
-A training row's IQR flag still uses fences fitted on data up to the origin, which
-includes days after that row. The live run does the same, so the measurement is
-faithful; whether it costs accuracy is a Phase 3 question.
+### The live run's training rows look ahead too (decision D14)
+
+Rebuilding at each origin makes the measurement faithful to the live run, but the live
+run has the same flaw inside its own training rows: on day T it fits the IQR fences,
+and the return mean and standard deviation behind an IQR-flagged row's z-score, on
+every return up to T, then trains the boosters on rows dated long before T. A training
+row's `zscore` and `is_anomaly` therefore carry information from after that row. The
+effect of any one later return is small, but the training rows are not built the way
+the newest row, the one the forecast starts from, is.
+
+Fixed on `feat/evaluation-live`, as a correction rather than a choice (section 2):
+**point-in-time anomaly scores** for the features. Each row's IQR fences and return
+mean and standard deviation come from the returns up to that row only, after a
+warmup (rows before it get a missing score, not 0); the Z-score detector is a trailing
+30-day window and already point-in-time. It ships with the in-process features (D4),
+since the features stop reading the `anomalies` table then; the table keeps its
+full-history flags for the dashboard, which shows them in hindsight. It is measured as
+its own run (R5, section 11), and a failing-first test reverses the one `8f9fad2`
+pinned: a later price must no longer move an earlier anomaly score.
+
+The README's integrity table says the features are backward-looking, citing the
+perturbation test, which covers `engineer_features` but not the anomaly scores it is
+handed; Phase 4 corrects that claim (and `engineering.py`'s docstrings, with D14).
 
 ---
 
@@ -328,11 +348,27 @@ Limits that stay:
   can also hold what arrived between the run and midnight. A run long before the
   cutoff (the laptop scheduler during the day) sees a smaller part of the window.
 
+### News coverage comes before any news decision (decision D15)
+
+Every harness run reports news coverage per window: the share of (ticker, date) rows
+on the validation dates and on the test dates that have at least one real article
+(available by the rule above, bad rows left out), per ticker and in all, and the same
+share across the training history at each window's first origin. The `coverage`
+command reports it from the snapshot alone, with no model fitted, so it is known
+before any news run.
+
+If fewer than half of the (ticker, date) rows on the validation dates have a real
+article, the news ablation is reported as "not enough data", and no news feature is
+kept or dropped on it, in Phase 2 or Phase 3 (Phase 3's news-variant experiments do not
+run). The threshold is fixed here, before the coverage is known. The 2d corrections
+still ship (section 2): they make training match the live run whatever the coverage.
+
 ### Ablation
 
 The boosters with and without the sentiment features (the six plus `has_news`), on the
-same snapshot and origins, per ticker and horizon, against each other and against
-naive. Reported whichever way it goes.
+same snapshot and validation origins, per ticker and horizon, against each other and
+against naive. Reported whichever way it goes, or as "not enough data" under the
+coverage rule above.
 
 ---
 
@@ -593,16 +629,17 @@ measurement can merge without changing anything the daily workflow does:
 5. One change per commit and one booster run per change on the validation dates
    (decision D12): **R1** bad sentiment rows ignored; **R2** news availability (D7);
    **R3** no forward fill, `has_news`, and the missing-news rules (D6); **R4** missing
-   as missing for every feature (F7); **R5** the ablation, R4 without the sentiment
-   features. These measure the corrections; they do not decide them (section 2).
-6. The rolling-origin ensemble weights and the in-process live features (D4). **R6 on
+   as missing for every feature (F7); **R5** point-in-time anomaly scores (D14); **R6**
+   the ablation, R5 without the sentiment features, or "not enough data" (D15). These
+   measure the corrections; they do not decide them (section 2).
+6. The rolling-origin ensemble weights and the in-process live features (D4). **R7 on
    the validation dates**: every model on the final commit, the new weights beside the
    old ones on the same cells. D2 is settled here, by its rule.
 7. **The two test-date scorings**, entered in the ledger: **T1**, R0's commit (the
    current system); **T2**, the final commit, with the new and old ensemble weights both
    reported. Nothing is chosen after this point in Phase 2.
 
-Checkpoint 2b shows the validation runs (R0 to R6, with the D2 outcome) and the test
+Checkpoint 2b shows the validation runs (R0 to R7, with the D2 outcome) and the test
 scorings (T1, T2): every ticker, every model, naive and drift included. On approval,
 `feat/evaluation` is pushed first; `feat/evaluation-live` follows once that is merged,
 with the live ensemble switch as D2 settled.
@@ -618,8 +655,8 @@ LightGBM 0.17 s; about 2.2 s for everything. The old ensemble's 30-day stack add
 |---|---|---|---|
 | 1 and 3 ticker checks | validation | 54 origins | about 2 and 6 minutes |
 | R0 | validation | 54 origins x 8 tickers, plus the old stack at 42 origins | about 27 minutes |
-| R1 to R5 | validation | boosters only, 42 origins x 8 tickers, each | about 4 minutes each |
-| R6 | validation | 54 origins x 8 tickers, plus the old stack at 42 origins | about 27 minutes |
+| R1 to R6 | validation | boosters only, 42 origins x 8 tickers, each | about 4 minutes each |
+| R7 | validation | 54 origins x 8 tickers, plus the old stack at 42 origins | about 27 minutes |
 | T1, T2 | test | 37 origins x 8 tickers, plus the old stack at 25 origins, each | about 18 minutes each |
 
 About two hours of runs in all, none longer than half an hour. Memory stays well under
@@ -639,7 +676,6 @@ about 3.5 minutes from the live ensemble refits, if D2 approves them (section 5)
 | The dashboard's accuracy figures | Phase 4, by the brief. |
 | Weights from stored live forecasts | Needs a retention decision (`run_models` clears them). |
 | A manual GitHub workflow for the evaluation | Decision D9. |
-| The IQR fences' look-ahead inside training rows | Faithful to the live run; an accuracy question for Phase 3. |
 | Deleting the bad sentiment rows | The features ignore them; the DELETE is offered, yours to run. |
 | Social-media news sources | Phase 5 designs for them; not built. |
 
@@ -677,8 +713,8 @@ Decided by the owner; the body above applies them.
 | | Decision |
 |---|---|
 | D1 | 25 test origins every 5 trading days (2026-05-07 to 2026-10-28), 12 warmup origins, h = 1..7, snapshot pinned at 2026-11-06. |
-| D1a | 42 validation origins (2025-06-30 to 2026-04-23, every day-7 target before the first test target) for every keep-or-drop decision, with 12 validation-warmup origins (2025-04-02 to 2025-06-23) for the ensemble. As first decided the window ended 2026-04-30, whose targets reach 2026-05-08 and 05-11, two test dates; moved back one origin on 2026-11-07. |
-| D2 | The rolling-origin weights are built now. The live run switches to them if, on the 42 validation dates, their mean absolute percentage error over every cell (all tickers and horizons) is no higher than the old weights'; a tie goes to the new weights, which are fitted on the task they are used for. Settled on the validation run (R6) before the test dates are scored; Checkpoint 2b shows the comparison. |
+| D1a | 42 validation origins (2025-06-30 to 2026-04-23, every day-7 target before the first test target) for every keep-or-drop decision, with 12 validation-warmup origins (2025-04-02 to 2025-06-23) for the ensemble. As first decided the window ended 2026-04-30, whose targets reach 2026-05-08 and 05-11, two test dates; moved back one origin on 2026-11-07; approved 2026-11-08. |
+| D2 | The rolling-origin weights are built now. The live run switches to them if, on the 42 validation dates, their mean absolute percentage error over every cell (all tickers and horizons) is no higher than the old weights'; a tie goes to the new weights, which are fitted on the task they are used for. Settled on the validation run (R7) before the test dates are scored; Checkpoint 2b shows the comparison. Approved as a written rule on 2026-11-08, rather than decided after seeing results. |
 | D3 | The backtest stays on the 30-day stack until Phase 4. If the live ensemble switches, its 30-day dashboard figure stops being written. |
 | D4 | Live features built in-process through the harness's function (second branch). |
 | D5 | One read-only snapshot export per snapshot, on the owner's go-ahead, into git-ignored `eval_snapshots/`; the coverage report runs on it first. |
@@ -690,6 +726,8 @@ Decided by the owner; the body above applies them.
 | D11 | Two branches: `feat/evaluation` (measurement, no live change) merges first, then `feat/evaluation-live`. |
 | D12 | One change per commit and per run on the second branch, on the validation dates. |
 | D13 | The rule for the test dates (section 2): every keep-or-drop decision on the validation dates only, D2 included; test results reported, never used to choose, and anything kept stays kept if it looks worse there, as the README says; every test scoring counted (ledger, MLflow tag) and the count and phases stated in the README. Phase 2 scores the test dates twice (T1, T2). |
+| D14 | Point-in-time anomaly scores for the features, on `feat/evaluation-live` with D4: the live training rows stop looking ahead (section 2). A correction, measured as R5. The README's "features are backward-looking" claim is corrected in Phase 4. |
+| D15 | News coverage per window is reported before any news run; under half of the validation (ticker, date) rows with a real article means the ablation is "not enough data" and no news feature is kept or dropped on it (section 4). |
 
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
 origin's close) as a fifth stack column, so the ensemble can lean on it; not freezing
