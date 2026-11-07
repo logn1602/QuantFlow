@@ -136,6 +136,8 @@ Every number above was measured on **2026-08-04** and is recorded in `mlflow.db`
 make seed && make indicators && make anomalies && make sentiment && make models && make backtest
 ```
 
+These per-stage targets skip the split guard (see Local below); `make all` runs it.
+
 Read them back with `mlflow ui` (http://localhost:5000), or from the `model_metrics` and `backtest_results` tables. Figures shift as new market data arrives; regenerate rather than trusting a stale copy.
 
 The evaluation *contract* — that scoring is out-of-fold, that windows are like-for-like, that degenerate input reports nothing rather than a fabricated number — is asserted on synthetic data and needs no database:
@@ -219,7 +221,10 @@ cp .env.example .env
 Run the full pipeline. `make all` seeds roughly two years of history first, so
 the first run takes several minutes; later runs skip rows that already exist.
 Like the daily workflow, it stops before any stage reads prices if the split
-guard finds stored prices that no longer match Yahoo's:
+guard finds stored prices that no longer match Yahoo's, or cannot check a
+ticker. The per-stage commands (`make indicators`, `make models` and the
+`python -m quantflow....` modules behind them) skip the split guard; run
+`python -m quantflow.ingestion.split_guard` first when using them on their own:
 
 ```bash
 make all

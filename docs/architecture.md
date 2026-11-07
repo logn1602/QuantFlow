@@ -104,8 +104,9 @@ and anomaly stages, the dashboard's candles) goes through
 
 - a date with a daily bar uses it;
 - a date with only 15-minute bars gets one bar built from them: first open,
-  highest high, lowest low, last close, summed volume. Each load logs, per
-  ticker, how many dates took this path.
+  highest high, lowest low, last close, summed volume. Each load warns, per
+  ticker, how many earlier dates took this path. Today's session, which has
+  no daily bar until 17:00 New York by design, is logged at INFO instead.
 
 The loaders used to keep each date's first row by timestamp instead. Seeded
 dates were fine, since their midnight daily bar sorts first, but every date
@@ -144,18 +145,34 @@ shifts every row stored before it, a long unbroken run; one or two isolated
 mismatches are a bad print on one side, and are logged as warnings instead of
 stopping every stage. A ticker whose check raises (the database or Yahoo
 misbehaving) is logged and the others are still checked, so it never hides
-another ticker's break; the run fails either way. The fix is a scoped
-rescale of that ticker's earlier rows, run by hand, after which the guard
-passes again by itself.
+another ticker's break. The command fails on a break, on an error, and on a
+ticker Yahoo returned no reference prices for: a guard that could not check
+a ticker does not report a pass. The fix after a split is a scoped rescale of
+that ticker's earlier rows, run by hand, after which the guard passes again
+by itself.
 
 In the daily workflow a failing guard fails its step, so nothing after it
-runs; `make all` runs it in the same place. The scheduler has no steps, so it
-remembers the guard's last answer: the guard runs at startup, at 16:20 New
-York time before the model jobs, and after the 17:05 daily bars, and both
-cron jobs run however late they start, so a laptop that wakes after 16:20
-checks before any model job still due. While the last answer is a break, the
-jobs that read prices (indicators, anomalies, both model jobs, the ensemble
-and the backtest) log why and skip. Ingestion and sentiment keep running.
+runs; `make all` runs it in the same place. The per-stage commands do not run
+it. The scheduler has no steps, so it remembers the guard's last answer: the
+guard runs at startup, at 09:45 and 16:20 New York time, and after the 17:05
+daily bars. The 09:45 run pauses the intraday price jobs on the day a split
+takes effect, before the session's first 15-minute bar is final; the 16:20
+run comes before the model jobs. These cron jobs run however late they
+start, so a laptop that wakes after 16:20 checks before any model job still
+due. While the last answer is a break, the jobs that read prices
+(indicators, anomalies, both model jobs, the ensemble and the backtest) log
+why and skip. Ingestion and sentiment keep running. A ticker the guard could
+not check changes nothing there: a break stays, and no pass is confirmed.
+
+**Forecast dates follow the NYSE calendar.** `utils/trading_calendar.py`
+builds it from pandas' holiday rules, so it needs no calendar package, and
+follows the exchange rather than the federal list: Good Friday and
+Juneteenth are closed, Columbus Day and Veterans Day are open, and a
+Saturday holiday closes the Friday before, except New Year's Day. Tests
+check it against the exchange's published lists for 2025 to 2027. One-off
+closures, such as the national day of mourning on 2025-01-09 or a weather
+closure, cannot be known in advance and are not covered: a forecast made
+just before one still lists that day.
 
 ### SQL in `db/`
 
