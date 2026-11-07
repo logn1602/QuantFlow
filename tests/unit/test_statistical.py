@@ -78,6 +78,52 @@ def _oracle(prophet, frame):
     prophet.truth = dict(zip(frame["ds"], frame["y"], strict=True))
 
 
+class _FakeForecast:
+    def __init__(self, mean):
+        self.predicted_mean = mean
+
+    def conf_int(self, alpha=0.05):
+        return np.column_stack([self.predicted_mean - 1, self.predicted_mean + 1])
+
+
+class FakeARIMA:
+    """Forecasts the last value flat; no fitting. Records each order."""
+
+    orders: list = []  # noqa: RUF012 (reset per test by the fixture)
+
+    def __init__(self, endog, order):
+        self.last = float(np.asarray(endog)[-1])
+        FakeARIMA.orders.append(tuple(order))
+
+    def fit(self):
+        return self
+
+    def forecast(self, steps):
+        return np.full(steps, self.last)
+
+    def get_forecast(self, steps):
+        return _FakeForecast(np.full(steps, self.last))
+
+
+@pytest.fixture
+def fake_arima(monkeypatch):
+    import statsmodels.tsa.arima.model as arima_module
+
+    FakeARIMA.orders = []
+    monkeypatch.setattr(arima_module, "ARIMA", FakeARIMA)
+    return FakeARIMA
+
+
+@pytest.fixture
+def no_boosters(monkeypatch):
+    """The stack's booster columns, without training any booster."""
+    monkeypatch.setattr(
+        ensemble,
+        "_xgb_lgb_holdout",
+        lambda *args, **kwargs: {"xgboost": np.zeros(30), "lightgbm": np.zeros(30)},
+    )
+
+
 # ── Prophet holdout ───────────────────────────────────────────────────────────
 
 
@@ -89,10 +135,41 @@ def test_prophet_holdout_predictions_are_scored_against_their_own_dates(
     assert metrics["mape"] == 0.0
 
 
-def test_the_ensembles_prophet_column_lines_up_with_the_holdout(fake_prophet):
+def test_the_ensembles_prophet_column_lines_up_with_the_holdout(
+    fake_prophet, fake_arima, no_boosters
+):
     _oracle(fake_prophet, HOLIDAY_IN_HOLDOUT)
-    preds = ensemble._prophet_holdout(HOLIDAY_IN_HOLDOUT)
-    assert np.allclose(preds, HOLIDAY_IN_HOLDOUT["y"].to_numpy()[-30:])
+    stack = ensemble.build_holdout_stack(HOLIDAY_IN_HOLDOUT, pd.DataFrame(), "AAPL")
+    assert np.allclose(stack["prophet"], HOLIDAY_IN_HOLDOUT["y"].to_numpy()[-30:])
+    assert np.allclose(stack["actual"], HOLIDAY_IN_HOLDOUT["y"].to_numpy()[-30:])
+
+
+# ── One ARIMA definition ──────────────────────────────────────────────────────
+#
+# The ensemble's stack fitted its own ARIMA with the order written out as
+# (5, 1, 0), so changing ARIMA_ORDER would have changed the scored and live
+# ARIMA but not the column the meta-learner is weighted on.
+
+
+def test_the_ensembles_stack_fits_the_configured_arima_order(
+    monkeypatch, fake_prophet, fake_arima, no_boosters
+):
+    monkeypatch.setattr(statistical, "ARIMA_ORDER", (2, 1, 0))
+    monkeypatch.setattr(ensemble, "load_prices", lambda ticker: HOLIDAY_IN_HOLDOUT)
+    monkeypatch.setattr(
+        ensemble, "load_features", lambda ticker: pd.DataFrame(), raising=False
+    )
+    ensemble.collect_holdout_stacks("AAPL")
+    assert fake_arima.orders == [(2, 1, 0)]
+
+
+def test_the_scored_and_live_arima_fits_use_the_configured_order(
+    monkeypatch, fake_arima
+):
+    monkeypatch.setattr(statistical, "ARIMA_ORDER", (2, 1, 0))
+    monkeypatch.setattr(statistical, "_log_mlflow", lambda *args, **kwargs: None)
+    statistical.run_arima(HOLIDAY_IN_HOLDOUT, "AAPL")
+    assert fake_arima.orders == [(2, 1, 0), (2, 1, 0)]  # holdout fit, live fit
 
 
 # ── Yearly seasonality needs two years ────────────────────────────────────────
@@ -129,8 +206,10 @@ def test_near_two_years_only_the_live_fit_gets_yearly_seasonality(fake_prophet):
     assert _yearly_flags(fake_prophet) == [False, True]
 
 
-def test_the_ensembles_prophet_fit_follows_the_same_rule(fake_prophet):
-    ensemble._prophet_holdout(ONE_YEAR)
+def test_the_ensembles_prophet_fit_follows_the_same_rule(
+    fake_prophet, fake_arima, no_boosters
+):
+    ensemble.build_holdout_stack(ONE_YEAR, pd.DataFrame(), "AAPL")
     assert _yearly_flags(fake_prophet) == [False]
 
 
@@ -142,34 +221,7 @@ def test_the_live_prophet_forecast_skips_market_holidays(fake_prophet):
     assert [d.isoformat() for d in forecast["ds"]] == NEXT_SEVEN_TRADING_DAYS
 
 
-class _FakeForecast:
-    def __init__(self, mean):
-        self.predicted_mean = mean
-
-    def conf_int(self, alpha=0.05):
-        return np.column_stack([self.predicted_mean - 1, self.predicted_mean + 1])
-
-
-class FakeARIMA:
-    """Forecasts the last value flat; no fitting."""
-
-    def __init__(self, endog, order):
-        self.last = float(np.asarray(endog)[-1])
-
-    def fit(self):
-        return self
-
-    def forecast(self, steps):
-        return np.full(steps, self.last)
-
-    def get_forecast(self, steps):
-        return _FakeForecast(np.full(steps, self.last))
-
-
-def test_the_live_arima_forecast_skips_market_holidays(monkeypatch):
-    import statsmodels.tsa.arima.model as arima_module
-
-    monkeypatch.setattr(arima_module, "ARIMA", FakeARIMA)
+def test_the_live_arima_forecast_skips_market_holidays(monkeypatch, fake_arima):
     monkeypatch.setattr(statistical, "_log_mlflow", lambda *args, **kwargs: None)
 
     forecast, _ = statistical.run_arima(BEFORE_THANKSGIVING, "AAPL")

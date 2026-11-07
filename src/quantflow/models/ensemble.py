@@ -58,8 +58,9 @@ from quantflow.evaluation.out_of_fold import (
     expanding_window_predictions,
 )
 from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
+from quantflow.features.engineering import load_features
 from quantflow.models import FORECAST_DAYS
-from quantflow.models.statistical import prophet_settings
+from quantflow.models.statistical import arima_holdout, prophet_holdout
 from quantflow.utils.logger import get_logger
 
 warnings.filterwarnings("ignore")
@@ -77,38 +78,17 @@ MLFLOW_EXP = "stock_forecasting"
 # ── Holdout prediction helpers ────────────────────────────────────────────────
 
 
-def _arima_holdout(price_df: pd.DataFrame) -> np.ndarray:
-    """Fit ARIMA on train split, return 30-day holdout predictions."""
-    from statsmodels.tsa.arima.model import ARIMA
+def _xgb_lgb_holdout(raw_features: pd.DataFrame, ticker: str) -> dict:
+    """Train XGBoost & LightGBM on train split, return holdout predictions.
 
-    train = price_df.iloc[:-HOLDOUT_DAYS]
-    fitted = ARIMA(train["y"].values, order=(5, 1, 0)).fit()
-    return fitted.forecast(steps=HOLDOUT_DAYS)
-
-
-def _prophet_holdout(price_df: pd.DataFrame) -> np.ndarray:
-    """Fit Prophet on train split, return predictions for the 30 holdout dates.
-
-    Predicted on the holdout's own dates rather than weekday steps, so this
-    column lines up row for row with `actual` across market holidays.
+    raw_features is load_features' merged frame for the ticker.
     """
-    from prophet import Prophet
-
-    train, holdout = train_holdout_split(price_df, copy=True)
-    model = Prophet(**prophet_settings(train))
-    model.fit(train)
-    return model.predict(holdout[["ds"]])["yhat"].to_numpy()
-
-
-def _xgb_lgb_holdout(ticker: str) -> dict:
-    """Train XGBoost & LightGBM on train split, return holdout predictions."""
-    from quantflow.features.engineering import engineer_features, load_features
+    from quantflow.features.engineering import engineer_features
     from quantflow.models.boosting import train_lightgbm, train_xgboost
 
-    df = load_features(ticker)
-    if df.empty:
+    if raw_features.empty:
         return {}
-    df = engineer_features(df)
+    df = engineer_features(raw_features)
     if len(df) < HOLDOUT_DAYS + 30:
         return {}
 
@@ -128,9 +108,20 @@ def _xgb_lgb_holdout(ticker: str) -> dict:
 
 
 def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
+    """The holdout stack for a ticker, from the stored prices and features."""
+    return build_holdout_stack(load_prices(ticker), load_features(ticker), ticker)
+
+
+def build_holdout_stack(
+    price_df: pd.DataFrame, raw_features: pd.DataFrame, ticker: str
+) -> pd.DataFrame:
     """
     Re-runs all 4 base models on their train/holdout split and aligns
     their predictions into a single DataFrame for meta-learner training.
+
+    price_df is load_prices' ds/y series and raw_features load_features'
+    merged frame. Taking them as arguments rather than loading them lets the
+    same stack be built from any history, not only the stored one.
 
     All models predict the same 30 close prices (the last 30 in the series):
     - ARIMA: forecast(steps=30) from the end of the train split
@@ -140,8 +131,6 @@ def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
 
     Returns DataFrame: [actual, arima, prophet, xgboost, lightgbm]
     """
-
-    price_df = load_prices(ticker)
     if price_df.empty or len(price_df) < HOLDOUT_DAYS + 60:
         logger.warning(
             f"{ticker}: insufficient history for stacking "
@@ -149,16 +138,17 @@ def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
         )
         return pd.DataFrame()
 
-    actual = price_df["y"].iloc[-HOLDOUT_DAYS:].values
+    _, holdout = train_holdout_split(price_df)
+    actual = holdout["y"].to_numpy()
 
     logger.info("  [1/4] ARIMA holdout predictions...")
-    arima_preds = _arima_holdout(price_df)
+    arima_preds = arima_holdout(price_df)
 
     logger.info("  [2/4] Prophet holdout predictions...")
-    prophet_preds = _prophet_holdout(price_df)
+    prophet_preds = prophet_holdout(price_df)
 
     logger.info("  [3/4] XGBoost + LightGBM holdout predictions...")
-    ml_preds = _xgb_lgb_holdout(ticker)
+    ml_preds = _xgb_lgb_holdout(raw_features, ticker)
     if not ml_preds or len(ml_preds.get("xgboost", [])) == 0:
         logger.error(f"{ticker}: XGB/LGB holdout failed — cannot stack")
         return pd.DataFrame()

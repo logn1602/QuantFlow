@@ -27,6 +27,7 @@ import argparse
 import os
 import warnings
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
@@ -74,7 +75,65 @@ def prophet_settings(history: pd.DataFrame) -> dict:
     }
 
 
-# ── Data loading ──────────────────────────────────────────────────────────────
+# ── Forecasts ─────────────────────────────────────────────────────────────────
+#
+# One function per model makes every forecast that model produces: the
+# holdout score, the ensemble's holdout stack and the live 7-day forecast.
+# The ensemble used to fit its own copies, with the ARIMA order written out
+# as (5, 1, 0), so a change to ARIMA_ORDER would have reached the scored and
+# live ARIMA but not the column the meta-learner weights.
+#
+# Both return the same columns, yhat, yhat_lower and yhat_upper (a 95%
+# interval), so a caller can treat either model's forecast the same way.
+
+
+def arima_forecast(y, steps: int) -> pd.DataFrame:
+    """ARIMA_ORDER fitted on the closes y, forecast `steps` ahead.
+
+    get_forecast's mean is what forecast() returns, so the holdout score,
+    which used forecast(), is unchanged by going through here.
+    """
+    from statsmodels.tsa.arima.model import ARIMA
+
+    fitted = ARIMA(np.asarray(y, dtype=float), order=ARIMA_ORDER).fit()
+    result = fitted.get_forecast(steps=steps)
+    interval = np.asarray(result.conf_int(alpha=0.05))
+    return pd.DataFrame(
+        {
+            "yhat": np.asarray(result.predicted_mean, dtype=float),
+            "yhat_lower": interval[:, 0],
+            "yhat_upper": interval[:, 1],
+        }
+    )
+
+
+def prophet_forecast(history: pd.DataFrame, dates) -> pd.DataFrame:
+    """Prophet fitted on history (ds, y), predicted on the given dates.
+
+    Predicting on actual dates rather than make_future_dataframe(freq="B")
+    keeps market holidays out: weekday stepping scored each holdout
+    prediction after a holiday against the next trading day's close, and
+    promised live closes on holidays.
+    """
+    from prophet import Prophet
+
+    model = Prophet(**prophet_settings(history))
+    model.fit(history.copy())
+    future = pd.DataFrame({"ds": pd.DatetimeIndex(pd.to_datetime(dates))})
+    return model.predict(future)[["ds", "yhat", "yhat_lower", "yhat_upper"]]
+
+
+def arima_holdout(price_df: pd.DataFrame) -> np.ndarray:
+    """ARIMA fitted on the train split, its predictions for the holdout."""
+    train, _ = train_holdout_split(price_df)
+    return arima_forecast(train["y"], HOLDOUT_DAYS)["yhat"].to_numpy()
+
+
+def prophet_holdout(price_df: pd.DataFrame) -> np.ndarray:
+    """Prophet fitted on the train split, predicted on the holdout's own
+    dates, so the result lines up row for row with the holdout's closes."""
+    train, holdout = train_holdout_split(price_df, copy=True)
+    return prophet_forecast(train, holdout["ds"])["yhat"].to_numpy()
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -91,30 +150,20 @@ def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
     Fit ARIMA and generate 7-day forecast with confidence intervals.
     Returns (forecast_df, holdout_metrics). Metrics are {} on failure.
     """
-    from statsmodels.tsa.arima.model import ARIMA
-
     if len(df) < HOLDOUT_DAYS + 30:
         logger.warning(f"{ticker}: Not enough data for ARIMA")
         return pd.DataFrame(), {}
 
-    train, holdout = train_holdout_split(df)
+    _, holdout = train_holdout_split(df)
 
     try:
-        model = ARIMA(train["y"].values, order=ARIMA_ORDER)
-        fitted = model.fit()
-        holdout_preds = fitted.forecast(steps=HOLDOUT_DAYS)
-        metrics = compute_metrics(holdout["y"], pd.Series(holdout_preds))
+        metrics = compute_metrics(holdout["y"].to_numpy(), arima_holdout(df))
         logger.info(
             f"  ARIMA {ticker} holdout — "
             f"RMSE: {metrics['rmse']} | MAE: {metrics['mae']} | MAPE: {metrics['mape']}%"
         )
 
-        full_model = ARIMA(df["y"].values, order=ARIMA_ORDER)
-        full_fitted = full_model.fit()
-
-        forecast_result = full_fitted.get_forecast(steps=FORECAST_DAYS)
-        forecast_mean = forecast_result.predicted_mean
-        conf_int = forecast_result.conf_int(alpha=0.05)
+        forecast = arima_forecast(df["y"], FORECAST_DAYS)
 
         # Trading days, not weekdays: a forecast must not promise a close on
         # a market holiday.
@@ -123,9 +172,9 @@ def run_arima(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         forecast_df = pd.DataFrame(
             {
                 "ds": [d.date() for d in future_dates],
-                "predicted_close": forecast_mean,
-                "lower_bound": conf_int[:, 0],
-                "upper_bound": conf_int[:, 1],
+                "predicted_close": forecast["yhat"].to_numpy(),
+                "lower_bound": forecast["yhat_lower"].to_numpy(),
+                "upper_bound": forecast["yhat_upper"].to_numpy(),
                 "model": "arima",
                 "ticker": ticker,
             }
@@ -147,8 +196,9 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
     Fit Prophet and generate 7-day forecast with uncertainty intervals.
     Returns (forecast_df, holdout_metrics). Metrics are {} on failure.
     """
+    # Only checks that Prophet is installed; prophet_forecast imports it.
     try:
-        from prophet import Prophet
+        import prophet  # noqa: F401
     except ImportError:
         logger.error("Prophet not installed. Run: pip install prophet")
         return pd.DataFrame(), {}
@@ -157,30 +207,18 @@ def run_prophet(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, dict]:
         logger.warning(f"{ticker}: Not enough data for Prophet")
         return pd.DataFrame(), {}
 
-    train, holdout = train_holdout_split(df, copy=True)
+    _, holdout = train_holdout_split(df)
 
     try:
-        model = Prophet(**prophet_settings(train))
-        model.fit(train)
-
-        # Predict on the holdout's own dates. make_future_dataframe(freq="B")
-        # stepped through every weekday, so after a market holiday inside the
-        # window each prediction was scored against the next trading day's
-        # close, and the final close was never predicted at all.
-        holdout_preds = model.predict(holdout[["ds"]])["yhat"]
-        metrics = compute_metrics(holdout["y"].to_numpy(), holdout_preds.to_numpy())
+        metrics = compute_metrics(holdout["y"].to_numpy(), prophet_holdout(df))
         logger.info(
             f"  Prophet {ticker} holdout: "
             f"RMSE: {metrics['rmse']} | MAE: {metrics['mae']} | MAPE: {metrics['mape']}%"
         )
 
-        full_model = Prophet(**prophet_settings(df))
-        full_model.fit(df)
-
-        future = pd.DataFrame(
-            {"ds": next_trading_days(df["ds"].iloc[-1], FORECAST_DAYS)}
+        forecast_future = prophet_forecast(
+            df, next_trading_days(df["ds"].iloc[-1], FORECAST_DAYS)
         )
-        forecast_future = full_model.predict(future)
 
         forecast_df = pd.DataFrame(
             {
