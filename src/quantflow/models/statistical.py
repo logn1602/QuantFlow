@@ -37,6 +37,7 @@ from quantflow.db.metrics import save_model_metrics
 from quantflow.db.prices import load_daily_close as load_prices
 from quantflow.evaluation.metrics import regression_metrics
 from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
+from quantflow.models import FORECAST_DAYS
 from quantflow.utils.logger import get_logger
 from quantflow.utils.trading_calendar import next_trading_days
 
@@ -44,7 +45,6 @@ warnings.filterwarnings("ignore")
 
 logger = get_logger("forecasting")
 
-FORECAST_DAYS = 7
 ARIMA_ORDER = (5, 1, 0)
 MLFLOW_EXP = "stock_forecasting"
 

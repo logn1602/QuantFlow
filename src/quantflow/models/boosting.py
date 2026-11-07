@@ -1,10 +1,8 @@
 """XGBoost and LightGBM forecasting.
 
-Trains one regressor per ticker on the feature matrix from
-quantflow.features.engineering, then rolls a 7-day forecast forward
-recursively.
-
-Two models per ticker and family, with different jobs:
+Trains two regressors per ticker and family on the feature matrix from
+quantflow.features.engineering, and rolls a 7-day forecast forward
+recursively from the newer one. They have different jobs:
   - the scored model is fitted on the train split and evaluated on the
     holdout; its holdout predictions also feed the ensemble stack;
   - the live model has the same settings, is fitted on every labelled row,
@@ -39,6 +37,7 @@ from quantflow.features.engineering import (
     get_feature_cols,
     load_features,
 )
+from quantflow.models import FORECAST_DAYS
 from quantflow.utils.logger import get_logger
 from quantflow.utils.trading_calendar import next_trading_days
 
@@ -46,7 +45,6 @@ warnings.filterwarnings("ignore")
 
 logger = get_logger("boosting")
 
-FORECAST_DAYS = 7
 MLFLOW_EXP = "stock_forecasting"
 
 # One set of settings per family, shared by the scored and the live model, so
@@ -74,7 +72,16 @@ MODEL_PARAMS: dict[str, dict[str, Any]] = {
 
 
 def _new_regressor(model_name: str):
-    """An unfitted regressor of the family; None if its package is missing."""
+    """An unfitted regressor of the family; None if its package is missing.
+
+    Raises ValueError for a family MODEL_PARAMS does not define, which would
+    otherwise fall through to LightGBM and be stored under the wrong name.
+    """
+    if model_name not in MODEL_PARAMS:
+        raise ValueError(
+            f"unknown model family {model_name!r}; expected one of "
+            f"{', '.join(sorted(MODEL_PARAMS))}"
+        )
     try:
         if model_name == "xgboost":
             import xgboost as xgb

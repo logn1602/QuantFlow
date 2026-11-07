@@ -21,9 +21,7 @@ import pandas as pd
 import pytest
 
 from quantflow.models import ensemble, statistical
-from quantflow.utils.trading_calendar import NYSEHolidayCalendar
-
-TRADING_DAY = pd.offsets.CustomBusinessDay(calendar=NYSEHolidayCalendar())
+from quantflow.utils.trading_calendar import TRADING_DAY
 
 
 def _series(start, end):
@@ -77,6 +75,7 @@ class FakeProphet:
 @pytest.fixture
 def fake_prophet(monkeypatch):
     FakeProphet.instances = []
+    FakeProphet.truth = {}  # class state: one test's oracle must not reach the next
     module = types.ModuleType("prophet")
     module.Prophet = FakeProphet
     monkeypatch.setitem(sys.modules, "prophet", module)

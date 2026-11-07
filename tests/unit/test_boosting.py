@@ -4,13 +4,13 @@ Covers the live 7-day forecast from XGBoost and LightGBM.
 
 Two bugs, both in what the live forecast was built from:
 
-  1d  It used the model fitted on the train split, so the live forecast
-      never saw the last 30 labelled days. ARIMA and Prophet refit on the
-      full series before forecasting; the boosters did not.
-  1e  engineer_features drops the newest row (its target, tomorrow's close,
-      is unknown), and the forecast started from what was left: the
-      second-to-last day. Its first "forecast" was for the latest day, whose
-      close was already known.
+  - Stale model: it used the model fitted on the train split, so the live
+    forecast never saw the last 30 labelled days. ARIMA and Prophet refit
+    on the full series before forecasting; the boosters did not.
+  - Stale start: engineer_features drops the newest row (its target,
+    tomorrow's close, is unknown), and the forecast started from what was
+    left: the second-to-last day. Its first "forecast" was for the latest
+    day, whose close was already known.
 
 No model is trained: the regressors are fakes whose prediction is the number
 of rows they were fitted on, which identifies the model a forecast came from.
@@ -26,9 +26,8 @@ import pytest
 from quantflow.evaluation.splits import HOLDOUT_DAYS
 from quantflow.features.engineering import engineer_features
 from quantflow.models import boosting
-from quantflow.utils.trading_calendar import NYSEHolidayCalendar
+from quantflow.utils.trading_calendar import TRADING_DAY
 
-TRADING_DAY = pd.offsets.CustomBusinessDay(calendar=NYSEHolidayCalendar())
 DAYS = pd.date_range(end="2026-11-20", periods=120, freq=TRADING_DAY)
 
 
@@ -112,7 +111,7 @@ def _labelled(raw):
     return engineer_features(raw)
 
 
-# ── 1d: the live model sees every labelled row ────────────────────────────────
+# ── Stale model: the live model sees every labelled row ───────────────────────
 
 
 @pytest.mark.parametrize("model_name", ["xgboost", "lightgbm"])
@@ -138,7 +137,7 @@ def test_the_live_model_has_seen_the_final_labelled_row(forecasts, raw):
         assert np.allclose(final.to_numpy(), expected.to_numpy())
 
 
-# ── 1e: the forecast starts from the newest row ───────────────────────────────
+# ── Stale start: the forecast starts from the newest row ──────────────────────
 
 
 @pytest.mark.parametrize("model_name", ["xgboost", "lightgbm"])
@@ -164,3 +163,10 @@ def test_the_first_step_is_predicted_from_the_newest_rows_features(forecasts, ra
     assert len(first_steps) == 2
     for X in first_steps:
         assert X["close_lag_1"].iloc[0] == pytest.approx(raw["close"].iloc[-2])
+
+
+def test_an_unknown_model_family_is_refused():
+    """Anything other than "xgboost" used to become a LightGBM regressor,
+    whose forecasts were then stored under the name it was asked for."""
+    with pytest.raises(ValueError, match="unknown model family"):
+        boosting._new_regressor("xgb")
