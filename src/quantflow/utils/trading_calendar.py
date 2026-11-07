@@ -97,6 +97,24 @@ def previous_trading_day(day) -> pd.Timestamp:
     return d.normalize() - TRADING_DAY
 
 
+def last_completed_session(now) -> pd.Timestamp:
+    """The latest NYSE trading day whose daily bar is final at `now`, as a
+    naive midnight.
+
+    Today counts once DAILY_BAR_FINAL_AFTER has passed in New York; before
+    that, or on a day the exchange is shut, it is the trading day before. A
+    naive `now` is read as UTC.
+    """
+    ts = pd.Timestamp(now)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    local = ts.tz_convert(EXCHANGE_TZ)
+    today = local.tz_localize(None).normalize()
+    if TRADING_DAY.is_on_offset(today) and local.time() >= DAILY_BAR_FINAL_AFTER:
+        return today
+    return previous_trading_day(today)
+
+
 def next_trading_days(after, n: int) -> pd.DatetimeIndex:
     """The n NYSE trading days strictly after `after`, as naive midnights.
 

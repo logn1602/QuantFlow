@@ -112,9 +112,13 @@ The loaders used to keep each date's first row by timestamp instead. Seeded
 dates were fine, since their midnight daily bar sorts first, but every date
 after the seed had only 15-minute bars, so its "close" was the close of the
 09:30 bar. The daily refresh now also stores Yahoo's daily bar after every
-close, and `python -m quantflow.ingestion.backfill` fills in the dates
-between the seed and that change. Run it with `--dry-run` first; a real run
-prints an undo query that deletes exactly the rows it wrote.
+close, and `python -m quantflow.ingestion.backfill` gives every NYSE trading
+day without a daily bar its official one, from each ticker's first stored date
+to the last completed session: the dates with only 15-minute bars, and the
+trading days with no bars at all (a gap between the seed and the first
+15-minute refresh, or days the refresh did not run). Run it with `--dry-run`
+first, which lists the empty days it would fill; a real run prints an undo
+query that deletes exactly the rows it wrote.
 
 **Prices are stored raw.** Both fetchers request `auto_adjust=False`: bars
 are split-adjusted, as Yahoo serves everything, but not dividend-adjusted.

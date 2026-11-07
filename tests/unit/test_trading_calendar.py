@@ -13,6 +13,7 @@ import pytest
 
 from quantflow.utils.trading_calendar import (
     NYSEHolidayCalendar,
+    last_completed_session,
     next_trading_days,
     previous_trading_day,
 )
@@ -112,3 +113,26 @@ def test_the_previous_trading_day_accepts_a_tz_aware_timestamp():
     """Only the calendar date counts, as for next_trading_days."""
     got = previous_trading_day(pd.Timestamp("2026-11-09 20:00", tz="UTC"))
     assert got == pd.Timestamp("2026-11-06")
+
+
+@pytest.mark.parametrize(
+    "now, expected",
+    [
+        ("2026-11-06 18:00", "2026-11-06"),  # Friday, after the bar is final
+        ("2026-11-06 16:30", "2026-11-05"),  # Friday, closed but not yet final
+        ("2026-11-07 12:00", "2026-11-06"),  # Saturday
+        ("2026-11-09 09:00", "2026-11-06"),  # Monday, before the open
+        ("2026-11-26 20:00", "2026-11-25"),  # Thanksgiving evening
+    ],
+)
+def test_the_last_completed_session_is_the_latest_final_daily_bar(now, expected):
+    """Today counts once DAILY_BAR_FINAL_AFTER (17:00 New York) has passed."""
+    at = pd.Timestamp(now, tz="America/New_York")
+    assert last_completed_session(at) == pd.Timestamp(expected)
+
+
+def test_a_naive_time_for_the_last_completed_session_is_read_as_utc():
+    # 23:30 UTC is 18:30 in New York in November: Friday's bar is final.
+    assert last_completed_session(pd.Timestamp("2026-11-06 23:30")) == pd.Timestamp(
+        "2026-11-06"
+    )

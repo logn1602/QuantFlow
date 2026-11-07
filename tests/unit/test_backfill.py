@@ -1,12 +1,14 @@
 """tests/unit/test_backfill.py
 
 Covers quantflow.ingestion.backfill: the one-off fill of Yahoo's daily bars
-for dates that have only 15-min bars.
+for every NYSE trading day that has none, from a ticker's first stored date
+to the last completed session.
 
-What has to hold: a dry run writes nothing; a real run writes only dates that
-have 15-min bars and no daily bar; a second run writes nothing; and every row
-written carries the batch's inserted_at, so the printed undo query deletes
-exactly those rows.
+What has to hold: a dry run writes nothing and lists what it would fill; a
+real run writes a daily bar for each date that has only 15-min bars and for
+each trading day with no bars at all, and nothing after the last completed
+session; a second run writes nothing; and every row written carries the
+batch's inserted_at, so the printed undo query deletes exactly those rows.
 """
 
 import numpy as np
@@ -15,10 +17,16 @@ import pytest
 
 from quantflow.ingestion import backfill, yfinance_fetcher
 
-NOW = pd.Timestamp("2026-11-09 18:00", tz="UTC")  # a Monday, after the close
+# 18:00 New York on the 16th: that day's session is final.
+NOW = pd.Timestamp("2026-04-16 22:00", tz="UTC")
 SEEDED = ["2026-04-08", "2026-04-09", "2026-04-10"]
 INTRADAY_ONLY = ["2026-04-13", "2026-04-14", "2026-04-15"]
 NO_BARS_AT_ALL = "2026-04-16"
+YAHOO_DAYS = pd.bdate_range("2026-04-08", "2026-04-17")  # close 200 on the 8th, +1/day
+
+
+def _ts(days):
+    return [pd.Timestamp(day, tz="UTC") for day in days]
 
 
 @pytest.fixture
@@ -30,13 +38,9 @@ def stored(price_bars):
     return price_bars.frame(*groups)
 
 
-@pytest.fixture
-def yahoo(monkeypatch):
-    """Yahoo's daily bars for every weekday in the range, raw, naive-indexed."""
-    calls = []
-    days = pd.bdate_range("2026-04-13", "2026-04-16")
+def _yahoo_frame(days=YAHOO_DAYS):
     close = 200.0 + np.arange(len(days), dtype=float)
-    frame = pd.DataFrame(
+    return pd.DataFrame(
         {
             "Open": close,
             "High": close + 1,
@@ -48,43 +52,118 @@ def yahoo(monkeypatch):
         index=days,
     )
 
+
+@pytest.fixture
+def yahoo(monkeypatch):
+    """Yahoo's daily bars for every weekday from the 8th to the 17th, raw,
+    naive-indexed. Returns the calls made."""
+    calls = []
+
     def fake_download(ticker, **kwargs):
         calls.append(kwargs)
-        return frame.copy()
+        return _yahoo_frame()
 
     monkeypatch.setattr(yfinance_fetcher.yf, "download", fake_download)
     return calls
 
 
-def test_a_dry_run_writes_nothing_and_reports_rows_per_ticker(
+def test_a_dry_run_writes_nothing_and_lists_what_it_would_fill(
     fake_db, read_tables, stored, yahoo, capsys
 ):
     read_tables["raw_prices"] = stored
     planned = backfill.run(["AAPL"], dry_run=True, now=NOW)
 
     out = capsys.readouterr().out
-    assert planned == {"AAPL": 3}
+    assert planned == {"AAPL": 4}
     assert fake_db.inserts("raw_prices") == []
-    assert "AAPL" in out
-    assert "3 rows to insert" in out
-    assert "2026-04-13 to 2026-04-15" in out
-    assert "1 trading date with no stored bars" in out
+    assert "AAPL   4 rows to insert, 2026-04-13 to 2026-04-16" in out
+    assert "3 dates with only 15-min bars" in out
+    assert "1 trading day with no bars: 2026-04-16" in out
+    assert "0 dates Yahoo has no final daily bar for" in out
 
 
-def test_a_run_writes_only_dates_that_have_15min_bars_and_no_daily_bar(
+def test_a_run_writes_daily_bars_for_dates_that_have_only_15min_bars(
     fake_db, read_tables, stored, yahoo
 ):
+    read_tables["raw_prices"] = stored
+    backfill.run(["AAPL"], now=NOW)
+
+    rows = {r["ts"]: r for r in fake_db.tables["raw_prices"]}
+    assert set(_ts(INTRADAY_ONLY)) <= set(rows)
+    closes = [rows[ts]["close"] for ts in _ts(INTRADAY_ONLY)]
+    assert closes == [203.0, 204.0, 205.0]  # raw Close, not Adj Close
+    assert yahoo[0]["auto_adjust"] is False
+
+
+def test_a_trading_day_with_no_bars_at_all_is_filled_in_the_same_batch(
+    fake_db, read_tables, stored, yahoo, capsys
+):
+    """It used to be counted and left empty, so the models read the day
+    before and the day after it as consecutive trading days."""
     read_tables["raw_prices"] = stored
     written = backfill.run(["AAPL"], now=NOW)
 
     rows = fake_db.tables["raw_prices"]
-    assert written == {"AAPL": 3}
-    assert [r["ts"] for r in rows] == [
-        pd.Timestamp(day, tz="UTC") for day in INTRADAY_ONLY
+    assert written == {"AAPL": 4}
+    assert [r["ts"] for r in rows] == _ts([*INTRADAY_ONLY, NO_BARS_AT_ALL])
+    assert {r["inserted_at"] for r in rows} == {NOW.to_pydatetime()}
+    assert backfill.undo_sql(NOW.to_pydatetime()) in capsys.readouterr().out
+
+
+def test_empty_days_are_looked_for_from_the_first_stored_date(
+    fake_db, read_tables, price_bars, yahoo, capsys
+):
+    """A seed missing a day mid-history has the same hole as a missed refresh.
+    Consecutive empty trading days are listed as one range."""
+    read_tables["raw_prices"] = price_bars.frame(
+        price_bars.daily("2026-04-08", 100.0),
+        price_bars.session("2026-04-15", [101.0, 101.5]),
+    )
+    backfill.run(["AAPL"], now=NOW)
+
+    written = [r["ts"] for r in fake_db.tables["raw_prices"]]
+    assert written == _ts(
+        ["2026-04-09", "2026-04-10", "2026-04-13", "2026-04-14", "2026-04-15",
+         "2026-04-16"]
+    )  # fmt: skip
+    out = capsys.readouterr().out
+    assert "5 trading days with no bars: 2026-04-09 to 2026-04-14, 2026-04-16" in out
+
+
+def test_nothing_after_the_last_completed_session_is_wanted(
+    fake_db, read_tables, stored, price_bars, yahoo, capsys
+):
+    """11:00 New York on the 16th: that session is still trading, so its
+    15-min bars are not yet a date to fill, and it is not reported as one
+    Yahoo has no final bar for."""
+    read_tables["raw_prices"] = price_bars.frame(
+        stored.drop(columns=["date", "ds", "y"]).to_dict("records"),
+        price_bars.session(NO_BARS_AT_ALL, [102.0, 102.5]),
+    )
+    backfill.run(["AAPL"], now=pd.Timestamp("2026-04-16 15:00", tz="UTC"))
+
+    assert [r["ts"] for r in fake_db.tables["raw_prices"]] == _ts(INTRADAY_ONLY)
+    assert "0 dates Yahoo has no final daily bar for" in capsys.readouterr().out
+
+
+def test_a_trading_day_yahoo_has_no_bar_for_is_listed_and_not_written(
+    fake_db, read_tables, stored, monkeypatch, capsys
+):
+    """What a one-off closure looks like: the calendar expects a session (the
+    2025-01-09 national day of mourning, say), and Yahoo has no bar for it."""
+    without_the_14th = _yahoo_frame().drop(pd.Timestamp("2026-04-14"))
+    monkeypatch.setattr(
+        yfinance_fetcher.yf, "download", lambda t, **k: without_the_14th.copy()
+    )
+    read_tables["raw_prices"] = stored
+    backfill.run(["AAPL"], now=NOW)
+
+    assert pd.Timestamp("2026-04-14", tz="UTC") not in [
+        r["ts"] for r in fake_db.tables["raw_prices"]
     ]
-    assert [r["close"] for r in rows] == [200.0, 201.0, 202.0]  # raw, not Adj Close
-    assert pd.Timestamp(NO_BARS_AT_ALL, tz="UTC") not in [r["ts"] for r in rows]
-    assert yahoo[0]["auto_adjust"] is False
+    assert "1 date Yahoo has no final daily bar for: 2026-04-14" in (
+        capsys.readouterr().out
+    )
 
 
 def test_every_row_carries_the_batch_timestamp_the_undo_query_uses(
@@ -148,7 +227,7 @@ def test_a_failure_part_way_still_prints_the_undo_for_rows_already_written(
         backfill.run(["AAPL", "MSFT"], now=NOW)
 
     out = capsys.readouterr().out
-    assert len(fake_db.tables["raw_prices"]) == 3  # AAPL's rows were committed
+    assert len(fake_db.tables["raw_prices"]) == 4  # AAPL's rows were committed
     assert backfill.undo_sql(NOW.to_pydatetime()) in out
 
 
@@ -174,7 +253,7 @@ def test_a_tz_aware_yahoo_index_still_matches_the_stored_dates(price_bars):
         index=index,
     )  # fmt: skip
 
-    plan = backfill.plan_ticker("AAPL", stored, yahoo)
+    plan = backfill.plan_ticker("AAPL", stored, yahoo, pd.Timestamp("2026-04-13"))
     assert [r["close"] for r in plan.rows] == [200.0]
     assert plan.no_yahoo_bar == []
 
@@ -219,6 +298,19 @@ def test_one_ticker_without_yahoo_data_does_not_stop_the_others(
 def test_a_ticker_with_nothing_to_fill_does_not_download(
     fake_db, read_tables, price_bars, yahoo
 ):
-    read_tables["raw_prices"] = price_bars.frame(price_bars.daily("2026-04-08", 1.0))
+    every_day = pd.bdate_range("2026-04-08", NO_BARS_AT_ALL)
+    read_tables["raw_prices"] = price_bars.frame(
+        [price_bars.daily(day.date().isoformat(), 1.0) for day in every_day]
+    )
     assert backfill.run(["AAPL"], now=NOW) == {"AAPL": 0}
     assert yahoo == []
+
+
+def test_a_ticker_with_no_stored_bars_is_left_for_the_seed(
+    fake_db, read_tables, yahoo, capsys
+):
+    """There is no first stored date to look for empty days from."""
+    read_tables["raw_prices"] = pd.DataFrame(columns=["ts"])
+    assert backfill.run(["AAPL"], now=NOW) == {"AAPL": 0}
+    assert yahoo == []
+    assert "no stored bars" in capsys.readouterr().out

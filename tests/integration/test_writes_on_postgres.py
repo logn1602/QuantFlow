@@ -5,13 +5,15 @@ The write-path claims the unit tests can only fake, checked on real Postgres:
   - a multi-row INSERT ... ON CONFLICT DO NOTHING reports only the rows it
     wrote, across chunks, which is what every writer's count now relies on,
     and writes a key repeated inside one INSERT once;
-  - the backfill's undo query deletes exactly the rows one batch wrote;
+  - the backfill's undo query deletes exactly the rows one batch wrote,
+    including a trading day it filled from nothing;
   - replacing a ticker's indicators rolls back the delete if an insert fails,
     and two runs replacing them at once both succeed;
   - the daily-bar rule works on the types the real driver returns;
   - the model features line up with prices whatever the session time zone;
   - the ensemble reads only each base model's latest stored run;
-  - save_anomalies counts only the rows Postgres wrote.
+  - save_anomalies counts only the rows Postgres wrote;
+  - the read-only diagnostics in scripts/diagnostics/ run end to end.
 
 Needs a disposable local Postgres, never the live database:
 
@@ -148,8 +150,9 @@ def test_a_headline_two_feeds_return_at_once_is_written_and_counted_once(pg):
 
 
 def test_the_backfill_undo_deletes_exactly_the_rows_it_wrote(pg, monkeypatch, capsys):
-    # A seeded daily bar, two dates with only 15-min bars, and a daily bar
-    # some other run wrote with DEFAULT NOW().
+    # A seeded daily bar, two dates with only 15-min bars, a daily bar some
+    # other run wrote with DEFAULT NOW(), and the 16th, a trading day with no
+    # bars at all.
     session = [
         pd.Timestamp(f"{day} 09:30", tz="America/New_York").tz_convert("UTC")
         for day in ("2026-04-13", "2026-04-14")
@@ -160,23 +163,24 @@ def test_the_backfill_undo_deletes_exactly_the_rows_it_wrote(pg, monkeypatch, ca
     prices.insert_bars(rows + _bars(["2026-04-15"]))
     before = _count(pg, "SELECT count(*) FROM raw_prices")
 
-    days = pd.bdate_range("2026-04-13", "2026-04-15")
+    days = pd.bdate_range("2026-04-13", "2026-04-16")
     yahoo = pd.DataFrame(
-        {c: np.full(3, 200.0) for c in ("Open", "High", "Low", "Close", "Adj Close")}
-        | {"Volume": np.full(3, 5e6)},
+        {c: np.full(4, 200.0) for c in ("Open", "High", "Low", "Close", "Adj Close")}
+        | {"Volume": np.full(4, 5e6)},
         index=days,
     )
     monkeypatch.setattr(yfinance_fetcher.yf, "download", lambda t, **k: yahoo.copy())
 
-    now = pd.Timestamp("2026-11-09 18:00:00.123456", tz="UTC")
-    assert backfill.run(["AAPL"], now=now) == {"AAPL": 2}
-    assert _count(pg, "SELECT count(*) FROM raw_prices") == before + 2
+    # 18:00 New York on the 16th, so its session is the last completed one.
+    now = pd.Timestamp("2026-04-16 22:00:00.123456", tz="UTC")
+    assert backfill.run(["AAPL"], now=now) == {"AAPL": 3}  # the 13th, 14th and 16th
+    assert _count(pg, "SELECT count(*) FROM raw_prices") == before + 3
 
     undo = backfill.undo_sql(now.to_pydatetime())
     delete = undo[undo.index("DELETE FROM") :]
     with pg.begin() as conn:
         deleted = conn.execute(text(delete)).rowcount
-    assert deleted == 2
+    assert deleted == 3  # the empty day's row too, and not the other run's bar
     assert _count(pg, "SELECT count(*) FROM raw_prices") == before
 
 
@@ -353,3 +357,29 @@ def test_saving_anomalies_counts_only_rows_written(pg):
     )
     assert anomalies.save_anomalies(flags) == 1
     assert _count(pg, "SELECT count(*) FROM anomalies") == 1
+
+
+def test_the_diagnostics_run_read_only_on_postgres(pg, monkeypatch, tmp_path):
+    """scripts/diagnostics/run_1a_diagnostics.py, end to end: its read-only
+    transaction is the first thing on the connection, all four queries run,
+    and the results file has one table per query."""
+    import importlib.util
+    import sys
+
+    script = ROOT / "scripts" / "diagnostics" / "run_1a_diagnostics.py"
+    spec = importlib.util.spec_from_file_location("run_1a_diagnostics", script)
+    assert spec and spec.loader
+    diagnostics = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, diagnostics)
+    spec.loader.exec_module(diagnostics)
+    monkeypatch.setattr(diagnostics, "get_engine", lambda: pg)
+
+    prices.insert_bars(_bars(["2026-04-09", "2026-04-10"]))
+    out = tmp_path / "results.md"
+    assert diagnostics.main(["--live", "--out", str(out)]) == 0
+
+    text = out.read_text(encoding="utf-8")
+    assert text.count("### ") == 4
+    # Query 1 on this test's two daily bars: two dates, both with a daily bar.
+    assert "| AAPL | 2026-04-09 | 2026-04-10 | 2 | 2 | 0 |" in text
+    assert _count(pg, "SELECT count(*) FROM raw_prices") == 2  # nothing written
