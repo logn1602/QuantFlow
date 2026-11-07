@@ -20,7 +20,10 @@ config ──> db ──> ingestion
 The one rule enforced by the layout: **`models` depends on `evaluation`, never
 the reverse.** Scoring code must not be able to reach into training internals,
 because that is the mechanism by which an evaluation quietly starts measuring
-something other than generalisation.
+something other than generalisation. `tests/unit/test_package_boundaries.py`
+parses every module in `evaluation/`, imports inside functions included, and
+fails on any import of `quantflow.models`. The backtest run, which needs the
+ensemble, lives in `pipelines/backtest.py` for that reason.
 
 That constraint has a visible cost. `evaluation.out_of_fold` needs a fitting
 function, and the only fitter in the project is the NNLS meta-learner in
@@ -227,9 +230,10 @@ just before one still lists that day.
 
 ### SQL in `db/`
 
-Every read of `raw_prices` and most writes live under `quantflow.db`. The
-exceptions sit beside their callers: the anomaly-flag and backtest-result
-writes, and some feature, display and evaluation queries. `raw_prices` has
+Every read of `raw_prices`, the feature matrix's reads of the derived tables,
+and every write except the anomaly flags live under `quantflow.db`. The other
+exceptions are display queries: the command-line `--show` and `--compare`
+helpers beside each stage, and the dashboard. `raw_prices` has
 one definition of a trading-day bar, `daily_bars`, and every reader is a
 projection of it: daily OHLCV indexed by each date's 00:00 UTC timestamp for
 the indicator engine, close and volume for anomaly detection, a `ds`/`y`
@@ -298,13 +302,11 @@ imported without live credentials and therefore cannot be unit tested. Its
 coverage is 0% and is excluded from the coverage report rather than counted as
 a gap.
 
-### 6. Duplicated work in the backtest
+### 6. Duplicated work in the backtest (fixed in Phase 2)
 
-`evaluation/backtest.py` calls `tune_and_train_meta`, discards both return
-values, and then calls `out_of_fold_meta_predictions` — which repeats the
-entire expanding-window loop that `tune_and_train_meta` just ran internally.
-The first call survives only for its logging side effect. That is the full
-meta-learner fit done twice per ticker.
+The backtest called `tune_and_train_meta` for its log lines and threw the
+results away, running the meta-learner's whole out-of-fold loop twice per
+ticker. It now runs once (`tests/unit/test_backtest_pipeline.py`).
 
 ### 7. Anomaly table duplication
 
@@ -328,8 +330,7 @@ Postgres instance. Each of these breaks at a different point.
 chunk of up to 1,000 rows (`db/batch.py`), comfortable for eight tickers and
 well beyond. At a few hundred tickers, `COPY` into a staging table with a merge
 is the standard next step. It is a contained change because almost every write
-goes through `db/`; the anomaly flags and the backtest results are the
-exceptions.
+goes through `db/`; the anomaly flags are the exception.
 
 **Feature computation.** Every stage recomputes indicators over full history on
 every run. At eight tickers this is seconds. The shape that survives is

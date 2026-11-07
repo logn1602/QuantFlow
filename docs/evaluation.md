@@ -553,9 +553,12 @@ failing on the code before it, as in Phase 1:
   window and reason are tagged.
 - The grid's validation origins: every day-7 target falls before the first test
   target.
-- Features: the existing perturbation test extended to the pure feature function, with
-  anomalies and sentiment included (changing any later price or article moves no
-  earlier feature); "not collected" versus "no news"; the three sentiment definitions.
+- Features: given a history, the pure feature function gives what the live run reads
+  for it (an identity test against the stored-table path); a later price never moves
+  an earlier indicator, but it can move an earlier anomaly score, whose IQR fences use
+  the whole history the function is given, which is why the harness cuts the history
+  at each origin before building features (both pinned by tests); "not collected"
+  versus "no news"; the three sentiment definitions.
 - The live path: the boosters' live forecast is built from the same feature function
   and recursive-forecast function the harness calls; `load_features` no longer reads the
   indicator and anomaly tables.
