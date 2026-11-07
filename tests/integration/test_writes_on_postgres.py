@@ -10,7 +10,8 @@ The write-path claims the unit tests can only fake, checked on real Postgres:
     and two runs replacing them at once both succeed;
   - the daily-bar rule works on the types the real driver returns;
   - the model features line up with prices whatever the session time zone;
-  - the ensemble reads only each base model's latest stored run.
+  - the ensemble reads only each base model's latest stored run;
+  - save_anomalies counts only the rows Postgres wrote.
 
 Needs a disposable local Postgres, never the live database:
 
@@ -36,6 +37,7 @@ from quantflow.db import prices
 from quantflow.db.batch import insert_rows
 from quantflow.db.forecasts import load_base_forecasts
 from quantflow.db.indicators import replace_indicators
+from quantflow.features import anomalies
 from quantflow.features.engineering import load_features
 from quantflow.features.sentiment import save_sentiment
 from quantflow.ingestion import backfill, yfinance_fetcher
@@ -339,3 +341,15 @@ def test_the_ensemble_reads_only_each_models_latest_run(pg):
     )
     assert by_model.to_dict() == {"arima": [101.0], "prophet": [102.0]}
     assert len(df) == 6
+
+
+def test_saving_anomalies_counts_only_rows_written(pg):
+    """On the schema's unique (ticker, ts), ON CONFLICT DO NOTHING skips a
+    repeated row; save_anomalies used to count it anyway."""
+    ts = pd.Timestamp("2026-04-10", tz="UTC")
+    flags = pd.DataFrame(
+        {"ticker": "AAPL", "close": 100.0, "zscore": 3.2, "flag": "HIGH"},
+        index=pd.DatetimeIndex([ts, ts], name="ts"),
+    )
+    assert anomalies.save_anomalies(flags) == 1
+    assert _count(pg, "SELECT count(*) FROM anomalies") == 1

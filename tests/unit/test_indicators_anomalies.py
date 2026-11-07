@@ -145,3 +145,17 @@ def test_anomalies_are_flagged_on_trading_dates_not_15min_bars(
     assert not flagged.empty
     assert (flagged.index == flagged.index.normalize()).all(), "an intraday flag"
     assert pd.Timestamp(SESSION_DAYS[1], tz="UTC") in flagged.index
+
+
+def test_saving_anomalies_counts_only_rows_written(fake_db):
+    """save_anomalies added one to its count per INSERT sent, so a row that ON
+    CONFLICT DO NOTHING skipped was still reported as written. A run with no
+    conflicts was counted right, which is the live table today: it has no
+    unique key on (ticker, ts) yet. A fresh install has one."""
+    ts = pd.Timestamp("2026-04-10", tz="UTC")
+    flags = pd.DataFrame(
+        {"ticker": "AAPL", "close": 100.0, "zscore": 3.2, "flag": "HIGH"},
+        index=pd.DatetimeIndex([ts, ts], name="ts"),
+    )
+    assert anomalies.save_anomalies(flags) == 1
+    assert len(fake_db.tables["anomalies"]) == 1
