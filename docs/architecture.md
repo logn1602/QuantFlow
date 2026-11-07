@@ -159,10 +159,25 @@ daily bars. The 09:45 run pauses the intraday price jobs on the day a split
 takes effect, before the session's first 15-minute bar is final; the 16:20
 run comes before the model jobs. These cron jobs run however late they
 start, so a laptop that wakes after 16:20 checks before any model job still
-due. While the last answer is a break, the jobs that read prices
-(indicators, anomalies, both model jobs, the ensemble and the backtest) log
-why and skip. Ingestion and sentiment keep running. A ticker the guard could
-not check changes nothing there: a break stays, and no pass is confirmed.
+due.
+
+The jobs that read prices (indicators, anomalies, both model jobs, the
+ensemble and the backtest) then follow the guard's last answer:
+
+- After a run that checked every ticker and found no break, they run, and
+  that run's time is kept as the last full pass.
+- After a break, they log why and skip, until a run checks every ticker and
+  finds none.
+- After a run that could not check every ticker (Yahoo returned nothing for
+  one, a check raised, or the run failed), they keep running only if the last
+  full pass is from the current or previous NYSE trading day, in New York
+  time: a Monday-morning hiccup reuses Friday's pass. Otherwise they log why
+  and skip, as after a break, until a run checks every ticker. A break
+  already found stays in force either way.
+
+The last full pass is kept in memory, so after a restart the price jobs wait
+until a run checks every ticker, normally the one at startup. Ingestion and
+sentiment keep running throughout.
 
 **Forecast dates follow the NYSE calendar.** `utils/trading_calendar.py`
 builds it from pandas' holiday rules, so it needs no calendar package, and
