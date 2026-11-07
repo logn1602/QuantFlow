@@ -44,9 +44,10 @@ trading dates per ticker from 2024-04-10):
 
 | | Origins | Dates | Notes |
 |---|---|---|---|
-| Test origins | 25, every 5 trading days | 2026-05-07 to 2026-10-28 | Target dates 2026-05-08 to 2026-11-06, about six months. 521 training rows at the first origin, 641 at the last. Every reported number comes from these, scored once per phase. |
-| Warmup origins | 12, every 5 trading days | 2026-02-10 to 2026-04-30 | Only to fit the ensemble's first weights (section 5). Never scored. |
-| Validation origins | 42, every 5 trading days | 2025-07-08 to 2026-04-30 | Reserved for Phase 3: every keep-or-drop decision is made here, never on the test origins. 311 training rows at the first. Not run in Phase 2. They include the warmup origins, which is fine: both sit before the test window. Prophet's yearly seasonality is off at all but the last 3, so Prophet settings chosen here may not carry over. |
+| Test origins | 25, every 5 trading days | 2026-05-07 to 2026-10-28 | Target dates 2026-05-08 to 2026-11-06, about six months. 521 training rows at the first origin, 641 at the last. Reported, never used to choose (below). |
+| Warmup origins | 12, every 5 trading days | 2026-02-10 to 2026-04-30 | Only to fit the ensemble's first weights for the test origins (section 5). Never scored. |
+| Validation origins | 42, every 5 trading days | 2025-06-30 to 2026-04-23 | Every keep-or-drop decision is made here (below). The last one's day-7 target is 2026-05-04, before the first test target (2026-05-08), so no choice sees a test-date close. 306 training rows at the first. Prophet's yearly seasonality is on at only the last 2, so Prophet settings chosen here may not carry over. |
+| Validation warmup | 12, every 5 trading days | 2025-04-02 to 2025-06-23 | Only to fit the ensemble's first weights for the validation origins, so the ensemble is scored on all 42 like every other model. 246 training rows at the first. Never scored. |
 
 That is 25 forecasts per ticker, model and horizon, 200 per model and horizon across
 the 8 tickers.
@@ -56,6 +57,35 @@ two consecutive origins overlap by one or two days, so their errors are correlat
 Spread is therefore reported as quartiles, not as a standard error, and the significance
 test in section 3 allows for the overlap. Alternatives: every 7 trading days (18
 origins, no overlap), or twelve months of origins (50, about twice the runtime).
+
+### The rule for the test dates
+
+Decided by the owner on 2026-11-07, and binding on Phases 2 to 4:
+
+- **Every keep-or-drop decision uses only the 42 validation dates.** That covers
+  Phase 3's experiments, whether the news features stay, and the Checkpoint 2b decision
+  on switching the live ensemble to the new weights (D2, settled by the rule in section
+  15 before the test dates are scored).
+- **Test-date results are reported, never used to choose.** If something kept looks
+  worse on the test dates, it stays kept, and the README says so.
+- **The README states how many times the test dates were scored, and in which
+  phases.** Every scoring is counted: the CLI scores the validation dates unless it is
+  given `--window test` with a reason, tags such a run `window=test` in MLflow, and each
+  one is entered in the ledger below. One scoring is one run of the harness on the test
+  dates, however many models or variants it holds.
+- **Phase 2 scores the test dates twice**, both after every Phase 2 choice is settled
+  on the validation dates: the current system (R0) and the Phase 2 result.
+- **The 2d corrections are not choices.** Counting news from when it reached the
+  database, keeping missing values missing, and ignoring the bad rows ship because they
+  make training match what the live run sees, whatever either window shows. Their
+  effects are measured on the validation dates and reported, not used to keep or drop
+  them.
+
+Test-date ledger:
+
+| # | Date | Phase | Commit | MLflow run | What was scored |
+|---|---|---|---|---|---|
+| | | | | | None yet. |
 
 ### How a run flows
 
@@ -319,9 +349,9 @@ Proposed:
   Origin `o - 5`'s horizons 6 and 7 fall after `o`, so they are left out. That is about
   80 rows for 4 weights, shared across horizons; separate weights per horizon would
   leave about 12 rows each, which is a Phase 3 candidate.
-- **Live, the same rule** with `o` = today, if Checkpoint 2b approves the switch
-  (decision D2, decided with the new weights measured against the old ones on the same
-  cells): the ensemble step refits the four base models at the 12 grid origins before
+- **Live, the same rule** with `o` = today, if the switch is approved (decision D2:
+  settled on the validation dates by the rule in section 15, before the test dates are
+  scored): the ensemble step refits the four base models at the 12 grid origins before
   today and fits the weights on those rows. About 26 seconds per ticker, so the daily
   workflow takes about 3.5 minutes longer. It ships with the second merge (decision
   D11).
@@ -387,9 +417,8 @@ with Phase 4 too.
 - **Known caveats**, the same for every model and for naive: prices before 2026-04-10
   are dividend-adjusted as of that date, later ones raw (`architecture.md`, "Price
   data"); news coverage is whatever section 4's report finds.
-- **Test origins are scored once per phase** (decision D1a). Phase 3 keeps or drops
-  experiments on the validation origins only, so the test origins measure its final
-  model set without having chosen it.
+- **The test dates follow the rule in section 2**: reported, never used to choose,
+  every scoring counted in the ledger and in the README.
 
 ---
 
@@ -419,6 +448,9 @@ with Phase 4 too.
 - **Entry point**: `python -m quantflow.pipelines.evaluate` and `make evaluate`. It
   lives in `pipelines/` because it wires the models into the harness; `evaluation/`
   never imports `models`.
+- **Windows**: `--window validation`, the default, or `--window test --reason "..."`.
+  A test run without a reason is refused before any data is read. The window and the
+  reason are MLflow tags, and the report's header names the window.
 
 ---
 
@@ -516,7 +548,11 @@ failing on the code before it, as in Phase 1:
   `transaction_read_only` (the diagnostics tests, reused); plus an integration test on a
   throwaway local Postgres.
 - The CLI: params and metrics reach a faked MLflow; an exception ends the run as FAILED;
-  an MLflow failure exits non-zero with the files written.
+  an MLflow failure exits non-zero with the files written; the window defaults to
+  validation; `--window test` without a reason is refused before any data is read; the
+  window and reason are tagged.
+- The grid's validation origins: every day-7 target falls before the first test
+  target.
 - Features: the existing perturbation test extended to the pure feature function, with
   anomalies and sentiment included (changing any later price or article moves no
   earlier feature); "not collected" versus "no news"; the three sentiment definitions.
@@ -543,42 +579,49 @@ measurement can merge without changing anything the daily workflow does:
    path keeps reading the tables until D4 ships), the backtest's new entry point and the
    import guard, the splits.
 2. The harness, baselines, metrics, report, snapshot, CLI and MLflow logging.
-3. Verify on 1 ticker, then 3, on the snapshot (taken on your go-ahead, D5); then the
-   coverage report.
-4. **R0, the current code under the harness's cut**: all models, the old ensemble
-   weights (refitted at each origin on its own 30-day stack), naive and drift. Its news
-   features still use publish dates, so it slightly flatters today's boosters.
+3. Verify on 1 ticker, then 3, on the validation dates of the snapshot (taken on your
+   go-ahead, D5); then the coverage report.
+4. **R0 on the validation dates: the current code under the harness's cut.** All
+   models, the old ensemble weights (refitted at each origin on its own 30-day stack),
+   naive and drift. Its news features still use publish dates, so it slightly flatters
+   today's boosters.
 
 **`feat/evaluation-live`: the live changes, branched from `feat/evaluation`**
-5. One change per commit and one booster run per change (decision D12): **R1** bad
-   sentiment rows ignored; **R2** news availability (D7); **R3** no forward fill,
-   `has_news`, and the missing-news rules (D6); **R4** missing as missing for every
-   feature (F7); **R5** the ablation, R4 without the sentiment features.
-6. The rolling-origin ensemble weights and the in-process live features (D4). **R6**:
-   every model on the final commit, with the new weights beside the old ones on the
-   same cells.
+5. One change per commit and one booster run per change on the validation dates
+   (decision D12): **R1** bad sentiment rows ignored; **R2** news availability (D7);
+   **R3** no forward fill, `has_news`, and the missing-news rules (D6); **R4** missing
+   as missing for every feature (F7); **R5** the ablation, R4 without the sentiment
+   features. These measure the corrections; they do not decide them (section 2).
+6. The rolling-origin ensemble weights and the in-process live features (D4). **R6 on
+   the validation dates**: every model on the final commit, the new weights beside the
+   old ones on the same cells. D2 is settled here, by its rule.
+7. **The two test-date scorings**, entered in the ledger: **T1**, R0's commit (the
+   current system); **T2**, the final commit, with the new and old ensemble weights both
+   reported. Nothing is chosen after this point in Phase 2.
 
-Checkpoint 2b shows every run on the same snapshot and test origins: every ticker,
-every model, naive and drift included. On approval, `feat/evaluation` is pushed first;
-`feat/evaluation-live` follows once that is merged, with the live ensemble switch as
-D2 decides.
+Checkpoint 2b shows the validation runs (R0 to R6, with the D2 outcome) and the test
+scorings (T1, T2): every ticker, every model, naive and drift included. On approval,
+`feat/evaluation` is pushed first; `feat/evaluation-live` follows once that is merged,
+with the live ensemble switch as D2 settled.
 
 ### Runtime
 
 Measured on this laptop on a synthetic 648-day series (one origin, one ticker): features
 0.04 s, ARIMA 0.11 s, Prophet 0.81 s, XGBoost about 1 s (its first call is the slowest),
-LightGBM 0.17 s; about 2.2 s for everything.
+LightGBM 0.17 s; about 2.2 s for everything. The old ensemble's 30-day stack adds about
+2 s per origin where it is replayed.
 
-| Run | Work | Estimate |
-|---|---|---|
-| 1 ticker check | 37 origins | about 1.5 minutes |
-| R0 | 37 origins x 8 tickers, plus the old ensemble's 30-day stack at 25 origins | about 18 minutes |
-| R1 to R5 | boosters only, 25 origins x 8 tickers, each | about 3 minutes each |
-| R6 | 37 origins x 8 tickers, plus the NNLS fits | about 11 minutes |
+| Run | Window | Work | Estimate |
+|---|---|---|---|
+| 1 and 3 ticker checks | validation | 54 origins | about 2 and 6 minutes |
+| R0 | validation | 54 origins x 8 tickers, plus the old stack at 42 origins | about 27 minutes |
+| R1 to R5 | validation | boosters only, 42 origins x 8 tickers, each | about 4 minutes each |
+| R6 | validation | 54 origins x 8 tickers, plus the old stack at 42 origins | about 27 minutes |
+| T1, T2 | test | 37 origins x 8 tickers, plus the old stack at 25 origins, each | about 18 minutes each |
 
-About 45 minutes of runs in all. Memory stays well under 1 GB. The real runs replace
-these estimates in the checkpoint. The daily workflow gains about 3.5 minutes from the
-live ensemble refits, if D2 approves them (section 5).
+About two hours of runs in all, none longer than half an hour. Memory stays well under
+1 GB. The real runs replace these estimates in the checkpoint. The daily workflow gains
+about 3.5 minutes from the live ensemble refits, if D2 approves them (section 5).
 
 ---
 
@@ -631,8 +674,8 @@ Decided by the owner; the body above applies them.
 | | Decision |
 |---|---|
 | D1 | 25 test origins every 5 trading days (2026-05-07 to 2026-10-28), 12 warmup origins, h = 1..7, snapshot pinned at 2026-11-06. |
-| D1a | 42 validation origins (2025-07-08 to 2026-04-30) reserved for Phase 3's keep-or-drop decisions; test origins scored once per phase. |
-| D2 | The rolling-origin weights are built now; whether the live run switches to them is decided at Checkpoint 2b, with them measured against the old weights on the same cells. |
+| D1a | 42 validation origins (2025-06-30 to 2026-04-23, every day-7 target before the first test target) for every keep-or-drop decision, with 12 validation-warmup origins (2025-04-02 to 2025-06-23) for the ensemble. As first decided the window ended 2026-04-30, whose targets reach 2026-05-08 and 05-11, two test dates; moved back one origin on 2026-11-07. |
+| D2 | The rolling-origin weights are built now. The live run switches to them if, on the 42 validation dates, their mean absolute percentage error over every cell (all tickers and horizons) is no higher than the old weights'; a tie goes to the new weights, which are fitted on the task they are used for. Settled on the validation run (R6) before the test dates are scored; Checkpoint 2b shows the comparison. |
 | D3 | The backtest stays on the 30-day stack until Phase 4. If the live ensemble switches, its 30-day dashboard figure stops being written. |
 | D4 | Live features built in-process through the harness's function (second branch). |
 | D5 | One read-only snapshot export per snapshot, on the owner's go-ahead, into git-ignored `eval_snapshots/`; the coverage report runs on it first. |
@@ -642,7 +685,8 @@ Decided by the owner; the body above applies them.
 | D9 | No manual GitHub workflow for the evaluation now. |
 | D10 | Prediction-band coverage and width reported per horizon. |
 | D11 | Two branches: `feat/evaluation` (measurement, no live change) merges first, then `feat/evaluation-live`. |
-| D12 | One change per commit and per run on the second branch. |
+| D12 | One change per commit and per run on the second branch, on the validation dates. |
+| D13 | The rule for the test dates (section 2): every keep-or-drop decision on the validation dates only, D2 included; test results reported, never used to choose, and anything kept stays kept if it looks worse there, as the README says; every test scoring counted (ledger, MLflow tag) and the count and phases stated in the README. Phase 2 scores the test dates twice (T1, T2). |
 
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
 origin's close) as a fifth stack column, so the ensemble can lean on it; not freezing
