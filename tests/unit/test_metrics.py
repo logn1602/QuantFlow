@@ -108,3 +108,72 @@ def test_regression_metrics_values_are_plain_floats():
     """numpy scalars serialise badly into psycopg2 and MLflow."""
     for value in regression_metrics([100.0, 200.0], [110.0, 180.0]).values():
         assert isinstance(value, float)
+
+
+# ── Rolling-origin measures (docs/evaluation.md, section 3) ───────────────────
+
+import math  # noqa: E402
+
+from quantflow.evaluation import metrics as m  # noqa: E402
+
+ORIGIN = [100.0, 100.0, 100.0, 100.0]
+ACTUAL = [101.0, 99.0, 100.0, 102.0]  # up, down, flat, up
+
+
+def test_directional_accuracy_leaves_out_moves_without_a_direction():
+    # The flat actual and the flat forecast are left out; the other two agree.
+    assert m.directional_accuracy(ORIGIN, ACTUAL, [102.0, 98.0, 101.0, 100.0]) == 100.0
+    assert m.directional_accuracy(ORIGIN[:2], ACTUAL[:2], [99.0, 98.0]) == 50.0
+
+
+def test_naive_has_no_directional_accuracy():
+    assert m.directional_accuracy(ORIGIN, ACTUAL, ORIGIN) is None
+
+
+def test_up_share_is_what_always_up_would_score():
+    assert m.up_share(ORIGIN, ACTUAL) == pytest.approx(200 / 3)
+
+
+@pytest.mark.parametrize(
+    ("model", "naive", "expected"),
+    [(1.0, 2.0, 0.5), (2.0, 2.0, 0.0), (3.0, 2.0, -0.5), (1.0, 0.0, None),
+     (math.nan, 2.0, None)],
+)  # fmt: skip
+def test_skill_against_naive(model, naive, expected):
+    assert m.skill(model, naive) == expected
+
+
+def test_band_coverage_counts_only_forecasts_with_a_band():
+    assert m.band_coverage([10, 12, 15], [9, 9, math.nan], [11, 11, 16]) == 50.0
+    assert m.band_coverage([10], [math.nan], [math.nan]) is None
+
+
+def test_band_width_is_relative_to_the_forecast():
+    assert m.band_width([100, 200], [98, 190], [102, 210]) == pytest.approx(7.0)
+
+
+def test_newey_west_adds_the_neighbour_correlation():
+    alternating = [1.0, -1.0, 1.0, -1.0]
+    assert m.newey_west_variance_of_mean(alternating, lag=0) == pytest.approx(0.25)
+    # gamma1 = -0.75, weight 1/2: (1 + 2 * 0.5 * -0.75) / 4
+    assert m.newey_west_variance_of_mean(alternating, lag=1) == pytest.approx(0.0625)
+
+
+def test_the_mean_difference_test_on_a_hand_worked_series():
+    result = m.mean_difference_test([-1, -2, -3, -1, -2, -3], lag=0)
+    # mean -2; centred values give gamma0 = 4/6, so se = sqrt(4/36) = 1/3.
+    assert result["mean"] == pytest.approx(-2.0)
+    assert result["se"] == pytest.approx(1 / 3)
+    assert result["t"] == pytest.approx(-6.0)
+    assert result["p"] < 0.01
+
+
+def test_the_mean_difference_test_edge_cases():
+    assert m.mean_difference_test([0.1, 0.2]) is None  # fewer than 3 origins
+    assert m.mean_difference_test([0.0] * 5)["p"] == 1.0  # identical errors
+    assert m.mean_difference_test([0.5] * 5)["p"] == 0.0  # always worse, no spread
+
+
+def test_holm_adjusts_in_order_and_never_decreases():
+    adjusted = m.holm({"arima": 0.01, "boost": 0.04, "prophet": 0.03})
+    assert adjusted == pytest.approx({"arima": 0.03, "prophet": 0.06, "boost": 0.06})
