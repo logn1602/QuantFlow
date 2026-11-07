@@ -5,6 +5,7 @@ APScheduler job runner. Runs the full QuantFlow pipeline on schedule.
 
 Jobs:
   - yFinance intraday      : every 15 min (market hours)
+  - Split guard            : at startup, 4:20 PM ET, and after the daily bars
   - yFinance daily bars    : daily after the close (5:05 PM ET)
   - Alpha Vantage intraday : every 15 min, offset by 5 min
   - Technical indicators   : every 15 min (after price fetch)
@@ -20,7 +21,7 @@ Usage:
 """
 
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -30,9 +31,20 @@ from quantflow import config
 from quantflow.config import FETCH_INTERVAL_MINUTES, TICKERS
 from quantflow.db.connection import test_connection
 from quantflow.db.forecasts import clear_forecasts as db_clear_forecasts
+from quantflow.ingestion import split_guard
+from quantflow.ingestion.yfinance_fetcher import DAILY_REFRESH_PERIOD
 from quantflow.utils.logger import get_logger
+from quantflow.utils.trading_calendar import DAILY_BAR_FINAL_AFTER, EXCHANGE_TZ
 
 logger = get_logger(__name__)
+
+# Before the 4:30 PM model chain, so a split revealed by the day's bars stops
+# it rather than being modelled.
+SPLIT_GUARD_AT = time(16, 20)
+# Five minutes after today's daily bar is final.
+DAILY_BARS_AT = (
+    datetime.combine(datetime.min, DAILY_BAR_FINAL_AFTER) + timedelta(minutes=5)
+).time()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -54,6 +66,31 @@ def _clear_model_forecasts(models: list[str], tickers: list[str] | None = None):
         f"{', '.join(models)} across {len(tickers)} tickers"
     )
     return deleted
+
+
+# ── Price-basis gate ──────────────────────────────────────────────────────────
+#
+# After a stock split, every row stored before it sits on the old share basis
+# (see ingestion/split_guard.py). Indicators, anomaly flags, forecasts and the
+# backtest computed from that mix would be wrong, and they are stored. So the
+# jobs that read prices skip while the split guard's last answer was a break.
+# The guard keeps no state of its own; this is the scheduler remembering its
+# last answer. It starts empty, and start() runs the guard before any job
+# that reads prices.
+
+_price_basis_error: str | None = None
+
+
+def _paused_for_prices(job: str) -> bool:
+    """True, after logging why, while stored prices are on more than one basis."""
+    if _price_basis_error is None:
+        return False
+    logger.error(
+        f"{job} skipped: {_price_basis_error}. It resumes once the split guard "
+        f"passes; the guard re-checks at {SPLIT_GUARD_AT:%H:%M} and after the "
+        f"daily bars ({DAILY_BARS_AT:%H:%M} New York time)."
+    )
+    return True
 
 
 # ── Job functions ─────────────────────────────────────────────────────────────
@@ -80,8 +117,40 @@ def run_yfinance_job():
         logger.exception(f"yFinance job failed: {type(e).__name__}: {e}")
 
 
+def run_split_guard_job():
+    """Check stored prices against Yahoo's, and pause or resume the price jobs.
+
+    Only a basis break pauses them. Any other failure, such as the database
+    being unreachable, is logged and leaves the last answer standing, and so
+    does a pass that could not check every ticker while a break is outstanding.
+    """
+    global _price_basis_error
+    logger.info("--- Split guard job started ---")
+    try:
+        unchecked = split_guard.run()
+    except split_guard.PriceBasisError as e:
+        _price_basis_error = f"stored prices are on more than one basis ({e})"
+        logger.error(f"--- Split guard failed: {e}. Price jobs paused ---")
+        return
+    except Exception as e:
+        logger.exception(f"Split guard job failed: {type(e).__name__}: {e}")
+        return
+
+    if _price_basis_error is not None:
+        if unchecked:
+            logger.warning(
+                f"Split guard could not re-check {', '.join(unchecked)}; "
+                f"price jobs stay paused"
+            )
+            return
+        logger.info("Split guard passes again; price jobs resume")
+    _price_basis_error = None
+    logger.info("--- Split guard job done ---")
+
+
 def run_daily_bars_job():
-    """Store each date's official daily bar once the session is final.
+    """Store each date's official daily bar once the session is final, then
+    re-run the split guard on the result.
 
     Nothing in the model chain waits for this job. The 4:30 PM model jobs
     build today's bar from its 15-min bars, which closes within a few
@@ -92,16 +161,14 @@ def run_daily_bars_job():
     """
     logger.info("--- yFinance daily bars job started ---")
     try:
-        from quantflow.ingestion import split_guard
         from quantflow.ingestion.yfinance_fetcher import fetch_historical
 
-        results = fetch_historical(period="5d")
+        results = fetch_historical(period=DAILY_REFRESH_PERIOD)
         total = sum(results.values())
         logger.info(f"--- Daily bars job done: {total} rows inserted ---")
-        # Raises PriceBasisError on a split; logged below like any job failure.
-        split_guard.run()
     except Exception as e:
         logger.exception(f"Daily bars job failed: {type(e).__name__}: {e}")
+    run_split_guard_job()
 
 
 def run_alpha_vantage_job():
@@ -118,6 +185,8 @@ def run_alpha_vantage_job():
 
 def run_indicators_job():
     logger.info("--- Indicators job started ---")
+    if _paused_for_prices("Indicators job"):
+        return
     try:
         from quantflow.features.indicators import run as indicators_run
 
@@ -130,6 +199,8 @@ def run_indicators_job():
 
 def run_anomaly_job():
     logger.info("--- Anomaly detection job started ---")
+    if _paused_for_prices("Anomaly job"):
+        return
     try:
         from quantflow.features.anomalies import run as anomaly_run
 
@@ -154,6 +225,8 @@ def run_sentiment_job():
 
 def run_forecasting_job():
     logger.info("--- ARIMA/Prophet forecasting job started ---")
+    if _paused_for_prices("Forecasting job"):
+        return
     try:
         from quantflow.models.statistical import run as forecasting_run
 
@@ -166,6 +239,8 @@ def run_forecasting_job():
 
 def run_xgboost_job():
     logger.info("--- XGBoost/LightGBM job started ---")
+    if _paused_for_prices("XGBoost job"):
+        return
     try:
         from quantflow.models.boosting import run as xgb_run
 
@@ -179,6 +254,8 @@ def run_xgboost_job():
 def run_ensemble_job():
     """Stacking ensemble — runs after ARIMA/Prophet + XGBoost/LightGBM are done."""
     logger.info("--- Stacking Ensemble job started ---")
+    if _paused_for_prices("Ensemble job"):
+        return
     try:
         from quantflow.models.ensemble import run as ensemble_run
 
@@ -194,6 +271,8 @@ def run_ensemble_job():
 def run_backtest_job():
     """Backtesting — runs after ensemble forecasts are ready."""
     logger.info("--- Backtest job started ---")
+    if _paused_for_prices("Backtest job"):
+        return
     try:
         from quantflow.evaluation.backtest import run as backtest_run
 
@@ -219,6 +298,12 @@ def start():
     config.validate()
     config.require_or_exit()
 
+    try:
+        split_guard.configured_threshold()
+    except ValueError as e:
+        logger.error(f"{e}. Exiting.")
+        sys.exit(1)
+
     if not test_connection():
         logger.error("Cannot reach database. Check your .env DB settings. Exiting.")
         sys.exit(1)
@@ -233,11 +318,23 @@ def start():
         replace_existing=True,
     )
 
-    # ── Daily at 5:05 PM ET: official daily bars ─────────────────────────────
+    # ── Daily at 4:20 PM ET: split guard, before the model chain ─────────────
+    scheduler.add_job(
+        run_split_guard_job,
+        trigger=CronTrigger(
+            hour=SPLIT_GUARD_AT.hour, minute=SPLIT_GUARD_AT.minute, timezone=EXCHANGE_TZ
+        ),
+        id="split_guard",
+        replace_existing=True,
+    )
+
+    # ── Daily at 5:05 PM ET: official daily bars, then the split guard ───────
     # After DAILY_BAR_FINAL_AFTER (5:00 PM ET), so today's bar is stored.
     scheduler.add_job(
         run_daily_bars_job,
-        trigger=CronTrigger(hour=17, minute=5, timezone="America/New_York"),
+        trigger=CronTrigger(
+            hour=DAILY_BARS_AT.hour, minute=DAILY_BARS_AT.minute, timezone=EXCHANGE_TZ
+        ),
         id="yfinance_daily",
         replace_existing=True,
     )
@@ -319,7 +416,11 @@ def start():
 
     logger.info("QuantFlow scheduler started. Jobs:")
     logger.info(f"  Price ingestion  : every {FETCH_INTERVAL_MINUTES} min")
-    logger.info("  Daily bars       : daily at 5:05 PM ET")
+    logger.info(
+        f"  Split guard      : at startup, {SPLIT_GUARD_AT:%H:%M} ET and after the "
+        f"daily bars; while it fails, the jobs that read prices skip"
+    )
+    logger.info(f"  Daily bars       : daily at {DAILY_BARS_AT:%H:%M} ET")
     logger.info(f"  Indicators       : every {FETCH_INTERVAL_MINUTES} min")
     logger.info("  Anomaly detection: every 60 min")
     logger.info("  Sentiment        : every 6 hours")
@@ -329,8 +430,10 @@ def start():
     logger.info("  Backtesting      : daily at 5:15 PM ET")
     logger.info("Press Ctrl+C to stop.")
 
-    # Run immediately on start
+    # Run immediately on start. The split guard runs before the first job that
+    # reads prices, as it does in the daily workflow.
     run_yfinance_job()
+    run_split_guard_job()
     run_indicators_job()
 
     try:
