@@ -94,6 +94,10 @@ disagree and neither is wrong.
 `raw_prices` holds two kinds of bar: daily bars, stored at their exchange
 date's 00:00 UTC, and 15-minute bars on the 09:30 to 15:45 New York grid. A
 row that is neither, such as a stray 16:00 print, is left out with a warning.
+Both kinds are stored only once final, because `ON CONFLICT DO NOTHING` never
+corrects a stored row: today's daily bar after 17:00 New York, and a 15-minute
+bar two minutes after its quarter hour ends. Yahoo serves both while they are
+still trading, with the latest price as the close and the volume so far.
 Everything that wants one row per trading date (every model, the indicator
 and anomaly stages, the dashboard's candles) goes through
 `db.prices.daily_bars`:
@@ -138,15 +142,20 @@ closes by more than `SPLIT_GUARD_THRESHOLD` (default 15%; dividend drift stays
 far below it, any split far above) on three or more consecutive dates. A split
 shifts every row stored before it, a long unbroken run; one or two isolated
 mismatches are a bad print on one side, and are logged as warnings instead of
-stopping every stage. The fix is a scoped rescale of that ticker's earlier
-rows, run by hand, after which the guard passes again by itself.
+stopping every stage. A ticker whose check raises (the database or Yahoo
+misbehaving) is logged and the others are still checked, so it never hides
+another ticker's break; the run fails either way. The fix is a scoped
+rescale of that ticker's earlier rows, run by hand, after which the guard
+passes again by itself.
 
 In the daily workflow a failing guard fails its step, so nothing after it
-runs. The scheduler has no steps, so it remembers the guard's last answer:
-the guard runs at startup, at 16:20 New York time before the model jobs, and
-after the 17:05 daily bars, and while its last answer is a break, the jobs
-that read prices (indicators, anomalies, both model jobs, the ensemble and
-the backtest) log why and skip. Ingestion and sentiment keep running.
+runs; `make all` runs it in the same place. The scheduler has no steps, so it
+remembers the guard's last answer: the guard runs at startup, at 16:20 New
+York time before the model jobs, and after the 17:05 daily bars, and both
+cron jobs run however late they start, so a laptop that wakes after 16:20
+checks before any model job still due. While the last answer is a break, the
+jobs that read prices (indicators, anomalies, both model jobs, the ensemble
+and the backtest) log why and skip. Ingestion and sentiment keep running.
 
 ### SQL in `db/`
 
