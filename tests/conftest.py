@@ -13,9 +13,10 @@ Offline unit support:
                           test that forgets to fake the database fails instead
                           of reaching the live Supabase instance that .env
                           points at.
-  _no_network (autouse)   makes yf.download and every requests call raise, so
-                          a test that forgets to fake Yahoo, Alpha Vantage or
-                          NewsAPI never reaches them.
+  _no_network (autouse)   makes yf.download, yf.Ticker, every other yfinance
+                          request and every requests call raise, so a test
+                          that forgets to fake Yahoo, Alpha Vantage or NewsAPI
+                          never reaches them.
   fake_db                 an in-memory stand-in that records every statement
                           and applies INSERT ... ON CONFLICT DO NOTHING the way
                           Postgres does, so a write path can be checked for what
@@ -272,11 +273,20 @@ def _no_database(monkeypatch):
 def _no_network(monkeypatch):
     import requests
     import yfinance
+    import yfinance.data
 
     def refuse(*args, **kwargs):
         raise RuntimeError("tests are offline: fake this network call")
 
     monkeypatch.setattr(yfinance, "download", refuse)
+    # yfinance sends its own requests through curl_cffi, not requests, so
+    # refusing download and requests alone let yf.Ticker(...).splits and every
+    # other yfinance call reach Yahoo. Ticker is refused outright, and
+    # YfData._make_request, which every yfinance request goes through (as of
+    # 1.7.0), catches the other ways in. Should an upgrade rename it, this
+    # setattr fails every test rather than letting requests through.
+    monkeypatch.setattr(yfinance, "Ticker", refuse)
+    monkeypatch.setattr(yfinance.data.YfData, "_make_request", refuse)
     monkeypatch.setattr(requests.Session, "request", refuse)
 
 
