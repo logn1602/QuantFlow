@@ -48,7 +48,7 @@ jobs:
       - name: Set up Python 3.11
         run: uv python install 3.11
       - name: Install dev dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: mypy
         run: uv run mypy
 
@@ -63,7 +63,7 @@ jobs:
       - name: Set up Python 3.11
         run: uv python install 3.11
       - name: Install dev dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       # Excludes the eval and integration markers: those need a seeded database
       # and two years of price history, neither of which exists on a runner.
       - name: pytest

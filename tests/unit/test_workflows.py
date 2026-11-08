@@ -52,6 +52,25 @@ def test_the_daily_refresh_runs_the_same_test_selection_as_ci():
     assert _pytest_markers(DAILY_REFRESH) == _pytest_markers(CI)
 
 
+LOCKED_INSTALL = "uv sync --locked --extra dev"
+
+
+def test_the_daily_refresh_installs_the_versions_in_uv_lock_as_ci_does():
+    """The evaluation ran on uv.lock's versions. requirements.txt sets floors,
+    so pip installed whatever was newest on the runner, and a different
+    library version can give a different forecast from the same data.
+    --locked fails the install, in CI first, if uv.lock no longer matches
+    pyproject.toml."""
+    assert "pip install -r" not in DAILY_REFRESH
+    assert LOCKED_INSTALL in DAILY_REFRESH
+    assert CI.count("uv sync") == CI.count(LOCKED_INSTALL) > 0
+    # Each command runs in the locked environment, not the runner's Python.
+    commands = re.findall(r"(\S+ \S+ )?(python -m \S+|pytest -m)", DAILY_REFRESH)
+    assert commands, "no python or pytest commands found"
+    for prefix, command in commands:
+        assert prefix == "uv run ", command
+
+
 def test_ci_runs_on_pushes_to_every_phase_branch_prefix():
     match = re.search(r"push:\s*\n\s*branches:\s*\[([^\]]*)\]", CI)
     assert match, "no push branches list in ci.yml"
