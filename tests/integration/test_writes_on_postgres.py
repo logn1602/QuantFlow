@@ -269,19 +269,19 @@ def test_daily_bars_on_the_types_the_driver_returns(pg):
 
 
 def test_features_line_up_with_prices_in_a_new_york_session(pg, install_engine):
-    """Indicators, anomaly scores and sentiment are dated in SQL, prices in
-    pandas. A bare ts::date reads the session's TimeZone, so on a server set
-    to New York every indicator stored at 00:00 UTC landed on the previous
-    day's price row."""
+    """The features are built in process (decision D4): article times come
+    back from the driver in the session's TimeZone and must still be dated
+    in UTC, and the indicator and anomaly tables, written for the dashboard,
+    must not reach the features."""
     days = ["2026-04-09", "2026-04-10", "2026-04-13"]
     prices.insert_bars(_bars(days))
     columns = ("macd", "macd_signal", "macd_hist", "bb_upper", "bb_middle", "bb_lower")
     replace_indicators(
         "AAPL",
         [
-            {"ticker": "AAPL", "ts": pd.Timestamp(day, tz="UTC"), "rsi_14": float(i)}
+            {"ticker": "AAPL", "ts": pd.Timestamp(day, tz="UTC"), "rsi_14": 50.0}
             | dict.fromkeys(columns, 1.0)
-            for i, day in enumerate(days)
+            for day in days
         ],
     )
     with pg.begin() as conn:
@@ -310,8 +310,8 @@ def test_features_line_up_with_prices_in_a_new_york_session(pg, install_engine):
         new_york.dispose()
 
     assert list(features["date"]) == [pd.Timestamp(day) for day in days]
-    assert list(features["rsi_14"].astype(float)) == [0.0, 1.0, 2.0]
-    assert features["zscore"].astype(float).tolist()[1] == 3.5
+    assert features["rsi_14"].isna().all()  # three bars: too short, not the table
+    assert features["zscore"].isna().all()  # computed, not the stored 3.5
     assert features["article_count"].tolist()[1] == 1
 
 

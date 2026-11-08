@@ -1,8 +1,10 @@
 """Model feature matrix.
 
-Merges prices, technical indicators, anomaly scores and news sentiment into the
-33-column frame the gradient boosters train on, and builds the prediction
-target.
+Builds, from daily bars and the stored news articles, the frame of prices,
+technical indicators, anomaly scores and news sentiment that the gradient
+boosters train on, and the prediction target. The live run and the
+evaluation call the same function, build_features (decision D4,
+docs/evaluation.md).
 
 This module is leakage-critical. Every transform here is backward-looking by
 construction: lags use a positive shift, rolling windows are trailing, and
@@ -15,7 +17,7 @@ and includes a probe that plants a deliberate leak to prove the check fires.
 import numpy as np
 import pandas as pd
 
-from quantflow.db.features import load_stored_feature_inputs
+from quantflow.db.features import load_articles
 from quantflow.db.prices import PRICE_COLUMNS, indexed_by_date, load_daily_bars
 from quantflow.features.anomalies import STORED_DECIMALS, detect_anomalies
 from quantflow.features.indicators import compute_indicators, rounded_for_storage
@@ -36,40 +38,35 @@ SENTIMENT_COLUMNS = ["sentiment_compound", "pos_count", "neg_count", "article_co
 
 
 def load_features(ticker: str) -> pd.DataFrame:
-    """
-    Load and merge all available signals for a ticker:
-    prices + technical indicators + anomalies + sentiment
+    """The live run's feature frame for a ticker: build_features on the
+    stored daily bars and articles.
 
     Prices come from load_daily_bars, the same one-row-per-trading-date
     series the statistical models read, so every model sees the same close.
-    The other signals are the rows the indicator, anomaly and sentiment
-    stages stored.
+    Nothing is read from the technical_indicators or anomalies tables, which
+    are written for the dashboard only.
     """
     prices = load_daily_bars(ticker)
     if prices.empty:
         logger.warning(f"No price data for {ticker}")
         return pd.DataFrame()
-
-    stored = load_stored_feature_inputs(ticker)
-    return merge_feature_inputs(
-        prices, stored["indicators"], stored["anomalies"], stored["sentiment"]
-    )
+    return build_features(prices, load_articles(ticker), ticker)
 
 
 def build_features(
     prices: pd.DataFrame, articles: pd.DataFrame, ticker: str
 ) -> pd.DataFrame:
-    """The frame load_features returns, computed instead of read back.
+    """The feature frame for a history: one function for the live run and
+    the evaluation.
 
     prices are daily bars (load_daily_bars' shape) and articles the stored
     sentiment rows (published_at, sentiment, compound). Indicators and
     anomaly scores are computed from the prices exactly as their stages do,
     at the precision the tables keep, and sentiment is averaged by UTC
-    publish date as the stored query does. So for the same history this
-    matches what the live run reads, while depending only on its arguments:
-    given the history up to a date, it gives what the live run would have
-    read on that date. The stored anomaly rows cannot do that, because the
-    IQR fences behind them are fitted on the whole history.
+    publish date. It depends only on its arguments: given the history up to
+    a date, it gives what the live run would have built on that date. The
+    stored anomaly rows cannot do that, because the IQR fences behind them
+    are fitted on the whole history.
     """
     if prices.empty:
         return pd.DataFrame()
@@ -110,8 +107,8 @@ def _dated(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def daily_sentiment(articles: pd.DataFrame) -> pd.DataFrame:
-    """Articles averaged by UTC publish date, as the stored query does:
-    mean compound, positive and negative counts, and every article counted."""
+    """Articles averaged by UTC publish date: mean compound, positive and
+    negative counts, and every article counted."""
     if articles.empty:
         return _empty(SENTIMENT_COLUMNS)
     published = pd.to_datetime(articles["published_at"], utc=True)
@@ -139,7 +136,8 @@ def merge_feature_inputs(
 ) -> pd.DataFrame:
     """Prices with each date's indicators, anomaly score and sentiment.
 
-    One rule for both sources, stored or computed: a date keeps its first
+    One rule whether the rows were computed or read from the tables (the
+    evaluation's one-off check compares the two): a date keeps its first
     indicator and anomaly row, and a date with none of a signal gets missing
     values, which engineer_features then fills.
     """

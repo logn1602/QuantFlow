@@ -230,8 +230,12 @@ just before one still lists that day.
 
 ### SQL in `db/`
 
-Every read of `raw_prices`, the feature matrix's reads of the derived tables,
-and every write except the anomaly flags live under `quantflow.db`. The other
+Every read of `raw_prices`, the feature matrix's read of the stored articles,
+and every write except the anomaly flags live under `quantflow.db`. The feature
+matrix is built in process from the daily bars and the articles
+(`features.engineering.build_features`, the function the evaluation calls at
+every origin); the indicator and anomaly tables are written for the dashboard
+and read by no model. The other
 exceptions are display queries: the command-line `--show` and `--compare`
 helpers beside each stage, and the dashboard. `raw_prices` has
 one definition of a trading-day bar, `daily_bars`, and every reader is a

@@ -64,14 +64,10 @@ def test_daily_close_prefers_the_daily_bar_when_a_date_has_one(read_tables, pric
 
 def test_feature_prices_get_a_full_day_bar_built_from_15min_bars(read_tables, two_days):
     read_tables["raw_prices"] = two_days
-    for table, columns in {
-        "technical_indicators": ["date", "rsi_14", "macd", "macd_signal",
-                                 "macd_hist", "bb_upper", "bb_middle", "bb_lower"],
-        "anomalies": ["date", "zscore"],
-        "news_sentiment": ["date", "sentiment_compound", "pos_count",
-                           "neg_count", "article_count"],
-    }.items():  # fmt: skip
-        read_tables[table] = pd.DataFrame(columns=columns)
+    read_tables["news_sentiment"] = pd.DataFrame(
+        columns=["ticker", "source", "url_domain", "published_at", "inserted_at",
+                 "sentiment", "score_pos", "score_neg", "score_neu", "compound"]
+    )  # fmt: skip
 
     day = _row(engineering.load_features("AAPL"), "date", INTRADAY_DAY)
 

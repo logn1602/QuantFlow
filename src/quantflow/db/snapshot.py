@@ -9,6 +9,7 @@ the caller builds daily bars from them with the same daily_bars() rule.
 import pandas as pd
 from sqlalchemy import text
 
+from quantflow.db.features import ARTICLE_SELECT
 from quantflow.utils.trading_calendar import news_cutoff
 
 _RAW_BARS = text("""
@@ -18,17 +19,12 @@ _RAW_BARS = text("""
     ORDER BY ticker, ts
 """)
 
-# The URL's host only: enough to tell the general feed's rows apart, without
-# copying headlines or links out of the database.
-_ARTICLES = text("""
-    SELECT ticker, source,
-           substring(url from '^[A-Za-z][A-Za-z0-9+.-]*://([^/:?#]+)') AS url_domain,
-           published_at, inserted_at, sentiment,
-           score_pos, score_neg, score_neu, compound
-    FROM news_sentiment
-    WHERE ticker = ANY(:tickers) AND inserted_at <= :stored_by
-    ORDER BY ticker, inserted_at
-""")
+# The live run's article columns (URL host only, no headlines or links).
+_ARTICLES = text(
+    ARTICLE_SELECT
+    + "WHERE ticker = ANY(:tickers) AND inserted_at <= :stored_by "
+    + "ORDER BY ticker, inserted_at"
+)
 
 _STORED_INDICATORS = text("""
     SELECT ticker, (ts AT TIME ZONE 'UTC')::date AS date,

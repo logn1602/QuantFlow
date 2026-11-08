@@ -1,13 +1,12 @@
 """tests/unit/test_feature_builder.py
 
 Covers build_features, the feature frame computed from daily bars and
-articles rather than read back from the derived tables.
+articles, which both the live run (load_features) and the evaluation call.
 
-The identity test is the contract: run the real indicator and anomaly stages
-against the in-memory database, read their rows back through load_features,
-and build_features must give the same frame from the same prices and
-articles. The evaluation harness relies on that to rebuild, at any past
-date, what the live run read on that date.
+Two contracts: load_features builds the frame in process and never reads the
+indicator or anomaly tables (decision D4); and what it builds equals the
+rows the real indicator and anomaly stages store for the dashboard, so the
+features and the dashboard describe the same numbers.
 """
 
 import numpy as np
@@ -57,7 +56,7 @@ ARTICLES = pd.DataFrame(
     ]
 )
 
-# What the stored query returns for ARTICLES, worked out by hand.
+# The daily averages for ARTICLES, worked out by hand.
 STORED_SENTIMENT = pd.DataFrame(
     {
         "date": [pd.Timestamp("2026-03-02").date(), pd.Timestamp("2026-03-03").date()],
@@ -79,7 +78,25 @@ def _as_selected(rows, columns):
     return out
 
 
-def test_built_features_match_what_the_live_run_reads_back(
+def test_load_features_builds_in_process_from_the_bars_and_the_articles(
+    read_tables, stored_bars
+):
+    """No canned frame for technical_indicators or anomalies: reading either
+    would fail the test."""
+    read_tables["raw_prices"] = stored_bars
+    read_tables["news_sentiment"] = ARTICLES
+
+    live = engineering.load_features("AAPL")
+    built = engineering.build_features(
+        daily_bars(stored_bars, "AAPL"), ARTICLES, "AAPL"
+    )
+
+    pd.testing.assert_frame_equal(live, built)
+    assert built["zscore"].notna().any() and built["rsi_14"].notna().any()
+    assert built["article_count"].notna().sum() == 2
+
+
+def test_built_features_match_the_rows_the_stages_store(
     fake_db, read_tables, stored_bars
 ):
     read_tables["raw_prices"] = stored_bars
@@ -87,20 +104,19 @@ def test_built_features_match_what_the_live_run_reads_back(
     anomalies.run(["AAPL"])
     assert fake_db.tables["technical_indicators"] and fake_db.tables["anomalies"]
 
-    read_tables["technical_indicators"] = _as_selected(
-        fake_db.tables["technical_indicators"], engineering.INDICATOR_COLUMNS
+    stored = engineering.merge_feature_inputs(
+        daily_bars(stored_bars, "AAPL"),
+        _as_selected(
+            fake_db.tables["technical_indicators"], engineering.INDICATOR_COLUMNS
+        ),
+        _as_selected(fake_db.tables["anomalies"], ["zscore"]),
+        engineering.daily_sentiment(ARTICLES),
     )
-    read_tables["anomalies"] = _as_selected(fake_db.tables["anomalies"], ["zscore"])
-    read_tables["news_sentiment"] = STORED_SENTIMENT
-
-    live = engineering.load_features("AAPL")
     built = engineering.build_features(
         daily_bars(stored_bars, "AAPL"), ARTICLES, "AAPL"
     )
 
-    pd.testing.assert_frame_equal(built, live, check_dtype=False)
-    assert built["zscore"].notna().any() and built["rsi_14"].notna().any()
-    assert built["article_count"].notna().sum() == 2
+    pd.testing.assert_frame_equal(built, stored, check_dtype=False)
 
 
 def test_sentiment_is_averaged_by_utc_publish_date():
