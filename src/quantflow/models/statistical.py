@@ -48,6 +48,8 @@ logger = get_logger("forecasting")
 
 ARIMA_ORDER = (5, 1, 0)
 MLFLOW_EXP = "stock_forecasting"
+# The seed Prophet's interval is simulated from (prophet_forecast).
+PROPHET_INTERVAL_SEED = 42
 
 
 # Prophet's own 'auto' setting turns yearly seasonality off below this span
@@ -120,7 +122,17 @@ def prophet_forecast(history: pd.DataFrame, dates) -> pd.DataFrame:
     model = Prophet(**prophet_settings(history))
     model.fit(history.copy())
     future = pd.DataFrame({"ds": pd.DatetimeIndex(pd.to_datetime(dates))})
-    return model.predict(future)[["ds", "yhat", "yhat_lower", "yhat_upper"]]
+    # Prophet simulates its interval from numpy's global random state, so
+    # the same fit gave a different band on every run. A fixed seed makes
+    # the band reproducible (in the evaluation's worker processes too); the
+    # caller's random state is put back afterwards.
+    state = np.random.get_state()
+    np.random.seed(PROPHET_INTERVAL_SEED)
+    try:
+        forecast = model.predict(future)
+    finally:
+        np.random.set_state(state)
+    return forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]]
 
 
 def arima_holdout(price_df: pd.DataFrame) -> np.ndarray:

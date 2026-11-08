@@ -226,3 +226,39 @@ def test_the_live_arima_forecast_skips_market_holidays(monkeypatch, fake_arima):
 
     forecast, _ = statistical.run_arima(BEFORE_THANKSGIVING, "AAPL")
     assert [d.isoformat() for d in forecast["ds"]] == NEXT_SEVEN_TRADING_DAYS
+
+
+class SamplingProphet(FakeProphet):
+    """Draws its band from numpy's global random state, as Prophet's
+    uncertainty sampling does (np.random.normal, np.random.laplace)."""
+
+    def predict(self, df):
+        out = super().predict(df)
+        noise = np.random.normal(0, 1, len(out))
+        return out.assign(
+            yhat_lower=out["yhat"] - 2 + noise, yhat_upper=out["yhat"] + 2 + noise
+        )
+
+
+def test_the_same_history_gives_the_same_prophet_band(monkeypatch):
+    """Prophet simulates its interval from numpy's global random state, so
+    the same fit gave a different band on every run, and the evaluation's
+    worker processes could not reproduce a sequential run. The band is
+    drawn from a fixed seed, and the caller's random state is left as it
+    was."""
+    module = types.ModuleType("prophet")
+    module.Prophet = SamplingProphet
+    monkeypatch.setitem(sys.modules, "prophet", module)
+    dates = pd.to_datetime(NEXT_SEVEN_TRADING_DAYS)
+
+    np.random.seed(1)
+    expected = np.random.random()  # the caller's next draw, with no fit between
+
+    np.random.seed(1)
+    first = statistical.prophet_forecast(BEFORE_THANKSGIVING, dates)
+    after = np.random.random()
+    np.random.seed(2)
+    second = statistical.prophet_forecast(BEFORE_THANKSGIVING, dates)
+
+    pd.testing.assert_frame_equal(first, second)
+    assert after == expected

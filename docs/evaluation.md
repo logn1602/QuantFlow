@@ -907,6 +907,11 @@ commit on snapshot `f0c3957b`, on the validation dates, logged to MLflow.
      about $3 apart at one origin of the snapshot. With one thread the published
      forecast is the evaluated one on any machine. LightGBM's forecasts do not depend
      on the thread count; it is pinned too, so each worker runs one thread per model.
+   - **F1b, Prophet's band from a fixed seed** (found building S2). Prophet simulates
+     its 95% interval from numpy's global random state, unseeded, so its band, and the
+     ensembles' bands that combine it, changed on every run, and worker processes could
+     not reproduce a sequential run. The band is drawn from a fixed seed, and the
+     caller's random state is put back. No point forecast changes.
    - **F2, the rollout's Bollinger features as training builds them.** Training gets
      the bands from `ta`, with the population standard deviation, rounded as stored;
      the rollout used the sample standard deviation (its `bb_width` about 2.6% wider)
