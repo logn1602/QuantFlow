@@ -426,6 +426,9 @@ gets its test on dates still to come, with the plan fixed before any of them exi
   against naive.
 - **Rule**: written down and approved before the forward window is scored, on Phase 3's
   bar (kept only if it improves the held-out results across tickers).
+- **In the same scoring**: the live ensemble's current weights against the new ones,
+  with the rule already written (section 5, "Forward test of the ensemble weights",
+  decision D17).
 
 ### Ablation
 
@@ -485,6 +488,40 @@ workflow), or fitting them on the stored live forecasts, which would cost nothin
 are deleted on every run (`run_models` clears old forecasts), so that is a retention
 decision for later.
 
+### Forward test of the ensemble weights (decision D17, pre-registered)
+
+D2 kept the live ensemble's current weights on the validation dates (3.381% against
+3.389%), and on the test dates the new weights looked better (3.298% against 3.676%);
+by the rule in section 2 that changes nothing. The question gets a fresh window
+instead, with the rule written on 2026-11-08, before any forward date exists:
+
+- **Window and scoring**: the forward test of section 4 (D16): 42 origins every 5
+  trading days from 2026-11-09, the last target 2027-09-15, scored once on a new
+  snapshot after that close, no interim look. The ensemble comparison does not depend
+  on the news gate: it is decided even if the news reads "not enough data" again.
+- **The two weightings**, fixed now: the current weights (`ensemble_stack`, NNLS
+  refitted at each origin on its 30-day holdout stack, as the live run does) and the
+  new weights (`ensemble_rolling`, this section's rolling-origin weights: the 12 grid
+  origins before each origin, at least 8 complete, only targets known by the origin).
+  Both combine the same four base forecasts at each origin, from the base models live
+  on the day of the scoring, so the comparison isolates the weights. The new weights'
+  first rows come from the 12 grid origins before 2026-11-09, which are fitted on, not
+  scored. If Phase 3 changes which weighting is live, the rule still decides between
+  these two.
+- **The rule**: the live ensemble uses the new weights if, over every forward cell both
+  are scored on (all tickers, horizons and origins; a cell either one fails is left out
+  of both), the new weights' MAPE is no higher than the current weights'; a tie goes to
+  the new weights. Otherwise it keeps the current weights. This is D2's rule, repeated
+  on data neither window has seen. The primary test, per-ticker and per-horizon figures
+  are reported and do not decide.
+- **No decision** if either weighting fails on more than 10% of its forward cells (the
+  harness's failure rule): the live weights then stay as they are, and the README says
+  why.
+- **If the new weights win**, the live switch ships as D2 described it: the ensemble
+  step refits the four base models at the 12 grid origins before each day and fits the
+  weights with `out_of_fold.rolling_origin_fit` (about 3.5 minutes more per daily run),
+  and D3 applies (the 30-day dashboard figure for the ensemble stops being written).
+
 ### What stays on the 30-day stack until Phase 4 (decision D3)
 
 The backtest (Known problem #3) keeps using `collect_holdout_stacks`, with its current,
@@ -519,11 +556,12 @@ with Phase 4 too.
   article any origin can use, and it is not re-exported.
 - **Kept off the public repository.** The snapshot holds Yahoo prices and per-article
   scores, publish and insert times and URL hosts (no headline text, no full URLs), so it
-  is never committed or published; reports cite its digest. A copy of it, and of R0's
-  outputs, is kept outside the repository on the owner's laptop in
-  `C:\QuantFlow-backups\` (`eval_snapshots\2026-11-06\`, `eval_runs\R0\` with
-  `eval_runs\R0.sha256`), checked on 2026-11-08 against the manifest's hashes and
-  R0's file hashes.
+  is never committed or published; reports cite its digest. A copy of it, and of every
+  Phase 2 run's outputs (R0 to R7, T1, T2 and the three checks), is kept outside the
+  repository on the owner's laptop in `C:\QuantFlow-backups\`
+  (`eval_snapshots\2026-11-06\`, and `eval_runs\<run>\` with
+  `eval_runs\<run>.sha256`), checked on 2026-11-08 against the manifest's hashes and
+  each run's file hashes.
 - **Every run reads only the snapshot.** MLflow records the snapshot hash and the git
   commit. All Phase 2 and Phase 3 runs use the 2026-11-06 snapshot, so they compare
   like for like, and repeated runs cost the database nothing.
@@ -817,6 +855,7 @@ Decided by the owner; the body above applies them.
 | D14 | Point-in-time anomaly scores for the features, on `feat/evaluation-live` with D4: the live training rows stop looking ahead (section 2). A correction, measured as R5. The README's "features are backward-looking" claim is corrected in Phase 4. |
 | D15 | News coverage per window is reported before any news run; under half of the validation (ticker, date) rows with a real article means the ablation is "not enough data" and no news feature is kept or dropped on it (section 4). |
 | D16 | The news gets a forward test: 42 origins every 5 trading days from 2026-11-09, scored once after the last target (2027-09-15) on a new snapshot, with the D15 gate and a keep-or-drop rule written before scoring (section 4). Confirmed 2026-11-08. |
+| D17 | Pre-registered 2026-11-08, before any forward date is scored: the forward test (D16) also compares the live ensemble's current weights with the new rolling-origin weights on the same cells. The live ensemble uses the new weights if their MAPE over every forward cell is no higher than the current weights' (a tie goes to the new weights, as in D2); either failing on more than 10% of its cells means no decision (section 5). |
 
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
 origin's close) as a fifth stack column, so the ensemble can lean on it; not freezing
