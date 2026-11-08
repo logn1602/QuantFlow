@@ -14,7 +14,7 @@ takes them as functions.
 import numpy as np
 import pandas as pd
 
-from quantflow.evaluation.out_of_fold import rolling_origin_fit
+from quantflow.evaluation.out_of_fold import rolling_origin_fit, rolling_origin_stack
 from quantflow.evaluation.rolling_origin import (
     BASELINES,
     Combiner,
@@ -146,6 +146,13 @@ def ensemble_stack(
     return _combined(meta, base, STACK_COLUMNS)
 
 
+# Separate rolling-origin weights for each horizon (Phase 3, E7): day 1 and
+# day 7 are different tasks, and one set of weights serves neither best. Each
+# day's weights are fitted on that day's rows of the earlier origins only
+# (11 or 12 rows, against 82 for one set).
+ROLLING_PER_HORIZON = True
+
+
 def ensemble_rolling(
     data: OriginData, base: dict[str, pd.DataFrame], earlier: pd.DataFrame
 ) -> pd.DataFrame:
@@ -157,8 +164,22 @@ def ensemble_rolling(
     missing = [m for m in ROLLING_COLUMNS if m not in base]
     if missing:
         raise RuntimeError(f"no {', '.join(missing)} forecast to combine")
-    meta = rolling_origin_fit(earlier, data.origin, ROLLING_COLUMNS, fit_nnls_strict)
-    return _combined(meta, base, ROLLING_COLUMNS)
+    if not ROLLING_PER_HORIZON:
+        meta = rolling_origin_fit(
+            earlier, data.origin, ROLLING_COLUMNS, fit_nnls_strict
+        )
+        return _combined(meta, base, ROLLING_COLUMNS)
+    stack = rolling_origin_stack(earlier, data.origin, ROLLING_COLUMNS)
+    days = []
+    for h in range(1, len(data.dates) + 1):
+        rows = stack[stack["h"] == h]
+        meta = fit_nnls_strict(
+            rows[ROLLING_COLUMNS].to_numpy(dtype=float),
+            rows["actual"].to_numpy(dtype=float),
+        )
+        day = {m: base[m].iloc[[h - 1]].reset_index(drop=True) for m in ROLLING_COLUMNS}
+        days.append(_combined(meta, day, ROLLING_COLUMNS))
+    return pd.concat(days, ignore_index=True)
 
 
 # The harness adds the warmup origins before the window when a combiner needs

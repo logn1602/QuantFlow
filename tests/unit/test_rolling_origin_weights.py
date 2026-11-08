@@ -125,3 +125,45 @@ def test_the_combiner_fails_on_a_thin_window():
 def test_the_combiner_asks_the_harness_for_earlier_origins():
     assert getattr(forecasters.ensemble_rolling, "needs_history", False)
     assert not getattr(forecasters.ensemble_stack, "needs_history", False)
+
+
+def _cells_by_horizon(origins):
+    """ARIMA is exact at days 1 to 3, XGBoost at days 4 to 7; the rest miss."""
+    rows = []
+    for o in origins:
+        for h in range(1, H + 1):
+            target = DATES[DATES.get_loc(o) + h]
+            actual = 100.0 + DATES.get_loc(target)
+            right = "arima" if h <= 3 else "xgboost"
+            for i, m in enumerate(MODELS):
+                miss = 0.0 if m == right else 4.0 + i
+                rows.append(
+                    {"origin": o, "h": h, "target_date": target, "model": m,
+                     "yhat": actual + miss, "actual": actual, "status": "ok"}
+                )  # fmt: skip
+    return pd.DataFrame(rows)
+
+
+BASE_TODAY = {"arima": 200.0, "prophet": 210.0, "xgboost": 190.0, "lightgbm": 230.0,
+              "naive": 220.0}  # fmt: skip
+
+
+def test_per_horizon_weights_follow_the_best_model_day_by_day(monkeypatch):
+    """E7: each day's weights come from that day's rows alone."""
+    monkeypatch.setattr(forecasters, "ROLLING_PER_HORIZON", True)
+    base = {m: _base(v) for m, v in BASE_TODAY.items()}
+    out = forecasters.ensemble_rolling(
+        _data(GRID[15]), base, _cells_by_horizon(GRID[3:15])
+    )
+    np.testing.assert_allclose(out["yhat"], [200.0] * 3 + [190.0] * 4)
+    assert len(out) == H
+
+
+def test_one_set_of_weights_blends_the_days(monkeypatch):
+    monkeypatch.setattr(forecasters, "ROLLING_PER_HORIZON", False)
+    base = {m: _base(v) for m, v in BASE_TODAY.items()}
+    out = forecasters.ensemble_rolling(
+        _data(GRID[15]), base, _cells_by_horizon(GRID[3:15])
+    )
+    assert out["yhat"].nunique() == 1
+    assert 190.0 < out["yhat"].iloc[0] < 200.0
