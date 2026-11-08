@@ -372,7 +372,7 @@ def test_the_diagnostics_run_read_only_on_postgres(pg, monkeypatch, tmp_path):
     diagnostics = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, diagnostics)
     spec.loader.exec_module(diagnostics)
-    monkeypatch.setattr(diagnostics, "get_engine", lambda: pg)
+    # The pg fixture's install_engine routes db.readonly's get_engine here.
 
     prices.insert_bars(_bars(["2026-04-09", "2026-04-10"]))
     out = tmp_path / "results.md"
