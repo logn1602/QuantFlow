@@ -82,6 +82,31 @@ MODEL_PARAMS: dict[str, dict[str, Any]] = {
 }
 
 
+# What each family learns to predict (Phase 3, E1, decided per booster):
+#   "price"       the next close itself;
+#   "log_return"  log(next close / close), turned back into a close as
+#                 close x exp(prediction).
+# A tree predicts the mean target of a leaf, so on a price target it can
+# never forecast above the highest close it was trained on; a return carries
+# the level over from the latest close.
+TARGETS: dict[str, str] = {"xgboost": "log_return", "lightgbm": "log_return"}
+
+
+def training_target(model_name: str, rows: pd.DataFrame) -> pd.Series:
+    """What the family is fitted on, from rows with close and target_price."""
+    if TARGETS[model_name] == "log_return":
+        return np.log(rows["target_price"] / rows["close"])
+    return rows["target_price"]
+
+
+def predicted_close(model_name: str, predicted, close) -> np.ndarray:
+    """The family's predictions as closes, given the closes they start from."""
+    values = np.asarray(predicted, dtype=float)
+    if TARGETS[model_name] == "log_return":
+        return np.asarray(close, dtype=float) * np.exp(values)
+    return values
+
+
 def _new_regressor(model_name: str):
     """An unfitted regressor of the family; None if its package is missing.
 
@@ -126,7 +151,7 @@ def _train_scored(model_name: str, df: pd.DataFrame, ticker: str) -> dict:
     train, holdout = train_holdout_split(df, copy=True)
 
     X_train = train[available]
-    y_train = train["target_price"]
+    y_train = training_target(model_name, train)
     X_hold = holdout[available]
     y_hold = holdout["target_price"]
 
@@ -135,8 +160,8 @@ def _train_scored(model_name: str, df: pd.DataFrame, ticker: str) -> dict:
     # the moment early stopping or tuning read it).
     model.fit(X_train, y_train)
 
-    # Evaluate on holdout
-    preds = model.predict(X_hold)
+    # Evaluate on holdout, as closes whatever the target
+    preds = predicted_close(model_name, model.predict(X_hold), holdout["close"])
     scores = regression_metrics(y_hold, preds)
 
     label = "XGBoost" if model_name == "xgboost" else "LightGBM"
@@ -185,7 +210,7 @@ def fit_live_model(model_name: str, labelled: pd.DataFrame, features: list[str])
     model = _new_regressor(model_name)
     if model is None:
         return None
-    model.fit(labelled[features], labelled["target_price"])
+    model.fit(labelled[features], training_target(model_name, labelled))
     return model
 
 
@@ -228,7 +253,8 @@ def generate_forecast(
     future_dates = next_trading_days(last_date, FORECAST_DAYS)
 
     for forecast_date in future_dates:
-        pred = float(model.predict(current_X)[0])
+        # buf[-1] is the close of the row being predicted from.
+        pred = float(predicted_close(model_name, model.predict(current_X), buf[-1])[0])
 
         forecasts.append(
             {

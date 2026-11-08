@@ -39,16 +39,19 @@ def _data(prices):
 
 class FakeRegressor:
     """Deterministic and instant: the training mean, moved by yesterday's
-    close relative to its training mean."""
+    close relative to its training mean, in the target's own scale (a price
+    or a log return, boosting.TARGETS)."""
 
     def fit(self, X, y, **kwargs):
+        lag = X["close_lag_1"]
         self.mean_y = float(np.mean(y))
-        self.mean_lag = float(X["close_lag_1"].mean())
+        self.mean_lag = float(lag.mean())
+        self.slope = 0.9 * float(np.std(y)) / float(np.std(lag))
         self.feature_importances_ = np.full(X.shape[1], 1.0 / X.shape[1])
         return self
 
     def predict(self, X):
-        return self.mean_y + 0.9 * (
+        return self.mean_y + self.slope * (
             X["close_lag_1"].to_numpy(dtype=float) - self.mean_lag
         )
 

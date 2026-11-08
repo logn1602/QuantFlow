@@ -48,6 +48,14 @@ class FakeRegressor:
         return np.full(len(X), float(len(self.X)))
 
 
+@pytest.fixture(autouse=True)
+def price_targets(monkeypatch):
+    """These fakes identify a model by the price it predicts, so both
+    families predict prices here; the log-return target has its own tests
+    (test_booster_targets.py)."""
+    monkeypatch.setattr(boosting, "TARGETS", dict.fromkeys(boosting.TARGETS, "price"))
+
+
 @pytest.fixture
 def raw():
     """A merged feature frame like load_features returns, ending on a Friday."""

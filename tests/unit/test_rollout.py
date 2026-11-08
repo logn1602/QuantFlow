@@ -11,6 +11,7 @@ order, and records every row it is asked about.
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from quantflow.features.engineering import (
     build_features,
@@ -37,15 +38,29 @@ ROLLED = [
 
 
 class Replay:
-    """Predicts the given closes in order; keeps every row it was asked about."""
+    """Predicts the given closes in order, in the family's target (a price
+    or a log return, boosting.training_target), starting from `start`;
+    keeps every row it was asked about."""
 
-    def __init__(self, closes):
-        self.closes = list(closes)
+    def __init__(self, start, closes, family="xgboost"):
+        self.closes = [start, *closes]
+        self.family = family
         self.seen: list[pd.DataFrame] = []
 
     def predict(self, X):
         self.seen.append(X.copy())
-        return np.array([self.closes[len(self.seen) - 1]])
+        step = len(self.seen)
+        rows = pd.DataFrame(
+            {"close": [self.closes[step - 1]], "target_price": [self.closes[step]]}
+        )
+        return boosting.training_target(self.family, rows).to_numpy()
+
+
+@pytest.fixture(params=["price", "log_return"])
+def target(request, monkeypatch):
+    """The rollout rebuilds the same features whatever the family predicts."""
+    monkeypatch.setitem(boosting.TARGETS, "xgboost", request.param)
+    return request.param
 
 
 def _features(jump_at: int) -> pd.DataFrame:
@@ -66,7 +81,9 @@ def _features(jump_at: int) -> pd.DataFrame:
 def _rollout(features: pd.DataFrame, start: int) -> list[pd.DataFrame]:
     """The rows the rollout builds from row `start`, fed the actual closes."""
     columns = [c for c in get_feature_cols() if c in features.columns]
-    model = Replay(features["close"].iloc[start + 1 : start + 8])
+    model = Replay(
+        features["close"].iloc[start], features["close"].iloc[start + 1 : start + 8]
+    )
     boosting.generate_forecast(
         model,
         features.iloc[[start]][columns],
@@ -78,7 +95,7 @@ def _rollout(features: pd.DataFrame, start: int) -> list[pd.DataFrame]:
     return model.seen
 
 
-def test_fed_the_actual_closes_the_rollout_rebuilds_trainings_price_features():
+def test_fed_the_actual_closes_the_rollout_rebuilds_trainings_price_features(target):
     """Training builds the Bollinger bands with ta (population standard
     deviation, rounded as stored) and never clips bb_position; the rollout
     used the sample standard deviation, so its bb_width came out about 2.6%
@@ -100,7 +117,7 @@ def test_fed_the_actual_closes_the_rollout_rebuilds_trainings_price_features():
         )  # fmt: skip
 
 
-def test_the_frozen_features_stay_at_the_starting_rows_values():
+def test_the_frozen_features_stay_at_the_starting_rows_values(target):
     """What the rollout does not recompute it leaves as it was."""
     features = _features(jump_at=150)
     seen = _rollout(features, len(features) - 12)
@@ -111,11 +128,11 @@ def test_the_frozen_features_stay_at_the_starting_rows_values():
         )
 
 
-def test_a_band_with_no_width_gives_trainings_values_not_the_last_ones():
+def test_a_band_with_no_width_gives_trainings_values_not_the_last_ones(target):
     """Twenty equal closes: training's band has no width, so bb_position is
     missing (it divides by the width) and bb_width is 0; the rollout kept
     the last row's values instead."""
-    model = Replay([100.0] * 7)
+    model = Replay(100.0, [100.0] * 7)
     X = pd.DataFrame([dict.fromkeys(get_feature_cols(), 0.5)])
     boosting.generate_forecast(model, X, DAYS[-1], [100.0] * 40, "xgboost", "AAPL")
     rolled = model.seen[1].iloc[0]
