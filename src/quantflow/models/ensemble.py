@@ -62,6 +62,7 @@ from quantflow.features.engineering import load_features, load_news
 from quantflow.models import FORECAST_DAYS
 from quantflow.models.statistical import arima_holdout, prophet_holdout
 from quantflow.utils.logger import get_logger
+from quantflow.utils.trading_calendar import next_trading_days
 
 warnings.filterwarnings("ignore")
 
@@ -415,7 +416,10 @@ def combine_forecasts(meta_model, predicted, lower, upper) -> tuple:
 
 
 def generate_ensemble_forecast(
-    ticker: str, meta_model, latest_close: float | None = None
+    ticker: str,
+    meta_model,
+    latest_close: float | None = None,
+    latest_date=None,
 ) -> pd.DataFrame:
     """
     Load 7-day base model forecasts from DB and apply meta-learner to produce
@@ -427,7 +431,10 @@ def generate_ensemble_forecast(
 
     Raises ForecastAlignmentError unless all four base models cover the same
     seven dates. With naive among STACK_COLUMNS, naive's forecast is
-    latest_close for every date, its band that same price (no width).
+    latest_close for every date, its band that same price (no width), and
+    the base forecasts must start the trading day after latest_date, the
+    close's own date: a failed base step leaves the previous run's forecasts
+    in the table, which would otherwise be published beside today's close.
     """
     df = load_base_forecasts(ticker, BASE_MODELS)
     try:
@@ -437,17 +444,27 @@ def generate_ensemble_forecast(
 
     # One row per model and date is guaranteed by the check, so each pivot is
     # complete: dates down, the base models across in the meta-learner's order.
+    naive_close = None
+    if NAIVE in STACK_COLUMNS:
+        if latest_close is None or latest_date is None:
+            raise ValueError(
+                f"{ticker}: the ensemble weighs naive, the latest close and its date"
+            )
+        first = next_trading_days(pd.Timestamp(latest_date), 1)[0]
+        if pd.Timestamp(dates[0]).normalize() != first:
+            raise ForecastAlignmentError(
+                f"{ticker}: the base forecasts start {pd.Timestamp(dates[0]).date()}, "
+                f"not {first.date()}, the trading day after the latest close"
+            )
+        naive_close = float(latest_close)
+
     def wide(column: str) -> pd.DataFrame:
         table = df.pivot(index="forecast_date", columns="model", values=column)
         table = table.reindex(index=dates, columns=BASE_MODELS)
         if column != "predicted_close":
             table = table.fillna(0)
-        if NAIVE in STACK_COLUMNS:
-            if latest_close is None:
-                raise ValueError(
-                    f"{ticker}: the ensemble weighs naive, the latest close"
-                )
-            table[NAIVE] = float(latest_close)
+        if naive_close is not None:
+            table[NAIVE] = naive_close
         return table[STACK_COLUMNS]
 
     pivot = wide("predicted_close")
@@ -613,7 +630,7 @@ def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
         logger.info("Generating 7-day ensemble forecast...")
         try:
             forecast_df = generate_ensemble_forecast(
-                ticker, meta_model, float(prices["y"].iloc[-1])
+                ticker, meta_model, float(prices["y"].iloc[-1]), prices["ds"].iloc[-1]
             )
         except ForecastAlignmentError as e:
             # Carried to the end of the loop: one ticker's broken base run
