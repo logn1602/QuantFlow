@@ -1145,3 +1145,11 @@ fixes F1 and F2 as well as E3's settings, and the ensembles by XGBoost and E6, s
 single change can be read off this table; the per-change measurements are the
 validation runs above. The test dates have now been scored three times (T1 and T2 in
 Phase 2, T3 in Phase 3); Phase 4 reuses T3 if the code has not changed.
+
+After T3, the pre-checkpoint review led to three commits (`5913d75`, `fa2e175`,
+`60ecf03`) that change no forecast: the compare and tune commands' handling of failed
+cells and uncommitted runs, a check that the live ensemble's stored base forecasts start
+the trading day after the latest close (it raises only when they do not), a check that
+the booster adapter's forecast starts at the origin, and tests. A check run at `60ecf03`
+(naive and both boosters, AAPL and MSFT, 1,764 validation cells) equals run E6 exactly,
+so T3 still describes the final code's forecasts.
