@@ -25,10 +25,15 @@ def _as_array(values) -> np.ndarray:
     return np.asarray(values, dtype=float)
 
 
+def absolute_percentage_errors(actual, predicted) -> np.ndarray:
+    """Each forecast's absolute error as a percentage of the actual."""
+    a, p = _as_array(actual), _as_array(predicted)
+    return np.abs((a - p) / a) * 100
+
+
 def mape(actual, predicted) -> float:
     """Mean absolute percentage error, as a percentage."""
-    a, p = _as_array(actual), _as_array(predicted)
-    return float(np.mean(np.abs((a - p) / a)) * 100)
+    return float(np.mean(absolute_percentage_errors(actual, predicted)))
 
 
 def rmse(actual, predicted) -> float:
