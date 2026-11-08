@@ -74,7 +74,7 @@ def booster(model_name: str) -> Forecaster:
             raise RuntimeError(f"{model_name} is not installed")
         rolled = generate_forecast(
             model,
-            features.iloc[[-1]][columns].fillna(0),
+            features.iloc[[-1]][columns],
             features["date"].iloc[-1],
             list(features["close"].to_numpy()),
             model_name,

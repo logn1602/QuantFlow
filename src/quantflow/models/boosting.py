@@ -108,8 +108,8 @@ def _train_scored(model_name: str, df: pd.DataFrame, ticker: str) -> dict:
     feature_cols = get_feature_cols()
     available = [c for c in feature_cols if c in df.columns]
 
-    # Fill any remaining NaNs
-    df[available] = df[available].fillna(0)
+    # Missing values stay missing: both families handle them natively, and a
+    # 0 would read as a real RSI or a real day without news (finding F7).
 
     # Train/holdout split
     train, holdout = train_holdout_split(df, copy=True)
@@ -169,11 +169,12 @@ def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
 
 def fit_live_model(model_name: str, labelled: pd.DataFrame, features: list[str]):
     """A fresh model with the scored model's settings, fitted on every
-    labelled row, including the 30 the scored model held out."""
+    labelled row, including the 30 the scored model held out. Missing
+    values stay missing."""
     model = _new_regressor(model_name)
     if model is None:
         return None
-    model.fit(labelled[features].fillna(0), labelled["target_price"])
+    model.fit(labelled[features], labelled["target_price"])
     return model
 
 
@@ -423,7 +424,7 @@ def run(tickers: list[str] | None = None) -> dict:
             live_model = fit_live_model(model_name, labelled, result["features"])
             forecast = generate_forecast(
                 live_model,
-                newest[result["features"]].fillna(0),
+                newest[result["features"]],
                 last_date,
                 price_history,
                 model_name,

@@ -83,6 +83,20 @@ def test_the_booster_adapter_forecasts_what_the_live_run_saves(
         assert [pd.Timestamp(d) for d in live["ds"]] == list(_data(prices).dates)
 
 
+class RecordingRegressor(FakeRegressor):
+    def predict(self, X):
+        self.last = X.copy()
+        return super().predict(X)
+
+
+def test_the_booster_adapter_passes_missing_values_on(monkeypatch):
+    model = RecordingRegressor()
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name: model)
+    forecasters.booster("xgboost")(_data(_prices()))
+    # No articles: every news feature is missing, not 0.
+    assert model.last[["has_news", "sentiment_compound"]].isna().all().all()
+
+
 def test_the_booster_adapter_reads_only_the_history_it_is_given(fake_regressors):
     prices = _prices()
     full = forecasters.booster("xgboost")(_data(prices))
