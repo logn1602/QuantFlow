@@ -49,8 +49,11 @@ logger = get_logger("forecasting")
 # ARIMA's order (Phase 3, E4): None chooses it for each fit, by AIC on that
 # fit's own closes, over ARIMA_ORDER_GRID; a tuple fixes it (it was
 # (5, 1, 0)). Every order in the grid differences once and has no trend, so
-# their AICs compare like with like; (0, 1, 0) is the naive forecast.
-ARIMA_ORDER: tuple[int, int, int] | None = None
+# their AICs compare like with like; (0, 1, 0) is the naive forecast. On the
+# validation dates choosing by AIC was lower on only 3 of 8 tickers (it chose
+# (0, 1, 0) in 139 of 336 fits): dropped, the order stays fixed
+# (docs/evaluation.md, section 16).
+ARIMA_ORDER: tuple[int, int, int] | None = (5, 1, 0)
 ARIMA_ORDER_GRID = [(p, 1, q) for p in range(6) for q in range(3)]
 MLFLOW_EXP = "stock_forecasting"
 # The seed Prophet's interval is simulated from (prophet_forecast).
