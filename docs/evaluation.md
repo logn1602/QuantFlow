@@ -710,6 +710,16 @@ measurement can merge without changing anything the daily workflow does:
    current system); **T2**, the final commit, with the new and old ensemble weights both
    reported. Nothing is chosen after this point in Phase 2.
 
+As built (2026-11-08): the in-process live features (D4) went first on the second
+branch, as their own commit. They change no feature value (on the 2026-11-06 snapshot
+the rebuilt indicators and anomaly scores equal the stored ones exactly), and with them
+in place each of R1 to R5 reaches the live run and the harness in the same commit,
+instead of being built twice. Each run executes from a temporary git worktree at its
+commit, so it uses exactly the committed code. The new weights are scored as
+`ensemble_rolling`, the old as `ensemble_stack`; R6's pair is `xgboost_no_news` and
+`lightgbm_no_news`, run beside the full boosters. Combiners are scored at the scored
+origins only; the warmup origins supply their earlier cells.
+
 Checkpoint 2b shows the validation runs (R0 to R7, with the D2 outcome) and the test
 scorings (T1, T2): every ticker, every model, naive and drift included. On approval,
 `feat/evaluation` is pushed first; `feat/evaluation-live` follows once that is merged,
