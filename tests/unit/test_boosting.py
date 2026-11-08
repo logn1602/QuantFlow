@@ -198,3 +198,15 @@ def test_an_unknown_model_family_is_refused():
     whose forecasts were then stored under the name it was asked for."""
     with pytest.raises(ValueError, match="unknown model family"):
         boosting._new_regressor("xgb")
+
+
+@pytest.mark.parametrize("family", ["xgboost", "lightgbm"])
+def test_each_booster_fits_on_one_thread(family):
+    """XGBoost draws its row subsample (subsample 0.8) differently for
+    different thread counts, so with the default, all of the machine's
+    threads, the same data gave forecasts up to about $3 apart on this
+    laptop (8 threads, where the evaluation ran) and on GitHub's runner:
+    the published forecast was not the evaluated one. One thread makes them
+    the same on any machine. LightGBM does not depend on it; pinned too, so
+    the evaluation's worker processes run one thread per model."""
+    assert boosting._new_regressor(family).get_params()["n_jobs"] == 1

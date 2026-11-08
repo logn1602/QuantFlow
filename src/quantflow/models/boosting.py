@@ -50,6 +50,12 @@ MLFLOW_EXP = "stock_forecasting"
 
 # One set of settings per family, shared by the scored and the live model, so
 # the model that is evaluated is the model that forecasts.
+#
+# n_jobs 1: XGBoost draws its row subsample differently for different thread
+# counts, so with the default (every thread the machine has) the same data
+# gave a different forecast on the laptop the evaluation ran on and on
+# GitHub's runner. One thread gives the same forecast everywhere, and lets
+# the evaluation run tickers in parallel processes without oversubscribing.
 MODEL_PARAMS: dict[str, dict[str, Any]] = {
     "xgboost": {
         "n_estimators": 300,
@@ -58,6 +64,7 @@ MODEL_PARAMS: dict[str, dict[str, Any]] = {
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "random_state": 42,
+        "n_jobs": 1,
         "verbosity": 0,
     },
     "lightgbm": {
@@ -67,6 +74,7 @@ MODEL_PARAMS: dict[str, dict[str, Any]] = {
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "random_state": 42,
+        "n_jobs": 1,
         "verbose": -1,
     },
 }
