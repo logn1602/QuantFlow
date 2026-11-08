@@ -26,7 +26,12 @@ from quantflow.features.engineering import (
     engineer_features,
     get_feature_cols,
 )
-from quantflow.models.boosting import fit_live_model, generate_forecast
+from quantflow.models.boosting import (
+    fit_live_model,
+    generate_forecast,
+    quantile_band,
+    random_walk_band,
+)
 from quantflow.models.ensemble import (
     NAIVE,
     ROLLING_COLUMNS,
@@ -203,6 +208,42 @@ def _combined(meta, base: dict[str, pd.DataFrame], columns: list[str]) -> pd.Dat
     return pd.DataFrame({"yhat": yhat, "yhat_lower": lower, "yhat_upper": upper})
 
 
+class BandVariant:
+    """A booster's forecast with another band (Phase 3, I1), scored without
+    refitting it: the band depends only on the forecast and on data the
+    harness already holds. "random_walk" from the closes up to the origin,
+    as generate_forecast would build it live; "error_quantile" from the
+    booster's own forecasts at the earlier rolling origins whose targets
+    are known by this one (the rolling weights' rows)."""
+
+    needs_history = True
+
+    def __init__(self, model_name: str, band: str):
+        if band not in ("random_walk", "error_quantile"):
+            raise ValueError(f"unknown band {band!r}")
+        self.model_name = model_name
+        self.band = band
+
+    def __call__(
+        self, data: OriginData, base: dict[str, pd.DataFrame], earlier: pd.DataFrame
+    ) -> pd.DataFrame:
+        if self.model_name not in base:
+            raise RuntimeError(f"no {self.model_name} forecast to band")
+        yhat = base[self.model_name]["yhat"].to_numpy(dtype=float)
+        if self.band == "random_walk":
+            lower, upper = random_walk_band(yhat, data.prices["close"])
+        else:
+            stack = rolling_origin_stack(earlier, data.origin, [self.model_name])
+            errors = {
+                int(h): np.log(rows["actual"] / rows[self.model_name]).to_numpy()
+                for h, rows in stack.groupby("h")
+            }
+            if set(errors) != set(range(1, len(yhat) + 1)):
+                raise RuntimeError("no earlier error at every horizon")
+            lower, upper = quantile_band(yhat, errors)
+        return pd.DataFrame({"yhat": yhat, "yhat_lower": lower, "yhat_upper": upper})
+
+
 FORECASTERS: dict[str, Forecaster] = {
     **BASELINES,
     "arima": arima,
@@ -219,4 +260,11 @@ COMBINERS: dict[str, Combiner] = {
 VARIANTS: dict[str, Forecaster] = {
     "xgboost_no_news": booster("xgboost", without=tuple(NEWS_FEATURES)),
     "lightgbm_no_news": booster("lightgbm", without=tuple(NEWS_FEATURES)),
+}
+
+# Run only when named in --models: the boosters' band candidates (I1).
+BAND_VARIANTS: dict[str, Combiner] = {
+    f"{model}_{short}": BandVariant(model, band)
+    for model in ("xgboost", "lightgbm")
+    for short, band in (("rwband", "random_walk"), ("qband", "error_quantile"))
 }

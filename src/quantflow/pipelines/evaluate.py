@@ -60,7 +60,13 @@ from quantflow.features.engineering import (
     stage_anomaly_scores,
 )
 from quantflow.models.boosting import MODEL_PARAMS, TUNING_GRID
-from quantflow.models.forecasters import COMBINERS, FORECASTERS, VARIANTS, Booster
+from quantflow.models.forecasters import (
+    BAND_VARIANTS,
+    COMBINERS,
+    FORECASTERS,
+    VARIANTS,
+    Booster,
+)
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("evaluate")
@@ -184,7 +190,9 @@ def _start_mlflow(label: str, tags: dict):
 
 
 def run_evaluation(args) -> int:
-    unknown = sorted(set(args.models) - {*FORECASTERS, *VARIANTS, *COMBINERS})
+    unknown = sorted(
+        set(args.models) - {*FORECASTERS, *VARIANTS, *COMBINERS, *BAND_VARIANTS}
+    )
     if unknown:
         print(f"Refusing: no model named {', '.join(unknown)}.", file=sys.stderr)
         return 2
@@ -208,7 +216,9 @@ def run_evaluation(args) -> int:
     tickers = args.tickers or snapshot.tickers
     known = {**FORECASTERS, **VARIANTS}
     forecasters = {m: f for m, f in known.items() if m in args.models}
-    combiners = {m: c for m, c in COMBINERS.items() if m in args.models}
+    combiners = {
+        m: c for m, c in {**COMBINERS, **BAND_VARIANTS}.items() if m in args.models
+    }
     needs_history = any(getattr(c, "needs_history", False) for c in combiners.values())
     origins = [(p, "scored") for p in scored]
     if needs_history:

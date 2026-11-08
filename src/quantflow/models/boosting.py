@@ -111,6 +111,48 @@ TARGETS: dict[str, str] = {"xgboost": "price", "lightgbm": "price"}
 ROLL_PRICE_RANGE: dict[str, bool] = {"xgboost": False, "lightgbm": False}
 
 
+# The boosters' bands (Phase 3, I1, decided by its band rule):
+#   "fixed_2pct"     the forecast plus and minus 2%, at every horizon;
+#   "random_walk"    a 95% band for a random walk around the forecast,
+#                    forecast x exp(plus or minus 1.96 sigma sqrt(h)), sigma
+#                    the standard deviation of the last BAND_RETURNS daily
+#                    log returns up to the forecast's start (random_walk_band);
+#   "error_quantile" the 2.5% and 97.5% quantiles of the booster's own log
+#                    errors at each horizon over the earlier rolling origins
+#                    (quantile_band; evaluated only for now: live it would need
+#                    those earlier forecasts replayed).
+BANDS: dict[str, str] = {"xgboost": "fixed_2pct", "lightgbm": "fixed_2pct"}
+BAND_RETURNS = 60
+BAND_Z = 1.96
+
+
+def fixed_band(yhat) -> tuple[np.ndarray, np.ndarray]:
+    yhat = np.asarray(yhat, dtype=float)
+    return yhat * 0.98, yhat * 1.02
+
+
+def random_walk_band(yhat, closes) -> tuple[np.ndarray, np.ndarray]:
+    """yhat[h - 1] x exp(plus or minus BAND_Z sigma sqrt(h)), sigma the
+    standard deviation of the last BAND_RETURNS daily log returns of
+    closes (the history up to the forecast's start)."""
+    yhat = np.asarray(yhat, dtype=float)
+    recent = np.asarray(closes, dtype=float)[-(BAND_RETURNS + 1) :]
+    sigma = float(np.std(np.diff(np.log(recent)), ddof=1))
+    half = BAND_Z * sigma * np.sqrt(np.arange(1, len(yhat) + 1))
+    return yhat * np.exp(-half), yhat * np.exp(half)
+
+
+def quantile_band(yhat, errors: dict[int, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """yhat[h - 1] x exp of the 2.5% and 97.5% quantiles of errors[h], the
+    log errors log(actual / forecast) at horizon h of earlier forecasts."""
+    yhat = np.asarray(yhat, dtype=float)
+    low, high = zip(
+        *(np.quantile(errors[h], [0.025, 0.975]) for h in range(1, len(yhat) + 1)),
+        strict=True,
+    )
+    return yhat * np.exp(np.array(low)), yhat * np.exp(np.array(high))
+
+
 def training_target(model_name: str, rows: pd.DataFrame) -> pd.Series:
     """What the family is fitted on, from rows with close and target_price."""
     if TARGETS[model_name] == "log_return":
@@ -298,6 +340,7 @@ def generate_forecast(
     # Trading days, not weekdays: a forecast must not promise a close on a
     # market holiday.
     future_dates = next_trading_days(last_date, FORECAST_DAYS)
+    history = list(price_history)
 
     for forecast_date in future_dates:
         # buf[-1] is the close of the row being predicted from.
@@ -309,8 +352,6 @@ def generate_forecast(
                 "model": model_name,
                 "ds": forecast_date,
                 "predicted_close": pred,
-                "lower_bound": pred * 0.98,
-                "upper_bound": pred * 1.02,
             }
         )
 
@@ -373,7 +414,15 @@ def generate_forecast(
         # RSI, MACD, volume, sentiment, anomaly stay frozen: exogenous signals
         # that cannot be extrapolated from price alone.
 
-    return pd.DataFrame(forecasts)
+    out = pd.DataFrame(forecasts)
+    band = BANDS[model_name]
+    if band == "random_walk":
+        lower, upper = random_walk_band(out["predicted_close"], history)
+    elif band == "fixed_2pct":
+        lower, upper = fixed_band(out["predicted_close"])
+    else:
+        raise ValueError(f"no live {band!r} band for {model_name}")
+    return out.assign(lower_bound=lower, upper_bound=upper)
 
 
 # ── MLflow logging ────────────────────────────────────────────────────────────
