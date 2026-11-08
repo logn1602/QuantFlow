@@ -117,15 +117,40 @@ def test_fed_the_actual_closes_the_rollout_rebuilds_trainings_price_features(tar
         )  # fmt: skip
 
 
-def test_the_frozen_features_stay_at_the_starting_rows_values(target):
+PRICE_RANGE = ["open", "high", "low", "hl_range"]
+
+
+def test_without_rolling_the_range_everything_else_stays_frozen(target, monkeypatch):
     """What the rollout does not recompute it leaves as it was."""
+    monkeypatch.setitem(boosting.ROLL_PRICE_RANGE, "xgboost", False)
     features = _features(jump_at=150)
     seen = _rollout(features, len(features) - 12)
     frozen = [c for c in seen[0].columns if c not in ROLLED]
+    assert set(PRICE_RANGE) <= set(frozen)
     for step in range(1, 7):
         pd.testing.assert_series_equal(
             seen[step].iloc[0][frozen], seen[0].iloc[0][frozen], check_names=False
         )
+
+
+def test_open_high_and_low_roll_forward_from_each_close(target, monkeypatch):
+    """E2: each day opens at the previous close, and its high and low keep
+    the starting day's ratios to its close; the rest stays frozen."""
+    monkeypatch.setitem(boosting.ROLL_PRICE_RANGE, "xgboost", True)
+    features = _features(jump_at=150)
+    start = len(features) - 12
+    seen = _rollout(features, start)
+    closes = features["close"].iloc[start : start + 8].to_numpy()
+    first = seen[0].iloc[0]
+    high_ratio, low_ratio = first["high"] / closes[0], first["low"] / closes[0]
+    frozen = [c for c in seen[0].columns if c not in ROLLED + PRICE_RANGE]
+    for step in range(1, 7):
+        row = seen[step].iloc[0]
+        assert row["open"] == pytest.approx(closes[step - 1], rel=1e-12)
+        assert row["high"] == pytest.approx(closes[step] * high_ratio, rel=1e-9)
+        assert row["low"] == pytest.approx(closes[step] * low_ratio, rel=1e-9)
+        assert row["hl_range"] == pytest.approx(row["high"] - row["low"], rel=1e-9)
+        pd.testing.assert_series_equal(row[frozen], first[frozen], check_names=False)
 
 
 def test_a_band_with_no_width_gives_trainings_values_not_the_last_ones(target):

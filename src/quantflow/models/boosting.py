@@ -95,6 +95,14 @@ MODEL_PARAMS: dict[str, dict[str, Any]] = {
 TARGETS: dict[str, str] = {"xgboost": "price", "lightgbm": "price"}
 
 
+# Whether the rollout carries open, high and low forward (Phase 3, E2,
+# decided per booster). Frozen at the starting day's values, they hold every
+# step near that day's price level, whatever the model predicts; rolled,
+# each day opens at the previous close and keeps the starting day's high and
+# low relative to its close.
+ROLL_PRICE_RANGE: dict[str, bool] = {"xgboost": True, "lightgbm": True}
+
+
 def training_target(model_name: str, rows: pd.DataFrame) -> pd.Series:
     """What the family is fitted on, from rows with close and target_price."""
     if TARGETS[model_name] == "log_return":
@@ -241,6 +249,9 @@ def generate_forecast(
       - Rolling mean/std (5/10/20) recomputed from the buffer
       - Bollinger position and width from the bands of the buffer's
         last 20 closes, built as training builds them
+      - Open, high and low, and the day's range, carried forward where
+        ROLL_PRICE_RANGE says so: each day opens at the previous close and
+        keeps the starting day's high and low ratios to the close
       - Exogenous features (RSI, MACD, sentiment, anomaly, volume) stay frozen
         at their last known values, since we cannot extrapolate them forward.
     """
@@ -249,6 +260,14 @@ def generate_forecast(
     # Seed the rolling buffer with the last 30 actual closes so all windows
     # (up to rolling_mean_20 + lag_10) have enough history from day one.
     buf = list(price_history[-30:])
+
+    # The starting day's high and low relative to its close, for E2.
+    roll_range = ROLL_PRICE_RANGE[model_name]
+    start_close = float(buf[-1])
+    high_ratio, low_ratio = (
+        float(X_last[col].iloc[0]) / start_close if col in X_last.columns else np.nan
+        for col in ("high", "low")
+    )
 
     forecasts = []
     # Trading days, not weekdays: a forecast must not promise a close on a
@@ -313,6 +332,18 @@ def generate_forecast(
             current_X["bb_position"] = float(position.iloc[0])
         if "bb_width" in current_X.columns:
             current_X["bb_width"] = float(width.iloc[0])
+
+        # Open, high and low, and the day's range, carried forward (E2).
+        if roll_range:
+            high, low = pred * high_ratio, pred * low_ratio
+            for col, value in (
+                ("open", prices[-2]),
+                ("high", high),
+                ("low", low),
+                ("hl_range", high - low),
+            ):
+                if col in current_X.columns:
+                    current_X[col] = float(value)
 
         # RSI, MACD, volume, sentiment, anomaly stay frozen: exogenous signals
         # that cannot be extrapolated from price alone.
