@@ -95,6 +95,7 @@ class FakeMlflow(types.ModuleType):
 def harness(monkeypatch):
     monkeypatch.setattr(evaluate, "FORECASTERS", dict(ro.BASELINES))
     monkeypatch.setattr(evaluate, "COMBINERS", {})
+    monkeypatch.setattr(evaluate, "VARIANTS", {"naive_again": ro.naive_forecast})
     monkeypatch.setattr(evaluate, "git_state", lambda: ("abc1234def", False))
     fake = FakeMlflow()
     monkeypatch.setitem(sys.modules, "mlflow", fake)
@@ -124,6 +125,24 @@ def test_a_validation_run_writes_its_report_and_logs_to_mlflow(tmp_path, harness
     assert harness.call("end") == [("end", "FINISHED")]
     report = (out / "report.md").read_text("utf-8")
     assert "window: validation" in report and "News coverage" in report
+
+
+def test_a_variant_runs_only_when_named(tmp_path, harness):
+    _snapshot(tmp_path)
+    assert _run(tmp_path) == 0
+    default = pd.read_csv(tmp_path / "runs" / "r" / "cells.csv")
+    assert "naive_again" not in set(default["model"])
+    evaluate.main(
+        ["run", "--snapshot", str(tmp_path / "snap"), "--out", str(tmp_path / "runs"),
+         "--label", "v", "--models", "naive,naive_again"]
+    )  # fmt: skip
+    named = pd.read_csv(tmp_path / "runs" / "v" / "cells.csv")
+    assert set(named["model"]) == {"naive", "naive_again"}
+
+
+def test_an_unknown_model_is_refused_before_reading_anything(tmp_path, harness):
+    assert _run(tmp_path, "--models", "naive,xgbost") == 2  # no snapshot exists
+    assert harness.calls == []
 
 
 def test_a_test_run_without_a_reason_is_refused_before_reading_anything(

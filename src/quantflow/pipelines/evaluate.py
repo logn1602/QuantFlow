@@ -50,7 +50,7 @@ from quantflow.features.engineering import (
     merge_feature_inputs,
     stage_anomaly_scores,
 )
-from quantflow.models.forecasters import COMBINERS, FORECASTERS
+from quantflow.models.forecasters import COMBINERS, FORECASTERS, VARIANTS
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("evaluate")
@@ -174,6 +174,10 @@ def _start_mlflow(label: str, tags: dict):
 
 
 def run_evaluation(args) -> int:
+    unknown = sorted(set(args.models) - {*FORECASTERS, *VARIANTS, *COMBINERS})
+    if unknown:
+        print(f"Refusing: no model named {', '.join(unknown)}.", file=sys.stderr)
+        return 2
     if args.window == "test" and not args.reason:
         print(
             "Refusing: a test-date run needs --reason (it is counted).", file=sys.stderr
@@ -192,7 +196,8 @@ def run_evaluation(args) -> int:
     dates = snapshot.trading_dates
     scored, warmup = origin_grid(len(dates)).window(args.window)
     tickers = args.tickers or snapshot.tickers
-    forecasters = {m: f for m, f in FORECASTERS.items() if m in args.models}
+    known = {**FORECASTERS, **VARIANTS}
+    forecasters = {m: f for m, f in known.items() if m in args.models}
     combiners = {m: c for m, c in COMBINERS.items() if m in args.models}
     needs_history = any(getattr(c, "needs_history", False) for c in combiners.values())
     origins = [(p, "scored") for p in scored]

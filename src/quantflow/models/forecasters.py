@@ -40,6 +40,17 @@ from quantflow.models.statistical import (
 
 FORECAST_COLUMNS = ["yhat", "yhat_lower", "yhat_upper"]
 
+# The news features the ablation leaves out (docs/evaluation.md, section 4).
+NEWS_FEATURES = [
+    "sentiment_compound",
+    "sentiment_3d",
+    "sentiment_change",
+    "pos_count",
+    "neg_count",
+    "article_count",
+    "has_news",
+]
+
 
 def _ds_y(data: OriginData) -> pd.DataFrame:
     """The prices as the statistical models read them (load_daily_close)."""
@@ -58,9 +69,10 @@ def prophet(data: OriginData) -> pd.DataFrame:
     )
 
 
-def booster(model_name: str) -> Forecaster:
+def booster(model_name: str, without: tuple[str, ...] = ()) -> Forecaster:
     """XGBoost or LightGBM as boosting.run forecasts live: the live model
-    fitted on every labelled row, rolled forward from the newest one."""
+    fitted on every labelled row, rolled forward from the newest one.
+    without names features to leave out, for an ablation."""
 
     def forecast(data: OriginData) -> pd.DataFrame:
         raw = build_features(
@@ -68,7 +80,9 @@ def booster(model_name: str) -> Forecaster:
         )
         features = engineer_features(raw, drop_unlabeled=False)
         labelled = features.dropna(subset=["target_price"])
-        columns = [c for c in get_feature_cols() if c in labelled.columns]
+        columns = [
+            c for c in get_feature_cols() if c in labelled.columns and c not in without
+        ]
         model = fit_live_model(model_name, labelled, columns)
         if model is None:
             raise RuntimeError(f"{model_name} is not installed")
@@ -126,3 +140,9 @@ FORECASTERS: dict[str, Forecaster] = {
     "lightgbm": booster("lightgbm"),
 }
 COMBINERS: dict[str, Combiner] = {"ensemble_stack": ensemble_stack}
+
+# Run only when named in --models: the news ablation's pair (R6).
+VARIANTS: dict[str, Forecaster] = {
+    "xgboost_no_news": booster("xgboost", without=tuple(NEWS_FEATURES)),
+    "lightgbm_no_news": booster("lightgbm", without=tuple(NEWS_FEATURES)),
+}
