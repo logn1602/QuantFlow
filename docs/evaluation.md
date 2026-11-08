@@ -310,9 +310,23 @@ article the workflow fetches to the next day's row. The cost: as a training row,
 can also hold the few articles another fetcher (the laptop scheduler, a manual run)
 stores between the workflow's model step and midnight.
 
-The 24-hour figure gets checked against NewsAPI's current documentation and the stored
-`inserted_at` values when this is built; with `inserted_at` in the rule, it only matters
-if an article was ever stored before its delay had passed.
+The 24-hour figure was checked against the stored `inserted_at` values on the
+2026-11-06 snapshot: no NewsAPI article was stored sooner than 24.0 hours after its
+publish time (median 31 hours, 95th percentile 60). NewsAPI's current documentation is
+checked when D7 is wired (second branch). With `inserted_at` in the rule, the delay only
+matters if an article was ever stored before it had passed, and none was.
+
+**A historical archive is a different kind of source.** If a trusted archive is ever
+added (for example a paid news API's back catalogue, imported once), its articles reach
+the database months or years after they were published, so counting from arrival would
+put every one of them on the day of the import. For such a source an article counts
+from its **publish time plus that source's delay**: how long the provider's live feed
+takes to show an article, so a training row holds what a live fetch from it could have
+seen. This is a per-source rule, set where the source's delay is (`SOURCE_DELAY` in
+`features/news.py`), not a switch for every source: RSS and NewsAPI keep counting from
+arrival, because their `inserted_at` is when the live run could first see them.
+"Trusted" means the archive's publish times have been checked against the articles the
+live fetchers stored for the same days, before any of its rows count.
 
 ### Missing is not neutral (also Phase 1 review findings F6 and F7)
 
@@ -362,6 +376,43 @@ article, the news ablation is reported as "not enough data", and no news feature
 kept or dropped on it, in Phase 2 or Phase 3 (Phase 3's news-variant experiments do not
 run). The threshold is fixed here, before the coverage is known. The 2d corrections
 still ship (section 2): they make training match the live run whatever the coverage.
+
+**Outcome on the 2026-11-06 snapshot** (digest `f0c3957b`, 2026-11-08): the stored news
+starts in April 2026 (first article published 2026-04-02, first stored 2026-04-10), so
+only the last validation origin, 2026-04-23, has a real article: 8 of the 336
+validation (ticker, origin) rows, 2.4%, and none of the 2,440 training rows at the first
+validation origin. The test origins have 160 of 200 (80%). So the news ablation reads
+**"not enough data yet"**: R6 is reported and decides nothing, Phase 3's news-variant
+experiments do not run, and the sentiment features stay in the boosters as they are,
+with the 2d corrections. The test dates' 80% cannot stand in: they never choose
+(section 2).
+
+### Forward test of the news (after Phase 2)
+
+No free archive can fill in the history: Alpha Vantage's NEWS_SENTIMENT, the candidate
+checked, is a premium endpoint (one request with the free key, 2026-11-08). So the news
+gets its test on dates still to come, with the plan fixed before any of them exist:
+
+- **Window**: forward origins every 5 trading days from 2026-11-09, the first trading
+  date after the snapshot, horizon 7. **42 origins** (proposed 2026-11-08, confirmed at
+  Checkpoint 2b), as many as the validation window every other decision uses: the last
+  origin is 2027-09-03 and its day-7 target 2027-09-15, 213 trading days after the
+  snapshot by the project calendar. Scored once, when that close is in; no interim
+  look, since an early look that misses invites another.
+- **Snapshot**: a new one, exported then on the owner's go-ahead (D5). The 2026-11-06
+  snapshot and its test dates stay as they are.
+- **Gate**: D15 on the forward origins: at least half the (ticker, origin) rows with a
+  real article, or "not enough data" again. The test origins had 80%, so a working
+  daily fetch clears it with room. It depends on the daily workflow fetching every
+  trading day until then: GitHub disables a scheduled workflow after 60 days without
+  repository activity (it did on 2026-11-03), and under D6 a day without a fetch has
+  every sentiment feature missing.
+- **Comparison**: the boosters with and without the sentiment features (R6's pair), on
+  the code of that day, against each other with the primary test of section 3
+  (per-origin APE difference, Newey-West, Holm across the two boosters), and both
+  against naive.
+- **Rule**: written down and approved before the forward window is scored, on Phase 3's
+  bar (kept only if it improves the held-out results across tickers).
 
 ### Ablation
 
@@ -678,6 +729,7 @@ about 3.5 minutes from the live ensemble refits, if D2 approves them (section 5)
 | A manual GitHub workflow for the evaluation | Decision D9. |
 | Deleting the bad sentiment rows | The features ignore them; the DELETE is offered, yours to run. |
 | Social-media news sources | Phase 5 designs for them; not built. |
+| Deciding whether the news helps | Too little news on the validation dates (D15); a forward test after 2027-09-15 (section 4). |
 
 ---
 
@@ -719,7 +771,7 @@ Decided by the owner; the body above applies them.
 | D4 | Live features built in-process through the harness's function (second branch). |
 | D5 | One read-only snapshot export per snapshot, on the owner's go-ahead, into git-ignored `eval_snapshots/`; the coverage report runs on it first. |
 | D6 | Missing stays missing for the boosters; no forward fill; `has_news`; sentiment missing before collection began and on rows whose window saw no fetch. |
-| D7 | An article is available at the later of publish time plus its source's delay and `inserted_at`; rows cut at 00:00 UTC after each trading date. |
+| D7 | An article is available at the later of publish time plus its source's delay and `inserted_at`; rows cut at 00:00 UTC after each trading date. A trusted historical archive, if one is ever added, counts from publish time plus its delay, not from arrival: a per-source rule (added 2026-11-08, section 4). |
 | D8 | One primary test per model (per-origin difference from naive averaged over tickers and horizons, Newey-West, Holm across models); everything else descriptive; drift baseline beside naive. |
 | D9 | No manual GitHub workflow for the evaluation now. |
 | D10 | Prediction-band coverage and width reported per horizon. |
