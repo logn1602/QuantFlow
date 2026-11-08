@@ -87,10 +87,14 @@ Test-date ledger:
 |---|---|---|---|---|---|
 | 1 | 2026-11-08 | 2 | `7f9133c` | `9a069158` | T1: the current system (R0's commit): naive, drift, ARIMA, Prophet, XGBoost, LightGBM, the ensemble with the old weights. 25 origins x 8 tickers. |
 | 2 | 2026-11-08 | 2 | `cff181e` | `ed9be5e8` | T2: the final Phase 2 commit, after D2 was settled on R7: the same models plus the ensemble with the new weights, scored beside the old (12 test-warmup origins supply the new weights' first rows). |
+| 3 | 2026-11-08 | 3 | `7beb3ff` | `93bdf518` | T3: the final Phase 3 model set, after every Phase 3 choice was settled on the validation dates (section 16): every model and both ensembles. |
 
 Kept, and worse on the test dates (for the README, rule above): the live ensemble
 kept the old weights by D2 on the validation dates (3.381% against 3.389% MAPE);
 on the test dates the new weights score 3.298% and the old 3.676%. The old weights
+stay. Phase 3 (T3 against T2, section 16): XGBoost's tuned settings (E3) and the live
+stack's naive column (E6) were kept on the validation dates, and on the test dates
+XGBoost went from 3.440% to 3.538% and the live stack from 3.676% to 3.711%. Both
 stay.
 
 ### How a run flows
@@ -170,7 +174,8 @@ The same code as the live run, called with the history cut at `o`:
   track the price level, so every horizon's forecast is anchored near day `o`'s price;
   a booster scoring close to naive may be partly built that way rather than learned,
   which is why section 3 reports how far each model's forecasts move. This is the live
-  model, not the train-split model that passes the holdout as `eval_set`.
+  model, not the train-split model (which was handed the holdout as `eval_set` until
+  Phase 3's F3, section 16).
 - **Ensemble**: section 5.
 
 A dense 1-step-ahead task (every model given the true history each day) is not
@@ -877,3 +882,274 @@ Decided by the owner; the body above applies them.
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
 origin's close) as a fifth stack column, so the ensemble can lean on it; not freezing
 open, high and low during the boosters' rollout.
+
+---
+
+## 16. Phase 3: accuracy experiments
+
+Approved by the owner on 2026-11-08, with changes: the correctness fixes are separated
+from the experiments and kept whatever they score; tickers run in parallel, at most 3
+workers; Prophet tuning (E5) is skipped. Written before any Phase 3 run. Everything
+runs on `feat/accuracy`, one change per commit, each run from a git worktree at its
+commit on snapshot `f0c3957b`, on the validation dates, logged to MLflow.
+
+### Order of work
+
+1. **Setup, no forecast changes.**
+   - **S1**: the interval score (below) beside band coverage and width, per horizon;
+     the keep-or-drop rule as code (`evaluation/decision.py`, the `compare` command),
+     so every decision is computed the same way, from two runs' cells.
+   - **S2**: tickers in parallel worker processes, at most 3 (8 GB of RAM), each model
+     on one thread inside its worker. A test checks that parallel cells equal
+     sequential cells exactly, and a full parallel run is checked against the
+     sequential run of the commit before it.
+2. **Fixes, kept whatever they score**, like the 2d corrections (section 2): each its
+   own commit with a test shown failing first, measured on the validation dates and
+   reported, not used to keep or drop anything.
+   - **F1, one thread per booster.** XGBoost's row subsampling (`subsample` 0.8) draws
+     different rows for different thread counts, so the same data gives a different
+     forecast on this laptop (8 threads, where R7 ran) than on GitHub's runner: up to
+     about $3 apart at one origin of the snapshot. With one thread the published
+     forecast is the evaluated one on any machine. LightGBM's forecasts do not depend
+     on the thread count; it is pinned too, so each worker runs one thread per model.
+   - **F1b, Prophet's band from a fixed seed** (found building S2). Prophet simulates
+     its 95% interval from numpy's global random state, unseeded, so its band, and the
+     ensembles' bands that combine it, changed on every run, and worker processes could
+     not reproduce a sequential run. The band is drawn from a fixed seed, and the
+     caller's random state is put back. No point forecast changes.
+   - **F2, the rollout's Bollinger features as training builds them.** Training gets
+     the bands from `ta`, with the population standard deviation, rounded as stored;
+     the rollout used the sample standard deviation (its `bb_width` about 2.6% wider)
+     and clipped `bb_position` to [0, 1], which training never does. Both now come
+     from one definition, and a feature is missing where the band has no width, as in
+     training.
+   - **F3, no holdout in the scored fit.** The scored XGBoost fit received the holdout
+     as `eval_set`. Without early stopping that changes no prediction, but it would
+     leak the holdout the moment early stopping or tuning read it.
+
+   The run after F3, **B0**, is every model's incumbent.
+3. **Experiments**, in this order, each one hypothesis against the incumbent and naive:
+
+| # | Hypothesis | Decided on |
+|---|---|---|
+| E1 | The boosters predict the next day's log return, turned back into a price, instead of the price itself: a tree cannot predict above the highest target it was trained on. | each booster |
+| E2 | The rollout stops freezing open, high and low: each step's open is the previous close, and high and low keep the last day's ratios to the close. | each booster |
+| E3 | Booster hyperparameters tuned on training data only (below). | each booster |
+| E4 | ARIMA's order chosen by AIC on each fit's own data, p 0 to 5, q 0 to 2, d 1, instead of a fixed (5, 1, 0). | ARIMA |
+| | Base set: every model and both ensembles, after E1 to E4: the ensembles' incumbent. | |
+| E6 | Naive as a fifth stack column, in the live 30-day stack and the rolling weights. | each ensemble |
+| E7 | Separate rolling-ensemble weights per horizon. | the rolling ensemble |
+| I1 | The boosters' bands (below). | the band rule |
+
+   Not run: Prophet tuning (E5, skipped by the owner), and the news variants (D15).
+4. **T3**: the test dates scored once, with the final model set (ledger entry 3),
+   reported, never used to choose. Phase 4 reuses T3 if the code has not changed.
+
+### The keep-or-drop rule (E1 to E7)
+
+- **Cells**: one model's cells at the 42 validation origins x 8 tickers x horizons 1
+  to 7, in the candidate's run and the incumbent's, both on snapshot `f0c3957b`.
+  Compared on the cells both versions forecast.
+- **Incumbent**: the model as of the last kept change (B0 to start).
+- **Keep only if both**: (1) the candidate's MAPE over all those cells is strictly lower
+  than the incumbent's; (2) its MAPE is lower on at least 5 of the 8 tickers.
+  Otherwise drop it; a tie drops (the incumbent is simpler or already there).
+- **Dropped regardless** if it fails more cells than the incumbent, or more than the
+  harness's 10% limit.
+- A change to both boosters is decided per booster; ARIMA's on ARIMA's cells; E6 per
+  ensemble, E7 on the rolling ensemble. Other models' numbers are reported, not
+  deciding.
+- **Reported, not deciding**: MAPE by horizon, MAE, skill against naive, directional
+  accuracy, interval score and band coverage, a paired test against the incumbent
+  (per-origin difference in absolute percentage error, Newey-West lag 1), and the D8
+  primary test against naive, still the only basis for "beats naive".
+
+### Tuning on training data only (E3)
+
+Tuning origins sit on the grid's 5-day step before the validation warmup, each one's
+day-7 target before the first warmup origin (2025-04-02): 24 origins, 2024-10-01 to
+2025-03-19 on the snapshot (the last target 2025-03-28), each training on 121 to 236
+rows. One is left out: 2025-01-03, whose forecast days include 2025-01-09, a one-off
+closure the trading calendar does not know (section 2), so the harness refuses it. The
+first tuning run stopped on it before scoring anything; the command now leaves such an
+origin out and names it. 23 origins are scored. No tuning target is a
+validation or test date. For each booster the candidates are the current settings and a
+grid of 12 (max depth 3, 4 or 6; learning rate 0.03 or 0.1; 200 or 600 trees; the
+sampling settings unchanged), each scored by its 7-day recursive MAPE over every
+tuning cell; the lowest is E3's candidate, then judged on the validation dates by the
+rule above. If the current settings score lowest, E3 has no candidate and does not
+run. Settings chosen on 121 to 236 training rows may suit the validation origins' 306
+to 511 less well; that is the cost of tuning on training data only. No early stopping.
+
+### The band rule (I1)
+
+The boosters publish a fixed plus or minus 2% band, which covered 44% (XGBoost) and 42%
+(LightGBM) of actual closes on the validation dates (R7). Two candidates, after E1 to E3 so they describe
+the final boosters:
+
+- (a) a random-walk band: forecast x exp(plus or minus 1.96 sigma sqrt(h)), with sigma
+  the standard deviation of the last 60 daily log returns up to the origin;
+- (b) per-horizon 2.5% and 97.5% quantiles of the booster's own log errors at the 12
+  grid origins before this one whose targets are known by it (the rolling weights'
+  pattern; the live run would replay those 12 forecasts, about 1 to 2 minutes).
+
+A candidate is kept only if its 95% band covers 92.5% to 97.5% of each booster's
+validation cells and its mean interval score is below the plus or minus 2% band's; of
+two that pass, the lower interval score. If neither passes, the boosters' bands stop
+being presented as 95% bands, and the ensemble stops combining them as if they were.
+The dashboard labels the bands "XGBOOST band" and so on, with no level, and the README
+claims none; Phase 4 adds the measured coverage to the label.
+
+The **interval score** of a 95% band [l, u] for an actual y is (u - l) + 40 (l - y) if
+y < l, + 40 (y - u) if y > u (Gneiting and Raftery, 2007, alpha 0.05), reported as a
+percentage of y so tickers can be pooled. Narrow bands that miss are penalised as
+well as wide ones; lower is better.
+
+### Results on the validation dates (2026-11-08)
+
+Every run used snapshot `f0c3957b` and the 42 validation origins (54 with the warmup,
+where an ensemble or a band variant needed earlier origins). Each ran from a git
+worktree at its commit and was logged to MLflow (experiment `rolling_origin_evaluation`);
+the outputs are in `eval_runs/<run>/`. Each decision's per-ticker and per-horizon tables
+are in the candidate run's `compare-<incumbent>.md`. MAPE in %.
+
+**Fixes** (kept whatever they scored):
+
+| Fix | Run, commit, MLflow | Effect |
+|---|---|---|
+| F1, one thread | F1, `e970153`, `75b0de04` | XGBoost 3.2151 to 3.2177: every forecast moved, by up to $18.27. LightGBM, ARIMA, naive and drift identical; the ensembles move with XGBoost (stack 3.3807 to 3.3747, rolling 3.3885 to 3.3782). Prophet's band also changed on every cell between R7 and F1, with no change to Prophet: its unseeded sampling (F1b). |
+| F1b, Prophet's seed | F1b, `ecc289d`, `189faf38` | No point forecast changed; only Prophet's and the ensembles' bands. |
+| S2, workers | S2, `310f1e2`, `b86066ca` | All 22,848 cells equal F1b's exactly, every column but timing; 338 s against 1,069 s. |
+| F2, Bollinger | F2, `4200240`, `31845c57` | XGBoost 3.2177 to 3.2138, LightGBM 3.3484 to 3.3465 (days 2 to 7 only: day 1 starts from the true row). |
+| F3, no `eval_set` | B0, `6ed36e5`, `72a7633c` | Identical to F2 everywhere. B0 is every model's incumbent. |
+
+**Experiments** (the rule above; "lower" counts the tickers on which the candidate's
+MAPE was lower):
+
+| | Run, commit, MLflow | Model | Incumbent | Candidate | Lower | Decision |
+|---|---|---|---|---|---|---|
+| E1, log-return target | E1, `f096371`, `4fa403e6` | XGBoost | 3.2138 | 3.6804 | 1 of 8 | drop |
+| | | LightGBM | 3.3465 | 3.6416 | 2 of 8 | drop |
+| E2, open, high, low rolled | E2, `a80d5fa`, `670028c5` | XGBoost | 3.2138 | 3.5849 | 0 of 8 | drop |
+| | | LightGBM | 3.3465 | 3.6468 | 1 of 8 | drop |
+| E3, tuned settings | E3, `94ea0ec`, `9f0f8d8c` | XGBoost | 3.2138 | 3.1426 | 6 of 8 | **keep** |
+| | | LightGBM | 3.3465 | 3.3834 | 3 of 8 | drop |
+| E4, ARIMA by AIC | E4, `6549dff`, `599cdc76` | ARIMA | 2.8833 | 2.8827 | 3 of 8 | drop |
+| E6, naive column | E6, `73a47b5`, `fbff7c63` | ensemble_stack | 3.3740 | 3.3709 | 7 of 8 | **keep** |
+| | | ensemble_rolling | 3.3913 | 3.3823 | 6 of 8 | **keep** |
+| E7, per-horizon weights | E7, `01da7e8`, `a230ad3f` | ensemble_rolling | 3.3823 | 3.3692 | 4 of 8 | drop |
+
+- **E1** did better at days 1 and 2 (XGBoost 1.56% against 1.76% at day 1) and worse
+  from day 3 (5.52% against 4.30% at day 7): the predicted returns compound over the
+  rollout.
+- **E2** left day 1 unchanged, by construction, and did worse every later day. Frozen,
+  open, high and low pull each step toward the starting price, which on these dates
+  helps.
+- **E3**'s tuning (run E3-tuning, `4836f40`, MLflow `85c14595`, 23 origins, 1,288
+  cells): XGBoost depth 6, rate 0.03, 600 trees, at 3.918% against the current
+  settings' 4.013%; LightGBM depth 4, rate 0.1, 600 trees, at 4.322% against 4.346%. On
+  the validation dates XGBoost's was lower at every horizon (paired p 0.002); LightGBM's
+  did worse. A check run (`0ee3abc`) and the base set below reproduce each decision
+  commit's forecasts exactly.
+- **E4**: lower overall by 0.0006 points (paired p 0.95), on 3 tickers. AIC chose
+  (0, 1, 0), the naive forecast, in 139 of the 336 fits.
+- **Base set** (`8da5c62`, MLflow `163eac9e`, every model and both ensembles after E1
+  to E4): the ensembles' incumbent. The better XGBoost made both ensembles slightly
+  worse (stack 3.3721 to 3.3740, rolling 3.3789 to 3.3913).
+- **E6**: small gains (stack -0.003 points, paired p 0.21; rolling -0.009, p 0.053).
+  Naive has no band, so its bounds are its forecast, and the ensembles' bands narrow:
+  over the validation cells the rolling ensemble's coverage fell from 81.3% to 61.9%
+  and the stack's from 59.7% to 56.6%. Bands are not part of the rule; see the open
+  points below.
+- **E7** did much better at day 1 (1.64% against 2.16%) and worse from day 4 (4.83%
+  against 4.46% at day 7).
+
+**Bands (I1; run I1, `16416cd`, MLflow `c80674c8`)**, over each booster's 2,352
+validation cells:
+
+| Booster | Band | Coverage | Width | Interval score |
+|---|---|---|---|---|
+| XGBoost | plus or minus 2% (current) | 45.7% | 4.0% | 69.2 |
+| | random walk | 91.4% | 14.4% | 24.5 |
+| | error quantiles | 80.8% | 12.1% | 32.8 |
+| LightGBM | plus or minus 2% (current) | 41.4% | 4.0% | 75.6 |
+| | random walk | 89.5% | 14.4% | 26.6 |
+| | error quantiles | 80.1% | 12.1% | 35.2 |
+
+Neither candidate covers 92.5% to 97.5%, so by the band rule neither is kept, and the
+boosters keep the plus or minus 2% band. The random-walk band comes close (91.4% and
+89.5%, under-covering most at days 1 to 3) at about a third of the current band's
+interval score. Quantiles of only 11 or 12 earlier errors per horizon cannot reach 95%
+coverage (the range of 12 draws holds a 13th about 85% of the time).
+
+**The final model set** is the code at `16416cd`: XGBoost with E3's settings; LightGBM,
+ARIMA (5, 1, 0) and Prophet as they were; both ensembles weighing naive as a fifth
+column; the boosters' plus or minus 2% band. Its validation results are run E6's: run I1
+reproduces E6's naive and booster forecasts and bands exactly at `16416cd`, and nothing
+after E6 changes the ensembles (E7 was turned back off).
+
+| Model | R7 MAPE | Final MAPE | Final mean skill | Tickers with positive skill | Holm p against naive |
+|---|---|---|---|---|---|
+| naive | 2.8798 | 2.8798 | 0 | | |
+| ARIMA | 2.8833 | 2.8833 | -0.003 | 4 | 0.79 |
+| drift | 2.9280 | 2.9280 | -0.011 | 2 | 0.42 |
+| XGBoost | 3.2151 | 3.1426 | -0.096 | 1 | 0.0006 (worse) |
+| LightGBM | 3.3484 | 3.3465 | -0.177 | 1 | under 0.0001 (worse) |
+| ensemble_stack | 3.3807 | 3.3709 | -0.185 | 0 | under 0.0001 (worse) |
+| ensemble_rolling | 3.3885 | 3.3823 | -0.170 | 0 | 0.0004 (worse) |
+| Prophet | 5.5150 | 5.5150 | -0.906 | 0 | under 0.0001 (worse) |
+
+Nothing beats naive. Phase 3 narrowed XGBoost's gap to naive by about a fifth (0.335 to
+0.263 points of mean APE difference); every other model is within 0.01 points of where
+Phase 2 left it.
+
+**Open, for the owner** (no rule here decides them):
+
+- The band rule says that if neither candidate passes, the boosters' bands stop being
+  presented as 95% bands (the dashboard and README never label them so) and the
+  ensemble stops combining them as if they were. How the ensemble's band is then built
+  is a design choice not made here.
+- Naive's zero-width band in the ensembles (E6) narrows their bands, as above.
+
+**Deviations from the plan**, all decided before any affected number was seen:
+
+- The fixes include F1b (Prophet's seed), found building S2, and F2 covers the
+  Bollinger bands' standard deviation and the no-width case as well as the clip.
+- Tuning left out one origin (2025-01-03) over the unknown closure, as above; the first
+  tuning run stopped on it before scoring anything (MLflow `3911a000`, failed).
+- Run times: the base set (14 minutes) and E6 (17.5 minutes) ran past my re-estimates
+  of 8 and 14. E6 ran a minute past the 1.5x stop (16.5 minutes) and was let finish; the
+  cause was XGBoost's 600 deeper trees, fitted for the forecast and again in the 30-day
+  stack, and my own test runs competing for the CPU. A first F1 run blocked on a stderr
+  pipe and was stopped (MLflow `101edc3c`, killed).
+
+### The test dates, scored once (T3, 2026-11-08)
+
+T3 (`7beb3ff`, MLflow `93bdf518`, ledger entry 3): the final model set on the 25 test
+origins (12 test-warmup origins for the rolling weights), 1,400 cells per model, none
+failed. Reported, not used to choose anything (D13).
+
+| Model | T2 MAPE (Phase 2's final) | T3 MAPE (Phase 3's final) | Mean skill | Tickers with positive skill | Holm p against naive |
+|---|---|---|---|---|---|
+| naive | 3.1481 | 3.1481 | 0 | | |
+| ARIMA | 3.1658 | 3.1658 | -0.007 | 1 | 0.41 |
+| drift | 3.1887 | 3.1887 | -0.010 | 1 | 0.28 |
+| ensemble_rolling | 3.2978 | 3.2852 | -0.041 | 1 | 0.041 (worse) |
+| XGBoost | 3.4398 | 3.5377 | -0.170 | 0 | 0.0004 (worse) |
+| LightGBM | 3.5579 | 3.5566 | -0.174 | 1 | under 0.0001 (worse) |
+| ensemble_stack | 3.6756 | 3.7106 | -0.228 | 0 | under 0.0001 (worse) |
+| Prophet | 6.5771 | 6.5771 | -1.096 | 0 | under 0.0001 (worse) |
+
+Nothing beats naive on the test dates either. Between T2 and T3 XGBoost changed by the
+fixes F1 and F2 as well as E3's settings, and the ensembles by XGBoost and E6, so no
+single change can be read off this table; the per-change measurements are the
+validation runs above. The test dates have now been scored three times (T1 and T2 in
+Phase 2, T3 in Phase 3); Phase 4 reuses T3 if the code has not changed.
+
+After T3, the pre-checkpoint review led to three commits (`5913d75`, `fa2e175`,
+`60ecf03`) that change no forecast: the compare and tune commands' handling of failed
+cells and uncommitted runs, a check that the live ensemble's stored base forecasts start
+the trading day after the latest close (it raises only when they do not), a check that
+the booster adapter's forecast starts at the origin, and tests. A check run at `60ecf03`
+(naive and both boosters, AAPL and MSFT, 1,764 validation cells) equals run E6 exactly,
+so T3 still describes the final code's forecasts.

@@ -14,7 +14,7 @@ takes them as functions.
 import numpy as np
 import pandas as pd
 
-from quantflow.evaluation.out_of_fold import rolling_origin_fit
+from quantflow.evaluation.out_of_fold import rolling_origin_fit, rolling_origin_stack
 from quantflow.evaluation.rolling_origin import (
     BASELINES,
     Combiner,
@@ -26,9 +26,16 @@ from quantflow.features.engineering import (
     engineer_features,
     get_feature_cols,
 )
-from quantflow.models.boosting import fit_live_model, generate_forecast
+from quantflow.models.boosting import (
+    fit_live_model,
+    generate_forecast,
+    quantile_band,
+    random_walk_band,
+)
 from quantflow.models.ensemble import (
-    BASE_MODELS,
+    NAIVE,
+    ROLLING_COLUMNS,
+    STACK_COLUMNS,
     _fit_nnls,
     build_holdout_stack,
     combine_forecasts,
@@ -71,29 +78,51 @@ def prophet(data: OriginData) -> pd.DataFrame:
     )
 
 
-def booster(model_name: str, without: tuple[str, ...] = ()) -> Forecaster:
+class Booster:
     """XGBoost or LightGBM as boosting.run forecasts live: the live model
     fitted on every labelled row, rolled forward from the newest one.
-    without names features to leave out, for an ablation."""
+    without names features to leave out, for an ablation; params replace
+    some of boosting.MODEL_PARAMS, for tuning.
 
-    def forecast(data: OriginData) -> pd.DataFrame:
+    A class rather than a closure, so the harness's worker processes can
+    receive it."""
+
+    def __init__(
+        self,
+        model_name: str,
+        without: tuple[str, ...] = (),
+        params: dict | None = None,
+    ):
+        self.model_name = model_name
+        self.without = tuple(without)
+        self.params = dict(params or {})
+
+    def __call__(self, data: OriginData) -> pd.DataFrame:
         raw = build_features(
             data.prices, data.articles, data.ticker, fetched_at=data.fetched_at
         )
         features = engineer_features(raw, drop_unlabeled=False)
+        # The forecast is scored by position against the dates after the
+        # origin, so it must start from the origin's own row.
+        if features.empty or features["date"].iloc[-1] != data.origin:
+            raise RuntimeError(
+                f"the newest feature row is not the origin, {data.origin.date()}"
+            )
         labelled = features.dropna(subset=["target_price"])
         columns = [
-            c for c in get_feature_cols() if c in labelled.columns and c not in without
+            c
+            for c in get_feature_cols()
+            if c in labelled.columns and c not in self.without
         ]
-        model = fit_live_model(model_name, labelled, columns)
+        model = fit_live_model(self.model_name, labelled, columns, self.params)
         if model is None:
-            raise RuntimeError(f"{model_name} is not installed")
+            raise RuntimeError(f"{self.model_name} is not installed")
         rolled = generate_forecast(
             model,
             features.iloc[[-1]][columns],
             features["date"].iloc[-1],
             list(features["close"].to_numpy()),
-            model_name,
+            self.model_name,
             data.ticker,
         )
         return pd.DataFrame(
@@ -104,16 +133,18 @@ def booster(model_name: str, without: tuple[str, ...] = ()) -> Forecaster:
             }
         )
 
-    return forecast
+
+def booster(model_name: str, without: tuple[str, ...] = ()) -> Forecaster:
+    return Booster(model_name, without)
 
 
 def ensemble_stack(
     data: OriginData, base: dict[str, pd.DataFrame], earlier: pd.DataFrame
 ) -> pd.DataFrame:
     """The live ensemble as it stands: NNLS weights fitted on the 30-day
-    holdout stack of the history up to the origin, applied to the four base
-    forecasts made at the origin."""
-    missing = [m for m in BASE_MODELS if m not in base]
+    holdout stack of the history up to the origin, applied to the forecasts
+    made at the origin, in STACK_COLUMNS."""
+    missing = [m for m in STACK_COLUMNS if m not in base]
     if missing:
         raise RuntimeError(f"no {', '.join(missing)} forecast to combine")
     raw = build_features(
@@ -122,23 +153,46 @@ def ensemble_stack(
     stack = build_holdout_stack(_ds_y(data), raw, data.ticker)
     if stack.empty:
         raise RuntimeError("the holdout stack could not be built")
-    meta = _fit_nnls(stack[BASE_MODELS].to_numpy(), stack["actual"].to_numpy())
-    return _combined(meta, base)
+    meta = _fit_nnls(stack[STACK_COLUMNS].to_numpy(), stack["actual"].to_numpy())
+    return _combined(meta, base, STACK_COLUMNS)
+
+
+# Separate rolling-origin weights for each horizon (Phase 3, E7): day 1 and
+# day 7 are different tasks, and one set of weights serves neither best. Each
+# day's weights are fitted on that day's rows of the earlier origins only
+# (11 or 12 rows, against 82 for one set). On the validation dates they did
+# better at days 1 to 3 and worse from day 4, lower on only 4 of 8 tickers:
+# dropped (docs/evaluation.md, section 16).
+ROLLING_PER_HORIZON = False
 
 
 def ensemble_rolling(
     data: OriginData, base: dict[str, pd.DataFrame], earlier: pd.DataFrame
 ) -> pd.DataFrame:
     """The ensemble with weights learned on the task it is used for (2c):
-    NNLS fitted on the base models' 7-day forecasts at the 12 grid origins
-    before this one, only the rows whose target is known by it, applied to
-    the four base forecasts made here. Fewer than 8 complete earlier origins
-    (ThinWindowError) or an all-zero solution fails the cells."""
-    missing = [m for m in BASE_MODELS if m not in base]
+    NNLS fitted on the 7-day forecasts in ROLLING_COLUMNS at the 12 grid
+    origins before this one, only the rows whose target is known by it,
+    applied to those forecasts made here. Fewer than 8 complete earlier
+    origins (ThinWindowError) or an all-zero solution fails the cells."""
+    missing = [m for m in ROLLING_COLUMNS if m not in base]
     if missing:
         raise RuntimeError(f"no {', '.join(missing)} forecast to combine")
-    meta = rolling_origin_fit(earlier, data.origin, BASE_MODELS, fit_nnls_strict)
-    return _combined(meta, base)
+    if not ROLLING_PER_HORIZON:
+        meta = rolling_origin_fit(
+            earlier, data.origin, ROLLING_COLUMNS, fit_nnls_strict
+        )
+        return _combined(meta, base, ROLLING_COLUMNS)
+    stack = rolling_origin_stack(earlier, data.origin, ROLLING_COLUMNS)
+    days = []
+    for h in range(1, len(data.dates) + 1):
+        rows = stack[stack["h"] == h]
+        meta = fit_nnls_strict(
+            rows[ROLLING_COLUMNS].to_numpy(dtype=float),
+            rows["actual"].to_numpy(dtype=float),
+        )
+        day = {m: base[m].iloc[[h - 1]].reset_index(drop=True) for m in ROLLING_COLUMNS}
+        days.append(_combined(meta, day, ROLLING_COLUMNS))
+    return pd.concat(days, ignore_index=True)
 
 
 # The harness adds the warmup origins before the window when a combiner needs
@@ -146,15 +200,54 @@ def ensemble_rolling(
 ensemble_rolling.needs_history = True  # type: ignore[attr-defined]
 
 
-def _combined(meta, base: dict[str, pd.DataFrame]) -> pd.DataFrame:
+def _combined(meta, base: dict[str, pd.DataFrame], columns: list[str]) -> pd.DataFrame:
     def column(name: str) -> np.ndarray:
-        # The live forecast fills a missing bound with 0 before weighting.
-        return np.column_stack([base[m][name].fillna(0) for m in BASE_MODELS])
+        # The live forecast fills a missing bound with 0 before weighting;
+        # naive has no band, so its bounds are its forecast, as live.
+        return np.column_stack(
+            [base[m]["yhat" if m == NAIVE else name].fillna(0) for m in columns]
+        )
 
     yhat, lower, upper = combine_forecasts(
         meta, column("yhat"), column("yhat_lower"), column("yhat_upper")
     )
     return pd.DataFrame({"yhat": yhat, "yhat_lower": lower, "yhat_upper": upper})
+
+
+class BandVariant:
+    """A booster's forecast with another band (Phase 3, I1), scored without
+    refitting it: the band depends only on the forecast and on data the
+    harness already holds. "random_walk" from the closes up to the origin,
+    as generate_forecast would build it live; "error_quantile" from the
+    booster's own forecasts at the earlier rolling origins whose targets
+    are known by this one (the rolling weights' rows)."""
+
+    needs_history = True
+
+    def __init__(self, model_name: str, band: str):
+        if band not in ("random_walk", "error_quantile"):
+            raise ValueError(f"unknown band {band!r}")
+        self.model_name = model_name
+        self.band = band
+
+    def __call__(
+        self, data: OriginData, base: dict[str, pd.DataFrame], earlier: pd.DataFrame
+    ) -> pd.DataFrame:
+        if self.model_name not in base:
+            raise RuntimeError(f"no {self.model_name} forecast to band")
+        yhat = base[self.model_name]["yhat"].to_numpy(dtype=float)
+        if self.band == "random_walk":
+            lower, upper = random_walk_band(yhat, data.prices["close"])
+        else:
+            stack = rolling_origin_stack(earlier, data.origin, [self.model_name])
+            errors = {
+                int(h): np.log(rows["actual"] / rows[self.model_name]).to_numpy()
+                for h, rows in stack.groupby("h")
+            }
+            if set(errors) != set(range(1, len(yhat) + 1)):
+                raise RuntimeError("no earlier error at every horizon")
+            lower, upper = quantile_band(yhat, errors)
+        return pd.DataFrame({"yhat": yhat, "yhat_lower": lower, "yhat_upper": upper})
 
 
 FORECASTERS: dict[str, Forecaster] = {
@@ -173,4 +266,11 @@ COMBINERS: dict[str, Combiner] = {
 VARIANTS: dict[str, Forecaster] = {
     "xgboost_no_news": booster("xgboost", without=tuple(NEWS_FEATURES)),
     "lightgbm_no_news": booster("lightgbm", without=tuple(NEWS_FEATURES)),
+}
+
+# Run only when named in --models: the boosters' band candidates (I1).
+BAND_VARIANTS: dict[str, Combiner] = {
+    f"{model}_{short}": BandVariant(model, band)
+    for model in ("xgboost", "lightgbm")
+    for short, band in (("rwband", "random_walk"), ("qband", "error_quantile"))
 }

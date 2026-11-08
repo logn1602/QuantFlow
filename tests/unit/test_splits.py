@@ -155,6 +155,8 @@ def test_the_grid_on_the_snapshot_matches_the_design():
     assert len(grid.validation) == 42
     assert span(grid.validation) == ("2025-06-30", "2026-04-23")
     assert span(grid.validation_warmup) == ("2025-04-02", "2025-06-23")
+    assert len(grid.tuning) == 24
+    assert span(grid.tuning) == ("2024-10-01", "2025-03-19")
 
 
 def test_every_window_steps_evenly_and_ends_where_the_data_does():
@@ -180,10 +182,21 @@ def test_no_validation_target_reaches_the_test_window():
     )
 
 
+def test_tuning_ends_before_the_validation_warmup_and_has_enough_history():
+    """Booster settings are tuned only on closes that every validation and
+    test origin trains on (Phase 3, E3)."""
+    grid = splits.origin_grid(SNAPSHOT_DATES)
+    assert all(b - a == splits.ORIGIN_STEP for a, b in pairwise(grid.tuning))
+    assert grid.tuning[-1] + splits.HORIZON < grid.validation_warmup[0]
+    assert grid.tuning[0] + 1 >= splits.MIN_ORIGIN_HISTORY
+    assert grid.tuning[0] - splits.ORIGIN_STEP + 1 < splits.MIN_ORIGIN_HISTORY
+
+
 def test_a_window_is_chosen_by_name():
     grid = splits.origin_grid(SNAPSHOT_DATES)
     assert grid.window("test") == (grid.test, grid.test_warmup)
     assert grid.window("validation") == (grid.validation, grid.validation_warmup)
+    assert grid.window("tuning") == (grid.tuning, ())
     with pytest.raises(ValueError, match="unknown window"):
         grid.window("holdout")
 

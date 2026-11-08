@@ -286,6 +286,19 @@ def merge_feature_inputs(
     return df
 
 
+def bollinger_features(
+    close: pd.Series, upper: pd.Series, lower: pd.Series, middle: pd.Series
+) -> tuple[pd.Series, pd.Series]:
+    """bb_position, where the close sits in the band (0 on the lower band, 1
+    on the upper, beyond them outside it, never clipped), and bb_width, the
+    band's width over its middle, a volatility measure. Missing where either
+    would divide by zero. One definition for training and the boosters'
+    rollout (boosting.generate_forecast)."""
+    width = upper - lower
+    position = (close - lower) / width.replace(0, np.nan)
+    return position, width / middle.replace(0, np.nan)
+
+
 def engineer_features(df: pd.DataFrame, drop_unlabeled: bool = True) -> pd.DataFrame:
     """
     Build the full feature matrix from raw merged data.
@@ -319,12 +332,9 @@ def engineer_features(df: pd.DataFrame, drop_unlabeled: bool = True) -> pd.DataF
     df["volume_change"] = df["volume"].pct_change(1)
 
     # ── Bollinger Band features ──────────────────────────────────────────────
-    # BB position: where is price relative to the bands? (0=lower, 1=upper)
-    bb_range = df["bb_upper"] - df["bb_lower"]
-    df["bb_position"] = (df["close"] - df["bb_lower"]) / bb_range.replace(0, np.nan)
-
-    # BB width: measures volatility
-    df["bb_width"] = bb_range / df["bb_middle"].replace(0, np.nan)
+    df["bb_position"], df["bb_width"] = bollinger_features(
+        df["close"], df["bb_upper"], df["bb_lower"], df["bb_middle"]
+    )
 
     # ── Anomaly features ─────────────────────────────────────────────────────
     # zscore is 0 on a date neither detector flags and missing in their warmup.

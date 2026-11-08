@@ -59,7 +59,9 @@ def news_reads(read_tables, price_bars, monkeypatch):
         return NO_NEWS
 
     read_tables["news_sentiment"] = news
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: FakeRegressor())
+    monkeypatch.setattr(
+        boosting, "_new_regressor", lambda name, params=None: FakeRegressor()
+    )
     for name in ("save_forecasts", "save_model_metrics", "log_mlflow"):
         monkeypatch.setattr(boosting, name, lambda *args, **kwargs: 0)
     # The ensemble and the backtest read the features for the holdout stack;

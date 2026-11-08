@@ -48,6 +48,14 @@ class FakeRegressor:
         return np.full(len(X), float(len(self.X)))
 
 
+@pytest.fixture(autouse=True)
+def price_targets(monkeypatch):
+    """These fakes identify a model by the price it predicts, so both
+    families predict prices here; the log-return target has its own tests
+    (test_booster_targets.py)."""
+    monkeypatch.setattr(boosting, "TARGETS", dict.fromkeys(boosting.TARGETS, "price"))
+
+
 @pytest.fixture
 def raw():
     """A merged feature frame like load_features returns, ending on a Friday."""
@@ -198,3 +206,52 @@ def test_an_unknown_model_family_is_refused():
     whose forecasts were then stored under the name it was asked for."""
     with pytest.raises(ValueError, match="unknown model family"):
         boosting._new_regressor("xgb")
+
+
+@pytest.mark.parametrize("family", ["xgboost", "lightgbm"])
+def test_each_booster_fits_on_one_thread(family):
+    """XGBoost draws its row subsample (subsample 0.8) differently for
+    different thread counts, so with the default, all of the machine's
+    threads, the same data gave forecasts up to about $3 apart on this
+    laptop (8 threads, where the evaluation ran) and on GitHub's runner:
+    the published forecast was not the evaluated one. One thread makes them
+    the same on any machine. LightGBM does not depend on it; pinned too, so
+    the evaluation's worker processes run one thread per model."""
+    assert boosting._new_regressor(family).get_params()["n_jobs"] == 1
+
+
+class SpyRegressor(FakeRegressor):
+    """Records everything fit was given."""
+
+    def fit(self, X, y, **kwargs):
+        self.fit_kwargs = kwargs
+        self.y = y.copy()
+        return super().fit(X, y)
+
+
+@pytest.mark.parametrize("family", ["xgboost", "lightgbm"])
+def test_the_scored_fit_never_sees_the_holdout(raw, monkeypatch, family):
+    """XGBoost's scored fit was handed the holdout as eval_set. Without
+    early stopping that changes no prediction, but the holdout it is scored
+    on must not reach the fit at all: early stopping or tuning reading it
+    would quietly pick the model on the very rows that score it."""
+    spy = SpyRegressor()
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name, params=None: spy)
+    labelled = _labelled(raw)
+    boosting._train_scored(family, labelled, "AAPL")
+    assert spy.fit_kwargs == {}
+    assert len(spy.X) == len(labelled) - HOLDOUT_DAYS
+    pd.testing.assert_series_equal(
+        spy.y, labelled["target_price"].iloc[:-HOLDOUT_DAYS], check_names=False
+    )
+
+
+@pytest.mark.parametrize("family", ["xgboost", "lightgbm"])
+def test_tuning_settings_replace_only_what_they_name(family):
+    before = dict(boosting.MODEL_PARAMS[family])
+    model = boosting._new_regressor(family, {"max_depth": 5, "n_estimators": 50})
+    params = model.get_params()
+    assert params["max_depth"] == 5 and params["n_estimators"] == 50
+    assert params["learning_rate"] == before["learning_rate"]
+    assert params["n_jobs"] == 1
+    assert boosting.MODEL_PARAMS[family] == before  # left as it was

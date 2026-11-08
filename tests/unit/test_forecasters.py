@@ -39,23 +39,28 @@ def _data(prices):
 
 class FakeRegressor:
     """Deterministic and instant: the training mean, moved by yesterday's
-    close relative to its training mean."""
+    close relative to its training mean, in the target's own scale (a price
+    or a log return, boosting.TARGETS)."""
 
     def fit(self, X, y, **kwargs):
+        lag = X["close_lag_1"]
         self.mean_y = float(np.mean(y))
-        self.mean_lag = float(X["close_lag_1"].mean())
+        self.mean_lag = float(lag.mean())
+        self.slope = 0.9 * float(np.std(y)) / float(np.std(lag))
         self.feature_importances_ = np.full(X.shape[1], 1.0 / X.shape[1])
         return self
 
     def predict(self, X):
-        return self.mean_y + 0.9 * (
+        return self.mean_y + self.slope * (
             X["close_lag_1"].to_numpy(dtype=float) - self.mean_lag
         )
 
 
 @pytest.fixture
 def fake_regressors(monkeypatch):
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: FakeRegressor())
+    monkeypatch.setattr(
+        boosting, "_new_regressor", lambda name, params=None: FakeRegressor()
+    )
 
 
 def test_the_booster_adapter_forecasts_what_the_live_run_saves(
@@ -94,7 +99,7 @@ class RecordingRegressor(FakeRegressor):
 
 def test_the_booster_adapter_passes_missing_values_on(monkeypatch):
     model = RecordingRegressor()
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: model)
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name, params=None: model)
     forecasters.booster("xgboost")(_data(_prices()))
     # No articles: every news feature is missing, not 0.
     assert model.last[["has_news", "sentiment_compound"]].isna().all().all()
@@ -121,6 +126,8 @@ class FakeForecast:
 
 
 class FakeARIMA:
+    aic = 0.0  # every order alike, when the order is chosen by AIC
+
     def __init__(self, endog, order):
         self.last = float(np.asarray(endog)[-1])
 
@@ -139,6 +146,7 @@ def test_the_arima_adapter_forecasts_from_the_closes_up_to_the_origin(monkeypatc
     out = forecasters.arima(_data(prices))
     assert len(out) == 7 and np.allclose(out["yhat"], prices["close"].iloc[-1])
     assert np.allclose(out["yhat_upper"] - out["yhat_lower"], 4.0)
+    assert out["arima_order"].nunique() == 1  # the order travels with the cells
 
 
 class FakeProphet:
@@ -176,10 +184,11 @@ def test_the_ensemble_adapter_weights_the_base_forecasts_by_the_holdout_stack(
 ):
     actual = np.linspace(100, 110, 30)
     stack = pd.DataFrame({"actual": actual, "arima": actual, "prophet": actual + 5,
-                          "xgboost": actual + 3, "lightgbm": actual + 9})  # fmt: skip
+                          "xgboost": actual + 3, "lightgbm": actual + 9,
+                          "naive": actual + 7})  # fmt: skip
     monkeypatch.setattr(forecasters, "build_holdout_stack", lambda *a: stack)
     base = {"arima": _base(200.0), "prophet": _base(210.0), "xgboost": _base(190.0),
-            "lightgbm": _base(230.0)}  # fmt: skip
+            "lightgbm": _base(230.0), "naive": _base(220.0)}  # fmt: skip
     out = forecasters.ensemble_stack(_data(_prices()), base, pd.DataFrame())
     assert np.allclose(out["yhat"], 200.0)  # all weight on the perfect arima column
     assert np.allclose(out["yhat_upper"] - out["yhat_lower"], 2.0)
@@ -202,8 +211,62 @@ def test_every_model_and_baseline_is_registered():
 
 def test_the_ablation_boosters_fit_without_the_news_features(monkeypatch):
     model = RecordingRegressor()
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: model)
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name, params=None: model)
     forecasters.VARIANTS["xgboost_no_news"](_data(_prices()))
     assert not set(forecasters.NEWS_FEATURES) & set(model.last.columns)
     assert "close_lag_1" in model.last.columns
     assert set(forecasters.NEWS_FEATURES) <= set(get_feature_cols())
+
+
+def test_naives_band_in_the_ensemble_is_its_forecast(monkeypatch):
+    """Naive has no band; as live, its bounds are its forecast, not 0."""
+    actual = np.linspace(100, 110, 30)
+    stack = pd.DataFrame({"actual": actual, "arima": actual + 4, "prophet": actual + 5,
+                          "xgboost": actual + 3, "lightgbm": actual + 9,
+                          "naive": actual})  # fmt: skip
+    monkeypatch.setattr(forecasters, "build_holdout_stack", lambda *a: stack)
+    base = {"arima": _base(200.0), "prophet": _base(210.0), "xgboost": _base(190.0),
+            "lightgbm": _base(230.0)}  # fmt: skip
+    base["naive"] = _base(220.0).assign(yhat_lower=np.nan, yhat_upper=np.nan)
+    out = forecasters.ensemble_stack(_data(_prices()), base, pd.DataFrame())
+    assert np.allclose(out["yhat"], 220.0)  # all weight on the perfect naive column
+    assert np.allclose(out["yhat_lower"], 220.0) and np.allclose(
+        out["yhat_upper"], 220.0
+    )
+
+
+def test_the_worker_bound_forecasters_survive_pickling():
+    """The harness sends forecasters to worker processes by pickling them; a
+    closure would only fail there, at run time."""
+    import pickle
+
+    booster = forecasters.Booster(
+        "xgboost", without=("has_news",), params={"max_depth": 6}
+    )
+    copy = pickle.loads(pickle.dumps(booster))
+    assert (copy.model_name, copy.without, copy.params) == (
+        "xgboost",
+        ("has_news",),
+        {"max_depth": 6},
+    )
+    for name, variant in forecasters.BAND_VARIANTS.items():
+        copy = pickle.loads(pickle.dumps(variant))
+        assert (copy.model_name, copy.band) == (variant.model_name, variant.band), name
+    for forecaster in {
+        **forecasters.FORECASTERS,
+        **forecasters.COMBINERS,
+    }.values():
+        pickle.dumps(forecaster)  # raises for anything a worker cannot receive
+
+
+def test_a_booster_forecast_that_does_not_start_at_the_origin_fails(
+    monkeypatch, fake_regressors
+):
+    """Scored by position, a forecast rolled from an earlier row would be
+    compared with the wrong closes."""
+    real = forecasters.engineer_features
+    monkeypatch.setattr(
+        forecasters, "engineer_features", lambda *a, **k: real(*a, **k).iloc[:-1]
+    )
+    with pytest.raises(RuntimeError, match="not the origin"):
+        forecasters.booster("xgboost")(_data(_prices()))

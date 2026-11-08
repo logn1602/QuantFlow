@@ -7,13 +7,16 @@ The rolling-origin evaluation's command line (docs/evaluation.md).
     python -m quantflow.pipelines.evaluate coverage --snapshot eval_snapshots/2026-11-06
     python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06
     python -m quantflow.pipelines.evaluate run --snapshot ... --window test --reason "..."
+    python -m quantflow.pipelines.evaluate compare --incumbent eval_runs/B0 --candidate eval_runs/E1 --models xgboost
+    python -m quantflow.pipelines.evaluate tune --snapshot eval_snapshots/2026-11-06 --workers 3
 
-export reads the database once, read-only, into a snapshot directory; the
-other two read only the snapshot. run scores the validation dates unless
-given --window test with a reason: the test dates are reported, never used
-to choose, and every scoring of them is counted (docs/evaluation.md,
-section 2). A test-date run also refuses uncommitted changes to tracked
-files, so each scoring is tied to a commit.
+export reads the database once, read-only, into a snapshot directory;
+coverage, run and tune read only the snapshot, and compare only two run
+folders, applying Phase 3's keep-or-drop rule (evaluation/decision.py). run
+scores the validation dates unless given --window test with a reason: the
+test dates are reported, never used to choose, and every scoring of them is
+counted (docs/evaluation.md, section 2). A test-date run also refuses
+uncommitted changes to tracked files, so each scoring is tied to a commit.
 
 It lives in pipelines because it wires the models into the harness, and
 evaluation never imports models.
@@ -33,8 +36,15 @@ from quantflow.config import TICKERS
 from quantflow.db.prices import classify_bars, daily_bars
 from quantflow.db.readonly import is_local_database, masked, read_only_connection
 from quantflow.db.snapshot import read_snapshot_tables
-from quantflow.evaluation import report
-from quantflow.evaluation.rolling_origin import check_failure_rate, run_origins
+from quantflow.evaluation import decision, metrics, report
+from quantflow.evaluation.rolling_origin import (
+    MAX_FAILURE_SHARE,
+    MAX_WORKERS,
+    Forecaster,
+    calendar_mismatched,
+    check_failure_rate,
+    run_origins,
+)
 from quantflow.evaluation.snapshot import (
     Snapshot,
     SnapshotError,
@@ -50,7 +60,14 @@ from quantflow.features.engineering import (
     merge_feature_inputs,
     stage_anomaly_scores,
 )
-from quantflow.models.forecasters import COMBINERS, FORECASTERS, VARIANTS
+from quantflow.models.boosting import MODEL_PARAMS, TUNING_GRID
+from quantflow.models.forecasters import (
+    BAND_VARIANTS,
+    COMBINERS,
+    FORECASTERS,
+    VARIANTS,
+    Booster,
+)
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("evaluate")
@@ -174,7 +191,9 @@ def _start_mlflow(label: str, tags: dict):
 
 
 def run_evaluation(args) -> int:
-    unknown = sorted(set(args.models) - {*FORECASTERS, *VARIANTS, *COMBINERS})
+    unknown = sorted(
+        set(args.models) - {*FORECASTERS, *VARIANTS, *COMBINERS, *BAND_VARIANTS}
+    )
     if unknown:
         print(f"Refusing: no model named {', '.join(unknown)}.", file=sys.stderr)
         return 2
@@ -198,7 +217,9 @@ def run_evaluation(args) -> int:
     tickers = args.tickers or snapshot.tickers
     known = {**FORECASTERS, **VARIANTS}
     forecasters = {m: f for m, f in known.items() if m in args.models}
-    combiners = {m: c for m, c in COMBINERS.items() if m in args.models}
+    combiners = {
+        m: c for m, c in {**COMBINERS, **BAND_VARIANTS}.items() if m in args.models
+    }
     needs_history = any(getattr(c, "needs_history", False) for c in combiners.values())
     origins = [(p, "scored") for p in scored]
     if needs_history:
@@ -224,6 +245,7 @@ def run_evaluation(args) -> int:
         "scored origins": f"{len(scored)}, every {ORIGIN_STEP} trading days, "
         f"{dates[scored[0]].date()} to {dates[scored[-1]].date()}",
         "horizon": HORIZON,
+        "workers": args.workers,
         "started": started.isoformat(timespec="seconds"),
     }
     clock = time.perf_counter()
@@ -235,6 +257,7 @@ def run_evaluation(args) -> int:
             forecasters,
             combiners,
             window=args.window,
+            workers=args.workers,
         )
         cells.to_csv(out / "cells.csv", index=False)
         check_failure_rate(cells)
@@ -275,7 +298,8 @@ def run_evaluation(args) -> int:
             {"window": args.window, "snapshot_digest": snapshot.digest,
              "as_of": header["as of"], "commit": commit, "dirty": dirty,
              "horizon": HORIZON, "origin_step": ORIGIN_STEP, "origins": len(scored),
-             "tickers": ",".join(tickers), "models": header["models"]}
+             "tickers": ",".join(tickers), "models": header["models"],
+             "workers": args.workers}
         )  # fmt: skip
         metrics = {}
         for row in headline.to_dict("records"):
@@ -297,11 +321,266 @@ def run_evaluation(args) -> int:
     return 0
 
 
+# ── tune ──────────────────────────────────────────────────────────────────────
+
+TUNED_KEYS = ("max_depth", "learning_rate", "n_estimators")
+
+
+def tuning_candidates(models: list[str]) -> dict[str, tuple[str, dict, Forecaster]]:
+    """name -> (family, settings, forecaster): each booster's current
+    settings (#00) and every TUNING_GRID setting."""
+    out: dict[str, tuple[str, dict, Forecaster]] = {}
+    for family in models:
+        current = {k: MODEL_PARAMS[family][k] for k in TUNED_KEYS}
+        for i, settings in enumerate([current, *TUNING_GRID]):
+            out[f"{family}#{i:02d}"] = (
+                family,
+                settings,
+                Booster(family, params=settings),
+            )
+    return out
+
+
+def tuning_table(cells: pd.DataFrame, candidates: dict) -> pd.DataFrame:
+    """Per candidate, its failed cells and its MAPE over the cells every
+    eligible candidate of its family forecast. A candidate that failed more
+    than the harness's limit (MAX_FAILURE_SHARE) is not eligible, as a model
+    over it fails a run: scored only on the cells it managed it could look
+    best. The eligible candidate with the lowest MAPE per family is chosen."""
+    rows = []
+    for family in sorted({fam for fam, _, _ in candidates.values()}):
+        names = [n for n, (fam, _, _) in candidates.items() if fam == family]
+        failed = {
+            n: cells.loc[cells["model"] == n, "status"].eq("failed") for n in names
+        }
+        eligible = [n for n in names if failed[n].mean() <= MAX_FAILURE_SHARE]
+        shared = report.comparable(cells, eligible) if eligible else cells.iloc[:0]
+        for name in names:
+            group = shared[shared["model"] == name]
+            rows.append(
+                {"family": family, "candidate": name, **candidates[name][1],
+                 "cells": len(group), "failed": int(failed[name].sum()),
+                 "eligible": name in eligible,
+                 "mape": metrics.mape(group["actual"], group["yhat"])
+                 if len(group) else np.nan}
+            )  # fmt: skip
+    table = pd.DataFrame(rows)
+    best = table[table["eligible"]].groupby("family")["mape"].min()
+    # The first of equal MAPEs: the current settings, listed first, win a tie.
+    table["chosen"] = (
+        table["eligible"]
+        & (table["mape"] == table["family"].map(best))
+        & ~table.duplicated(["family", "eligible", "mape"])
+    )
+    return table
+
+
+def tune_boosters(args) -> int:
+    """Phase 3's E3: every candidate's 7-day forecasts at the tuning
+    origins, which lie before the validation warmup (splits.OriginGrid
+    .tuning), and the setting with the lowest MAPE per booster."""
+    unknown = sorted(set(args.models) - set(MODEL_PARAMS))
+    if unknown:
+        print(f"Refusing: no booster named {', '.join(unknown)}.", file=sys.stderr)
+        return 2
+    commit, dirty = git_state()
+    snapshot = read_snapshot(args.snapshot)
+    dates = snapshot.trading_dates
+    origins, _ = origin_grid(len(dates)).window("tuning")
+    if not origins:
+        print(
+            "Refusing: the snapshot has no tuning origin (too little history "
+            "before the validation warmup).",
+            file=sys.stderr,
+        )
+        return 2
+    # The window reaches 2025-01-09, a one-off closure the calendar does not
+    # know: an origin whose forecast days include it is left out, and listed.
+    left_out = calendar_mismatched(dates, origins)
+    origins = tuple(p for p in origins if p not in left_out)
+    used = sorted({p + k for p in origins for k in range(HORIZON + 1)})
+    check_built_dates(snapshot, dates[used])
+    candidates = tuning_candidates(args.models)
+    tickers = args.tickers or snapshot.tickers
+
+    started = pd.Timestamp.now(tz="UTC")
+    label = args.label or f"tuning-{started:%Y%m%dT%H%M%S}"
+    out = Path(args.out) / label
+    out.mkdir(parents=True, exist_ok=False)
+    mlflow, mlflow_error = _start_mlflow(label, {"window": "tuning", "commit": commit})
+    clock = time.perf_counter()
+    try:
+        cells = run_origins(
+            {t: snapshot.prices[t] for t in tickers},
+            snapshot.articles,
+            [(p, "scored") for p in origins],
+            {name: forecaster for name, (_, _, forecaster) in candidates.items()},
+            window="tuning",
+            workers=args.workers,
+        )
+        cells.to_csv(out / "cells.csv", index=False)
+        table = tuning_table(cells, candidates)
+        table.to_csv(out / "tuning.csv", index=False)
+        header = {
+            "window": "tuning",
+            "snapshot digest": snapshot.digest,
+            "commit": commit + (" (uncommitted changes)" if dirty else ""),
+            "tickers": ", ".join(tickers),
+            "origins": f"{len(origins)}, {dates[origins[0]].date()} to "
+            f"{dates[origins[-1]].date()}, last target "
+            f"{dates[origins[-1] + HORIZON].date()}",
+            "left out (a closure the calendar does not know in their days)": ", ".join(
+                str(dates[p].date()) for p in left_out
+            )
+            or "none",
+            "workers": args.workers,
+            "seconds": round(time.perf_counter() - clock),
+        }
+        text = "\n".join(
+            ["# Booster tuning (Phase 3, E3)\n"]
+            + [f"- {key}: {value}" for key, value in header.items()]
+            + ["", "## Candidates\n", report.markdown_table(table, digits=4)]
+        )
+        (out / "report.md").write_text(text, encoding="utf-8")
+    except Exception:
+        if mlflow is not None:
+            mlflow.log_text(traceback.format_exc(), "traceback.txt")
+            mlflow.end_run(status="FAILED")
+        raise
+    chosen = table[table["chosen"]]
+    for family in sorted(set(table["family"]) - set(chosen["family"])):
+        print(f"No eligible candidate for {family}: none chosen.", file=sys.stderr)
+    shown = [c for c in ("family", "candidate", *TUNED_KEYS, "mape") if c in chosen]
+    print(chosen[shown].to_string(index=False))
+    print(f"Report: {out / 'report.md'}")
+    if mlflow is None:
+        print(f"MLflow failed, so this is not logged: {mlflow_error}", file=sys.stderr)
+        return 1
+    try:
+        mlflow.log_params(
+            {"window": "tuning", "snapshot_digest": snapshot.digest, "commit": commit,
+             "dirty": dirty, "origins": len(origins), "left_out": len(left_out),
+             "tickers": ",".join(tickers),
+             "workers": args.workers}
+        )  # fmt: skip
+        mlflow.log_metrics(tuning_metrics(table))
+        mlflow.log_artifacts(str(out))
+        mlflow.end_run(status="FINISHED")
+    except Exception as e:
+        print(f"MLflow logging failed, so this is not logged: {e}", file=sys.stderr)
+        mlflow.end_run(status="FAILED")
+        return 1
+    return 0
+
+
+def tuning_metrics(table: pd.DataFrame) -> dict[str, float]:
+    """Each candidate's MAPE under a name MLflow accepts (no "#")."""
+    return {
+        f"{row['candidate'].replace('#', '_')}.mape": float(row["mape"])
+        for row in table.to_dict("records")
+    }
+
+
+# ── compare ───────────────────────────────────────────────────────────────────
+
+
+def run_header(directory: Path) -> dict:
+    """The "- key: value" lines at the top of a run's report.md."""
+    header: dict[str, str] = {}
+    for line in (directory / "report.md").read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            break
+        if line.startswith("- ") and ": " in line:
+            key, value = line[2:].split(": ", 1)
+            header.setdefault(key, value)
+    return header
+
+
+def compare_runs(args) -> int:
+    """The keep-or-drop rule (evaluation/decision.py) for each named model,
+    the candidate run against the incumbent's, on the same snapshot."""
+    incumbent, candidate = Path(args.incumbent), Path(args.candidate)
+    heads = {"incumbent": run_header(incumbent), "candidate": run_header(candidate)}
+    digests = {side: head.get("snapshot digest") for side, head in heads.items()}
+    if not digests["incumbent"] or digests["incumbent"] != digests["candidate"]:
+        print(
+            "Refusing: the runs are not on the same snapshot "
+            f"({digests['incumbent']} against {digests['candidate']}).",
+            file=sys.stderr,
+        )
+        return 2
+    # A decision must rest on code that is in a commit.
+    dirty = [s for s, h in heads.items() if "uncommitted" in h.get("commit", "")]
+    if dirty:
+        print(
+            f"Refusing: the {' and '.join(dirty)} run had uncommitted changes.",
+            file=sys.stderr,
+        )
+        return 2
+    old = pd.read_csv(incumbent / "cells.csv")
+    new = pd.read_csv(candidate / "cells.csv")
+    results = [decision.compare(old, new, model) for model in args.models]
+    table = pd.DataFrame([decision.summary_row(r) for r in results])
+
+    parts = [f"# {candidate.name} against {incumbent.name}\n"]
+    parts += [
+        f"- incumbent: {incumbent} (commit {heads['incumbent'].get('commit', '?')})",
+        f"- candidate: {candidate} (commit {heads['candidate'].get('commit', '?')})",
+        f"- snapshot digest: {digests['candidate']}",
+        f"- rule: MAPE over the cells both forecast strictly lower, and lower on "
+        f"at least {decision.TICKERS_NEEDED} tickers; more failed cells drops "
+        "(docs/evaluation.md, section 16)",
+        "",
+        "## Decisions\n",
+        report.markdown_table(table, digits=4),
+    ]
+    for result in results:
+        parts += [
+            f"## {result.model}: per ticker\n",
+            report.markdown_table(result.per_ticker, digits=4),
+            f"## {result.model}: per horizon\n",
+            report.markdown_table(result.per_horizon, digits=4),
+        ]
+    text = "\n".join(parts)
+    out = candidate / f"compare-{incumbent.name}.md"
+    out.write_text(text, encoding="utf-8")
+    table.to_csv(candidate / f"compare-{incumbent.name}.csv", index=False)
+    print(table[["model", "decision", "reason"]].to_string(index=False))
+    print(f"Comparison: {out}")
+
+    tags = {"kind": "compare", "incumbent": incumbent.name, "candidate": candidate.name}
+    mlflow, error = _start_mlflow(f"{candidate.name} vs {incumbent.name}", tags)
+    if mlflow is None:
+        print(f"MLflow failed, so this is not logged: {error}", file=sys.stderr)
+        return 1
+    try:
+        mlflow.log_params(
+            {"snapshot_digest": digests["candidate"], "models": ",".join(args.models),
+             "tickers_needed": decision.TICKERS_NEEDED}
+        )  # fmt: skip
+        mlflow.log_metrics(
+            {f"{r.model}.{key}": float(value) for r in results
+             for key, value in (("keep", r.keep), ("mape_incumbent", r.mape_incumbent),
+                                ("mape_candidate", r.mape_candidate))}
+        )  # fmt: skip
+        mlflow.log_text(text, out.name)
+        mlflow.end_run(status="FINISHED")
+    except Exception as e:
+        print(f"MLflow logging failed, so this is not logged: {e}", file=sys.stderr)
+        mlflow.end_run(status="FAILED")
+        return 1
+    return 0
+
+
 # ── command line ──────────────────────────────────────────────────────────────
 
 
 def _tickers(value: str) -> list[str]:
     return [t.strip().upper() for t in value.split(",") if t.strip()]
+
+
+def _models(value: str) -> list[str]:
+    return [m.strip().lower() for m in value.split(",") if m.strip()]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -328,11 +607,45 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--tickers", type=_tickers, default=None)
     run.add_argument(
         "--models",
-        type=lambda v: [m.strip().lower() for m in v.split(",") if m.strip()],
+        type=_models,
         default=[*FORECASTERS, *COMBINERS],
     )
     run.add_argument("--label", default="", help="the run's folder and MLflow name")
     run.add_argument("--out", type=Path, default=RUNS_ROOT)
+    run.add_argument(
+        "--workers",
+        type=int,
+        choices=range(1, MAX_WORKERS + 1),
+        default=1,
+        help=f"tickers in parallel processes, at most {MAX_WORKERS}",
+    )
+
+    tune = commands.add_parser(
+        "tune", help="the boosters' settings on the tuning origins (Phase 3, E3)"
+    )
+    tune.add_argument("--snapshot", type=Path, required=True)
+    tune.add_argument(
+        "--models",
+        type=_models,
+        default=sorted(MODEL_PARAMS),
+    )
+    tune.add_argument("--tickers", type=_tickers, default=None)
+    tune.add_argument("--label", default="", help="the run's folder and MLflow name")
+    tune.add_argument("--out", type=Path, default=RUNS_ROOT)
+    tune.add_argument(
+        "--workers", type=int, choices=range(1, MAX_WORKERS + 1), default=1
+    )
+
+    compare = commands.add_parser(
+        "compare", help="the keep-or-drop rule, a candidate run against the incumbent"
+    )
+    compare.add_argument("--incumbent", type=Path, required=True, help="a run folder")
+    compare.add_argument("--candidate", type=Path, required=True, help="a run folder")
+    compare.add_argument(
+        "--models",
+        type=_models,
+        required=True,
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -354,6 +667,10 @@ def main(argv: list[str] | None = None) -> int:
             print(table.to_string(index=False))
             print(f"News ablation: {report.news_ablation_status(table)}")
             return 0
+        if args.command == "compare":
+            return compare_runs(args)
+        if args.command == "tune":
+            return tune_boosters(args)
         return run_evaluation(args)
     except Exception as e:
         print(f"Failed: {type(e).__name__}: {masked(str(e))}", file=sys.stderr)

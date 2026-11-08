@@ -87,9 +87,11 @@ class _FakeForecast:
 
 
 class FakeARIMA:
-    """Forecasts the last value flat; no fitting. Records each order."""
+    """Forecasts the last value flat; no fitting. Records each order. Every
+    order has the same AIC, so choosing by AIC takes the first."""
 
     orders: list = []  # noqa: RUF012 (reset per test by the fixture)
+    aic = 0.0
 
     def __init__(self, endog, order):
         self.last = float(np.asarray(endog)[-1])
@@ -226,3 +228,114 @@ def test_the_live_arima_forecast_skips_market_holidays(monkeypatch, fake_arima):
 
     forecast, _ = statistical.run_arima(BEFORE_THANKSGIVING, "AAPL")
     assert [d.isoformat() for d in forecast["ds"]] == NEXT_SEVEN_TRADING_DAYS
+
+
+class SamplingProphet(FakeProphet):
+    """Draws its band from numpy's global random state, as Prophet's
+    uncertainty sampling does (np.random.normal, np.random.laplace)."""
+
+    def predict(self, df):
+        out = super().predict(df)
+        noise = np.random.normal(0, 1, len(out))
+        return out.assign(
+            yhat_lower=out["yhat"] - 2 + noise, yhat_upper=out["yhat"] + 2 + noise
+        )
+
+
+def test_the_same_history_gives_the_same_prophet_band(monkeypatch):
+    """Prophet simulates its interval from numpy's global random state, so
+    the same fit gave a different band on every run, and the evaluation's
+    worker processes could not reproduce a sequential run. The band is
+    drawn from a fixed seed, and the caller's random state is left as it
+    was."""
+    module = types.ModuleType("prophet")
+    module.Prophet = SamplingProphet
+    monkeypatch.setitem(sys.modules, "prophet", module)
+    dates = pd.to_datetime(NEXT_SEVEN_TRADING_DAYS)
+
+    np.random.seed(1)
+    expected = np.random.random()  # the caller's next draw, with no fit between
+
+    np.random.seed(1)
+    first = statistical.prophet_forecast(BEFORE_THANKSGIVING, dates)
+    after = np.random.random()
+    np.random.seed(2)
+    second = statistical.prophet_forecast(BEFORE_THANKSGIVING, dates)
+
+    pd.testing.assert_frame_equal(first, second)
+    assert after == expected
+
+
+# ── ARIMA's order by AIC (Phase 3, E4) ────────────────────────────────────────
+
+
+class AicARIMA(FakeARIMA):
+    """Its AIC is lowest at (2, 1, 1); orders in `broken` cannot be fitted."""
+
+    broken: set = set()  # noqa: RUF012 (set per test)
+    flat: bool = False
+
+    def __init__(self, endog, order):
+        if tuple(order) in self.broken:
+            raise np.linalg.LinAlgError("singular")
+        super().__init__(endog, order)
+        p, _, q = order
+        self.aic = 10.0 if self.flat else 10.0 + (p - 2) ** 2 + (q - 1) ** 2
+
+
+@pytest.fixture
+def aic_arima(monkeypatch):
+    import statsmodels.tsa.arima.model as arima_module
+
+    FakeARIMA.orders = []
+    AicARIMA.broken, AicARIMA.flat = set(), False
+    monkeypatch.setattr(arima_module, "ARIMA", AicARIMA)
+    monkeypatch.setattr(statistical, "ARIMA_ORDER", None)
+    return AicARIMA
+
+
+def test_arima_takes_the_order_with_the_lowest_aic(aic_arima):
+    forecast = statistical.arima_forecast(HOLIDAY_IN_HOLDOUT["y"], 7)
+    assert set(FakeARIMA.orders) == set(statistical.ARIMA_ORDER_GRID)
+    assert len(statistical.ARIMA_ORDER_GRID) == 18
+    assert set(forecast["arima_order"]) == {"(2, 1, 1)"}
+
+
+def test_an_order_that_cannot_be_fitted_is_skipped(aic_arima):
+    aic_arima.broken = {(2, 1, 1)}
+    forecast = statistical.arima_forecast(HOLIDAY_IN_HOLDOUT["y"], 7)
+    assert forecast["arima_order"].iloc[0] in {
+        "(1, 1, 1)",
+        "(3, 1, 1)",
+        "(2, 1, 0)",
+        "(2, 1, 2)",
+    }
+
+
+def test_of_equal_aics_the_simplest_order_wins(aic_arima):
+    aic_arima.flat = True
+    forecast = statistical.arima_forecast(HOLIDAY_IN_HOLDOUT["y"], 7)
+    assert forecast["arima_order"].iloc[0] == "(0, 1, 0)"
+
+
+def test_no_order_that_can_be_fitted_is_an_error(aic_arima):
+    aic_arima.broken = set(statistical.ARIMA_ORDER_GRID)
+    with pytest.raises(RuntimeError, match="no ARIMA order"):
+        statistical.arima_forecast(HOLIDAY_IN_HOLDOUT["y"], 7)
+
+
+def test_a_fixed_order_is_fitted_alone(fake_arima, monkeypatch):
+    monkeypatch.setattr(statistical, "ARIMA_ORDER", (5, 1, 0))
+    forecast = statistical.arima_forecast(HOLIDAY_IN_HOLDOUT["y"], 7)
+    assert fake_arima.orders == [(5, 1, 0)]
+    assert set(forecast["arima_order"]) == {"(5, 1, 0)"}
+
+
+def test_the_stacks_naive_column_is_the_last_train_close(
+    fake_prophet, fake_arima, no_boosters
+):
+    """Phase 3, E6: the forecast naive would have made at the end of the
+    train split, as ARIMA's and Prophet's columns are forecasts from there."""
+    stack = ensemble.build_holdout_stack(HOLIDAY_IN_HOLDOUT, pd.DataFrame(), "AAPL")
+    last_train_close = HOLIDAY_IN_HOLDOUT["y"].iloc[-31]
+    assert len(stack) == 30 and (stack["naive"] == last_train_close).all()

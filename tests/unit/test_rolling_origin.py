@@ -205,3 +205,82 @@ def test_a_model_failing_over_ten_percent_fails_the_run():
     with pytest.raises(ro.FailureRateError, match="b 20%"):
         ro.check_failure_rate(cells)
     ro.check_failure_rate(cells[cells["model"] == "a"])  # exactly 10%: allowed
+
+
+# ── Worker processes ──────────────────────────────────────────────────────────
+# Module-level, so a spawned worker can import them.
+
+
+def _fails_at_the_second_origin(data):
+    if data.origin == DATES[35]:
+        raise RuntimeError("no forecast today")
+    return ro.drift_forecast(data)
+
+
+def _halfway_to_earlier_naive(data, base, earlier):
+    """A combiner that reads earlier origins' cells, as the rolling
+    ensemble does."""
+    past = earlier.loc[earlier["model"] == "naive", "yhat"]
+    level = float(past.mean()) if len(past) else data.close
+    return pd.DataFrame({"yhat": np.full(len(data.dates), (level + data.close) / 2)})
+
+
+def test_worker_processes_give_the_sequential_cells():
+    prices = {t: _bars(seed) for seed, t in enumerate(["AAPL", "AMZN", "MSFT", "NVDA"])}
+    forecasters = {**ro.BASELINES, "flaky": _fails_at_the_second_origin}
+    combiners = {"halfway": _halfway_to_earlier_naive}
+    run = [prices, _articles(), ORIGINS, forecasters, combiners]
+    sequential = ro.run_origins(*run)
+    parallel = ro.run_origins(*run, workers=3)
+    assert sequential["status"].eq("failed").any()
+    assert set(sequential["role"]) == {"warmup", "scored"}
+    # Everything but how long each call took.
+    pd.testing.assert_frame_equal(
+        parallel.drop(columns="seconds"), sequential.drop(columns="seconds")
+    )
+
+
+def test_more_workers_than_the_cap_are_refused():
+    with pytest.raises(ValueError, match="workers must be 1 to 3"):
+        ro.run_origins({"AAPL": _bars()}, _articles(), ORIGINS, ro.BASELINES, workers=4)
+
+
+def test_a_contract_error_in_a_worker_still_raises():
+    with pytest.raises(ro.ForecasterContractError):
+        ro.run_origins(
+            {"AAPL": _bars(1), "MSFT": _bars(2)},
+            _articles(),
+            ORIGINS,
+            {"short": _three_rows},
+            workers=2,
+        )
+
+
+def _three_rows(data):
+    return ro.naive_forecast(data).iloc[:3]
+
+
+def _whose_process(data):
+    import os
+
+    return ro.naive_forecast(data).assign(pid=os.getpid())
+
+
+def test_the_tickers_really_run_in_other_processes():
+    import os
+
+    prices = {t: _bars(seed) for seed, t in enumerate(["AAPL", "AMZN", "MSFT"])}
+    cells = ro.run_origins(
+        prices, _articles(), ORIGINS, {"whose": _whose_process}, workers=3
+    )
+    # How the tickers spread over the workers depends on how fast each one
+    # starts, so only this process's absence is checked.
+    assert os.getpid() not in set(cells["pid"])
+
+
+def test_an_origin_whose_days_skip_a_trading_day_is_named():
+    """2025-01-09 was a one-off closure the calendar does not know: the
+    data skips it, so an origin whose next 7 days span it is listed."""
+    dates = DATES.delete(37)  # the data skips a day the calendar trades
+    assert ro.calendar_mismatched(dates, [25, 30, 35, 40]) == [30, 35]
+    assert ro.calendar_mismatched(DATES, [25, 30, 35, 40]) == []

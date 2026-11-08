@@ -33,11 +33,13 @@ from quantflow.db.metrics import save_model_metrics
 from quantflow.evaluation.metrics import regression_metrics
 from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
 from quantflow.features.engineering import (
+    bollinger_features,
     engineer_features,
     get_feature_cols,
     load_features,
     load_news,
 )
+from quantflow.features.indicators import stored_bollinger_bands
 from quantflow.models import FORECAST_DAYS
 from quantflow.utils.logger import get_logger
 from quantflow.utils.trading_calendar import next_trading_days
@@ -50,14 +52,26 @@ MLFLOW_EXP = "stock_forecasting"
 
 # One set of settings per family, shared by the scored and the live model, so
 # the model that is evaluated is the model that forecasts.
+#
+# n_jobs 1: XGBoost draws its row subsample differently for different thread
+# counts, so with the default (every thread the machine has) the same data
+# gave a different forecast on the laptop the evaluation ran on and on
+# GitHub's runner. One thread gives the same forecast everywhere, and lets
+# the evaluation run tickers in parallel processes without oversubscribing.
+#
+# E3: max_depth, learning_rate and n_estimators chosen on the tuning origins,
+# before any validation date (run E3-tuning; docs/evaluation.md, section 16),
+# then judged on the validation dates: kept for XGBoost (it was 4, 0.05,
+# 300), dropped for LightGBM, whose tuned 4, 0.1, 600 scored worse there.
 MODEL_PARAMS: dict[str, dict[str, Any]] = {
     "xgboost": {
-        "n_estimators": 300,
-        "max_depth": 4,
-        "learning_rate": 0.05,
+        "n_estimators": 600,
+        "max_depth": 6,
+        "learning_rate": 0.03,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "random_state": 42,
+        "n_jobs": 1,
         "verbosity": 0,
     },
     "lightgbm": {
@@ -67,13 +81,107 @@ MODEL_PARAMS: dict[str, dict[str, Any]] = {
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "random_state": 42,
+        "n_jobs": 1,
         "verbose": -1,
     },
 }
 
 
-def _new_regressor(model_name: str):
-    """An unfitted regressor of the family; None if its package is missing.
+# What each family learns to predict (Phase 3, E1, decided per booster):
+#   "price"       the next close itself;
+#   "log_return"  log(next close / close), turned back into a close as
+#                 close x exp(prediction).
+# A tree predicts the mean target of a leaf, so on a price target it can
+# never forecast above the highest close it was trained on; a return carries
+# the level over from the latest close. On the validation dates the return
+# target did better at days 1 and 2 and worse from day 3, as the predicted
+# returns compound over the rollout: dropped for both (docs/evaluation.md,
+# section 16).
+TARGETS: dict[str, str] = {"xgboost": "price", "lightgbm": "price"}
+
+
+# Whether the rollout carries open, high and low forward (Phase 3, E2,
+# decided per booster). Frozen at the starting day's values, they hold every
+# step near that day's price level, whatever the model predicts; rolled,
+# each day opens at the previous close and keeps the starting day's high and
+# low relative to its close. On the validation dates rolling them did worse
+# from day 2 for both boosters: the frozen values pull every step toward the
+# starting price, which on these dates helps. Dropped for both
+# (docs/evaluation.md, section 16).
+ROLL_PRICE_RANGE: dict[str, bool] = {"xgboost": False, "lightgbm": False}
+
+
+# The boosters' bands (Phase 3, I1, decided by its band rule):
+#   "fixed_2pct"     the forecast plus and minus 2%, at every horizon;
+#   "random_walk"    a 95% band for a random walk around the forecast,
+#                    forecast x exp(plus or minus 1.96 sigma sqrt(h)), sigma
+#                    the standard deviation of the last BAND_RETURNS daily
+#                    log returns up to the forecast's start (random_walk_band);
+#   "error_quantile" the 2.5% and 97.5% quantiles of the booster's own log
+#                    errors at each horizon over the earlier rolling origins
+#                    (quantile_band; evaluated only for now: live it would need
+#                    those earlier forecasts replayed).
+BANDS: dict[str, str] = {"xgboost": "fixed_2pct", "lightgbm": "fixed_2pct"}
+BAND_RETURNS = 60
+BAND_Z = 1.96
+
+
+def fixed_band(yhat) -> tuple[np.ndarray, np.ndarray]:
+    yhat = np.asarray(yhat, dtype=float)
+    return yhat * 0.98, yhat * 1.02
+
+
+def random_walk_band(yhat, closes) -> tuple[np.ndarray, np.ndarray]:
+    """yhat[h - 1] x exp(plus or minus BAND_Z sigma sqrt(h)), sigma the
+    standard deviation of the last BAND_RETURNS daily log returns of
+    closes (the history up to the forecast's start)."""
+    yhat = np.asarray(yhat, dtype=float)
+    recent = np.asarray(closes, dtype=float)[-(BAND_RETURNS + 1) :]
+    sigma = float(np.std(np.diff(np.log(recent)), ddof=1))
+    half = BAND_Z * sigma * np.sqrt(np.arange(1, len(yhat) + 1))
+    return yhat * np.exp(-half), yhat * np.exp(half)
+
+
+def quantile_band(yhat, errors: dict[int, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """yhat[h - 1] x exp of the 2.5% and 97.5% quantiles of errors[h], the
+    log errors log(actual / forecast) at horizon h of earlier forecasts."""
+    yhat = np.asarray(yhat, dtype=float)
+    low, high = zip(
+        *(np.quantile(errors[h], [0.025, 0.975]) for h in range(1, len(yhat) + 1)),
+        strict=True,
+    )
+    return yhat * np.exp(np.array(low)), yhat * np.exp(np.array(high))
+
+
+def training_target(model_name: str, rows: pd.DataFrame) -> pd.Series:
+    """What the family is fitted on, from rows with close and target_price."""
+    if TARGETS[model_name] == "log_return":
+        return np.log(rows["target_price"] / rows["close"])
+    return rows["target_price"]
+
+
+def predicted_close(model_name: str, predicted, close) -> np.ndarray:
+    """The family's predictions as closes, given the closes they start from."""
+    values = np.asarray(predicted, dtype=float)
+    if TARGETS[model_name] == "log_return":
+        return np.asarray(close, dtype=float) * np.exp(values)
+    return values
+
+
+# Phase 3's E3: the settings tuned on the tuning window (evaluation/splits
+# .py, before any validation or test date) beside the current ones, each
+# replacing these three of MODEL_PARAMS.
+TUNING_GRID: list[dict[str, Any]] = [
+    {"max_depth": depth, "learning_rate": rate, "n_estimators": trees}
+    for depth in (3, 4, 6)
+    for rate in (0.03, 0.1)
+    for trees in (200, 600)
+]
+
+
+def _new_regressor(model_name: str, params: dict[str, Any] | None = None):
+    """An unfitted regressor of the family, with MODEL_PARAMS updated by
+    params (tuning only); None if its package is missing.
 
     Raises ValueError for a family MODEL_PARAMS does not define, which would
     otherwise fall through to LightGBM and be stored under the wrong name.
@@ -87,10 +195,10 @@ def _new_regressor(model_name: str):
         if model_name == "xgboost":
             import xgboost as xgb
 
-            return xgb.XGBRegressor(**MODEL_PARAMS["xgboost"])
+            return xgb.XGBRegressor(**(MODEL_PARAMS["xgboost"] | (params or {})))
         import lightgbm as lgb
 
-        return lgb.LGBMRegressor(**MODEL_PARAMS["lightgbm"])
+        return lgb.LGBMRegressor(**(MODEL_PARAMS["lightgbm"] | (params or {})))
     except ImportError:
         logger.error(f"{model_name} not installed. Run: pip install {model_name}")
         return None
@@ -116,17 +224,17 @@ def _train_scored(model_name: str, df: pd.DataFrame, ticker: str) -> dict:
     train, holdout = train_holdout_split(df, copy=True)
 
     X_train = train[available]
-    y_train = train["target_price"]
+    y_train = training_target(model_name, train)
     X_hold = holdout[available]
     y_hold = holdout["target_price"]
 
-    if model_name == "xgboost":
-        model.fit(X_train, y_train, eval_set=[(X_hold, y_hold)], verbose=False)
-    else:
-        model.fit(X_train, y_train)
+    # The holdout scores this model, so it never reaches the fit (it used to
+    # go in as XGBoost's eval_set: harmless without early stopping, a leak
+    # the moment early stopping or tuning read it).
+    model.fit(X_train, y_train)
 
-    # Evaluate on holdout
-    preds = model.predict(X_hold)
+    # Evaluate on holdout, as closes whatever the target
+    preds = predicted_close(model_name, model.predict(X_hold), holdout["close"])
     scores = regression_metrics(y_hold, preds)
 
     label = "XGBoost" if model_name == "xgboost" else "LightGBM"
@@ -168,14 +276,19 @@ def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
     return _train_scored("lightgbm", df, ticker)
 
 
-def fit_live_model(model_name: str, labelled: pd.DataFrame, features: list[str]):
+def fit_live_model(
+    model_name: str,
+    labelled: pd.DataFrame,
+    features: list[str],
+    params: dict[str, Any] | None = None,
+):
     """A fresh model with the scored model's settings, fitted on every
     labelled row, including the 30 the scored model held out. Missing
-    values stay missing."""
-    model = _new_regressor(model_name)
+    values stay missing. params override MODEL_PARAMS, for tuning only."""
+    model = _new_regressor(model_name, params)
     if model is None:
         return None
-    model.fit(labelled[features], labelled["target_price"])
+    model.fit(labelled[features], training_target(model_name, labelled))
     return model
 
 
@@ -201,7 +314,11 @@ def generate_forecast(
       - Lag features (1/2/3/5/10) cascade from the rolling price buffer
       - Returns (1d/5d) recomputed from the buffer
       - Rolling mean/std (5/10/20) recomputed from the buffer
-      - Bollinger position and width derived from updated rolling stats
+      - Bollinger position and width from the bands of the buffer's
+        last 20 closes, built as training builds them
+      - Open, high and low, and the day's range, carried forward where
+        ROLL_PRICE_RANGE says so: each day opens at the previous close and
+        keeps the starting day's high and low ratios to the close
       - Exogenous features (RSI, MACD, sentiment, anomaly, volume) stay frozen
         at their last known values, since we cannot extrapolate them forward.
     """
@@ -211,13 +328,23 @@ def generate_forecast(
     # (up to rolling_mean_20 + lag_10) have enough history from day one.
     buf = list(price_history[-30:])
 
+    # The starting day's high and low relative to its close, for E2.
+    roll_range = ROLL_PRICE_RANGE[model_name]
+    start_close = float(buf[-1])
+    high_ratio, low_ratio = (
+        float(X_last[col].iloc[0]) / start_close if col in X_last.columns else np.nan
+        for col in ("high", "low")
+    )
+
     forecasts = []
     # Trading days, not weekdays: a forecast must not promise a close on a
     # market holiday.
     future_dates = next_trading_days(last_date, FORECAST_DAYS)
+    history = list(price_history)
 
     for forecast_date in future_dates:
-        pred = float(model.predict(current_X)[0])
+        # buf[-1] is the close of the row being predicted from.
+        pred = float(predicted_close(model_name, model.predict(current_X), buf[-1])[0])
 
         forecasts.append(
             {
@@ -225,8 +352,6 @@ def generate_forecast(
                 "model": model_name,
                 "ds": forecast_date,
                 "predicted_close": pred,
-                "lower_bound": pred * 0.98,
-                "upper_bound": pred * 1.02,
             }
         )
 
@@ -259,27 +384,45 @@ def generate_forecast(
                         float(np.std(w_prices, ddof=1)) if len(w_prices) > 1 else 0.0
                     )
 
-        # Bollinger Band position and width (derived from updated rolling_mean/std_20)
-        if (
-            "rolling_mean_20" in current_X.columns
-            and "rolling_std_20" in current_X.columns
-        ):
-            mean20 = float(current_X["rolling_mean_20"].values[0])
-            std20 = float(current_X["rolling_std_20"].values[0])
-            bb_upper = mean20 + 2 * std20
-            bb_lower = mean20 - 2 * std20
-            bb_range = bb_upper - bb_lower
-            if "bb_position" in current_X.columns and bb_range > 0:
-                current_X["bb_position"] = float(
-                    np.clip((pred - bb_lower) / bb_range, 0, 1)
-                )
-            if "bb_width" in current_X.columns and mean20 > 0:
-                current_X["bb_width"] = bb_range / mean20
+        # Bollinger position and width, from the bands as training reads
+        # them (population standard deviation, rounded as stored) and by the
+        # same formulas: no clipping, missing where training's would be.
+        bands = stored_bollinger_bands(prices)
+        position, width = bollinger_features(
+            pd.Series([pred]),
+            pd.Series([bands["bb_upper"]]),
+            pd.Series([bands["bb_lower"]]),
+            pd.Series([bands["bb_middle"]]),
+        )
+        if "bb_position" in current_X.columns:
+            current_X["bb_position"] = float(position.iloc[0])
+        if "bb_width" in current_X.columns:
+            current_X["bb_width"] = float(width.iloc[0])
+
+        # Open, high and low, and the day's range, carried forward (E2).
+        if roll_range:
+            high, low = pred * high_ratio, pred * low_ratio
+            for col, value in (
+                ("open", prices[-2]),
+                ("high", high),
+                ("low", low),
+                ("hl_range", high - low),
+            ):
+                if col in current_X.columns:
+                    current_X[col] = float(value)
 
         # RSI, MACD, volume, sentiment, anomaly stay frozen: exogenous signals
         # that cannot be extrapolated from price alone.
 
-    return pd.DataFrame(forecasts)
+    out = pd.DataFrame(forecasts)
+    band = BANDS[model_name]
+    if band == "random_walk":
+        lower, upper = random_walk_band(out["predicted_close"], history)
+    elif band == "fixed_2pct":
+        lower, upper = fixed_band(out["predicted_close"])
+    else:
+        raise ValueError(f"no live {band!r} band for {model_name}")
+    return out.assign(lower_bound=lower, upper_bound=upper)
 
 
 # ── MLflow logging ────────────────────────────────────────────────────────────

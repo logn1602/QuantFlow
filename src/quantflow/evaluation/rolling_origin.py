@@ -19,6 +19,9 @@ closes, and records one cell per forecast day:
         cells: ticker, window, role, model, origin, h, target_date,
                origin_close, actual, yhat, yhat_lower, yhat_upper, status
 
+Tickers never share anything, so run_origins can give each to a worker
+process (workers, at most MAX_WORKERS) and get a sequential run's cells.
+
 Forecasters are passed in as functions, as out_of_fold.py takes its fitter:
 evaluation never imports models. A forecaster that raises, or returns a
 non-finite forecast, gives failed cells, recorded and counted; one that
@@ -26,8 +29,10 @@ returns the wrong number of rows is a bug in its adapter, so the loop
 raises.
 """
 
+import multiprocessing
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -58,6 +63,9 @@ CELL_COLUMNS = [
 # A model whose share of failed cells exceeds this fails the run, rather
 # than being compared on the cells it happened to manage.
 MAX_FAILURE_SHARE = 0.10
+# Worker processes for a run, at most: the laptop has 8 GB of RAM and each
+# worker fits one model at a time, on one thread (boosting.MODEL_PARAMS).
+MAX_WORKERS = 3
 
 
 class ForecasterContractError(RuntimeError):
@@ -130,6 +138,25 @@ BASELINES: dict[str, Forecaster] = {"naive": naive_forecast, "drift": drift_fore
 # ── The loop ──────────────────────────────────────────────────────────────────
 
 
+def _forecast_days(dates, position: int, horizon: int):
+    """(the data's next `horizon` dates after row `position`, the calendar's
+    next `horizon` trading days, whether they agree): the one check both
+    origin_data and calendar_mismatched apply, so they cannot disagree."""
+    dates = pd.DatetimeIndex(dates)
+    found = dates[position + 1 : position + 1 + horizon].normalize()
+    expected = next_trading_days(dates[position], horizon)
+    return found, expected, len(found) == horizon and bool((found == expected).all())
+
+
+def calendar_mismatched(dates, positions, horizon: int = HORIZON) -> list[int]:
+    """The origin positions whose next `horizon` dates in the data are not
+    the calendar's next trading days: a one-off closure the calendar cannot
+    know, such as 2025-01-09, inside their forecast days. origin_data
+    refuses such an origin (CalendarMismatchError); a window that may hold
+    one, like the tuning window, leaves it out first and says so."""
+    return [p for p in positions if not _forecast_days(dates, p, horizon)[2]]
+
+
 def origin_data(
     ticker: str,
     prices: pd.DataFrame,
@@ -140,9 +167,8 @@ def origin_data(
     """The data cut at the origin in row `position`, and its target rows."""
     origin = pd.Timestamp(prices["date"].iloc[position])
     targets = prices.iloc[position + 1 : position + 1 + horizon]
-    expected = next_trading_days(origin, horizon)
-    found = pd.DatetimeIndex(targets["date"]).normalize()
-    if len(found) != horizon or not (found == expected).all():
+    found, expected, agree = _forecast_days(prices["date"], position, horizon)
+    if not agree:
         raise CalendarMismatchError(
             f"{ticker}: after {origin.date()} the data has "
             f"{[d.date().isoformat() for d in found]}, the calendar "
@@ -240,6 +266,51 @@ def _call(name: str, fn: Callable, args: tuple, data, targets, horizon) -> tuple
     return (None if error else forecast), cells
 
 
+def ticker_cells(
+    ticker: str,
+    bars: pd.DataFrame,
+    articles: pd.DataFrame,
+    origins: Sequence[tuple[int, str]],
+    forecasters: dict[str, Forecaster],
+    combiners: dict[str, Combiner],
+    horizon: int = HORIZON,
+) -> list[pd.DataFrame]:
+    """One ticker's cells, origin by origin in date order. Every ticker is
+    independent of the others, so a worker process can run this for one
+    while another runs it for the next."""
+    bars = bars.sort_values("date").reset_index(drop=True)
+    out: list[pd.DataFrame] = []
+    started = time.perf_counter()
+    for position, role in sorted(origins):
+        data, targets = origin_data(ticker, bars, articles, position, horizon)
+        base: dict[str, pd.DataFrame] = {}
+        at_origin: list[pd.DataFrame] = []
+        for name, forecaster in forecasters.items():
+            forecast, cells = _call(name, forecaster, (data,), data, targets, horizon)
+            at_origin.append(cells)
+            if forecast is not None:
+                base[name] = forecast
+        earlier = (
+            pd.concat(out, ignore_index=True)
+            if out
+            else pd.DataFrame(columns=CELL_COLUMNS)
+        )
+        # Warmup origins only supply base cells for the combiners that
+        # need earlier origins; no combiner is scored there.
+        for name, combiner in combiners.items() if role == "scored" else ():
+            _, cells = _call(
+                name, combiner, (data, base, earlier), data, targets, horizon
+            )
+            at_origin.append(cells)
+        for cells in at_origin:
+            cells["role"] = role
+        out.extend(at_origin)
+    logger.info(
+        f"{ticker}: {len(origins)} origins in {time.perf_counter() - started:.0f}s"
+    )
+    return out
+
+
 def run_origins(
     prices: dict[str, pd.DataFrame],
     articles: pd.DataFrame,
@@ -248,49 +319,40 @@ def run_origins(
     combiners: dict[str, Combiner] | None = None,
     window: str = "validation",
     horizon: int = HORIZON,
+    workers: int = 1,
 ) -> pd.DataFrame:
     """Every cell of every model at every origin.
 
     prices maps each ticker to its daily bars (date, open, high, low, close,
     volume) in date order; origins are (row position, role) pairs, role
     "scored" or "warmup"; articles are the stored news rows of every ticker.
+
+    workers > 1 runs the tickers in that many worker processes, at most
+    MAX_WORKERS; the cells are a sequential run's, in the same order. The
+    forecasters and combiners must then be picklable (module-level functions
+    or instances of module-level classes), and give the same forecast in any
+    process: no global random state, no thread-count-dependent results.
     """
     combiners = combiners or {}
-    frames: list[pd.DataFrame] = []
-    for ticker, bars in prices.items():
-        bars = bars.sort_values("date").reset_index(drop=True)
-        ticker_cells: list[pd.DataFrame] = []
-        started = time.perf_counter()
-        for position, role in sorted(origins):
-            data, targets = origin_data(ticker, bars, articles, position, horizon)
-            base: dict[str, pd.DataFrame] = {}
-            at_origin: list[pd.DataFrame] = []
-            for name, forecaster in forecasters.items():
-                forecast, cells = _call(
-                    name, forecaster, (data,), data, targets, horizon
-                )
-                at_origin.append(cells)
-                if forecast is not None:
-                    base[name] = forecast
-            earlier = (
-                pd.concat(ticker_cells, ignore_index=True)
-                if ticker_cells
-                else pd.DataFrame(columns=CELL_COLUMNS)
-            )
-            # Warmup origins only supply base cells for the combiners that
-            # need earlier origins; no combiner is scored there.
-            for name, combiner in combiners.items() if role == "scored" else ():
-                _, cells = _call(
-                    name, combiner, (data, base, earlier), data, targets, horizon
-                )
-                at_origin.append(cells)
-            for cells in at_origin:
-                cells["role"] = role
-            ticker_cells.extend(at_origin)
-        logger.info(
-            f"{ticker}: {len(origins)} origins in {time.perf_counter() - started:.0f}s"
-        )
-        frames.extend(ticker_cells)
+    if not 1 <= workers <= MAX_WORKERS:
+        raise ValueError(f"workers must be 1 to {MAX_WORKERS}, not {workers}")
+    jobs = [
+        (ticker, bars, articles, origins, forecasters, combiners, horizon)
+        for ticker, bars in prices.items()
+    ]
+    if workers == 1 or len(jobs) < 2:
+        per_ticker = [ticker_cells(*job) for job in jobs]
+    else:
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(min(workers, len(jobs)), mp_context=context) as pool:
+            futures = [pool.submit(ticker_cells, *job) for job in jobs]
+            try:
+                # In ticker order, whatever order they finish in.
+                per_ticker = [future.result() for future in futures]
+            except BaseException:
+                pool.shutdown(cancel_futures=True)
+                raise
+    frames = [cells for ticker in per_ticker for cells in ticker]
     if not frames:
         return pd.DataFrame(columns=CELL_COLUMNS)
     cells = pd.concat(frames, ignore_index=True).assign(window=window)
