@@ -36,7 +36,11 @@ from quantflow.db.prices import classify_bars, daily_bars
 from quantflow.db.readonly import is_local_database, masked, read_only_connection
 from quantflow.db.snapshot import read_snapshot_tables
 from quantflow.evaluation import decision, report
-from quantflow.evaluation.rolling_origin import check_failure_rate, run_origins
+from quantflow.evaluation.rolling_origin import (
+    MAX_WORKERS,
+    check_failure_rate,
+    run_origins,
+)
 from quantflow.evaluation.snapshot import (
     Snapshot,
     SnapshotError,
@@ -226,6 +230,7 @@ def run_evaluation(args) -> int:
         "scored origins": f"{len(scored)}, every {ORIGIN_STEP} trading days, "
         f"{dates[scored[0]].date()} to {dates[scored[-1]].date()}",
         "horizon": HORIZON,
+        "workers": args.workers,
         "started": started.isoformat(timespec="seconds"),
     }
     clock = time.perf_counter()
@@ -237,6 +242,7 @@ def run_evaluation(args) -> int:
             forecasters,
             combiners,
             window=args.window,
+            workers=args.workers,
         )
         cells.to_csv(out / "cells.csv", index=False)
         check_failure_rate(cells)
@@ -277,7 +283,8 @@ def run_evaluation(args) -> int:
             {"window": args.window, "snapshot_digest": snapshot.digest,
              "as_of": header["as of"], "commit": commit, "dirty": dirty,
              "horizon": HORIZON, "origin_step": ORIGIN_STEP, "origins": len(scored),
-             "tickers": ",".join(tickers), "models": header["models"]}
+             "tickers": ",".join(tickers), "models": header["models"],
+             "workers": args.workers}
         )  # fmt: skip
         metrics = {}
         for row in headline.to_dict("records"):
@@ -417,6 +424,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     run.add_argument("--label", default="", help="the run's folder and MLflow name")
     run.add_argument("--out", type=Path, default=RUNS_ROOT)
+    run.add_argument(
+        "--workers",
+        type=int,
+        choices=range(1, MAX_WORKERS + 1),
+        default=1,
+        help=f"tickers in parallel processes, at most {MAX_WORKERS}",
+    )
 
     compare = commands.add_parser(
         "compare", help="the keep-or-drop rule, a candidate run against the incumbent"

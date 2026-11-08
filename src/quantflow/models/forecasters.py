@@ -71,29 +71,38 @@ def prophet(data: OriginData) -> pd.DataFrame:
     )
 
 
-def booster(model_name: str, without: tuple[str, ...] = ()) -> Forecaster:
+class Booster:
     """XGBoost or LightGBM as boosting.run forecasts live: the live model
     fitted on every labelled row, rolled forward from the newest one.
-    without names features to leave out, for an ablation."""
+    without names features to leave out, for an ablation.
 
-    def forecast(data: OriginData) -> pd.DataFrame:
+    A class rather than a closure, so the harness's worker processes can
+    receive it."""
+
+    def __init__(self, model_name: str, without: tuple[str, ...] = ()):
+        self.model_name = model_name
+        self.without = tuple(without)
+
+    def __call__(self, data: OriginData) -> pd.DataFrame:
         raw = build_features(
             data.prices, data.articles, data.ticker, fetched_at=data.fetched_at
         )
         features = engineer_features(raw, drop_unlabeled=False)
         labelled = features.dropna(subset=["target_price"])
         columns = [
-            c for c in get_feature_cols() if c in labelled.columns and c not in without
+            c
+            for c in get_feature_cols()
+            if c in labelled.columns and c not in self.without
         ]
-        model = fit_live_model(model_name, labelled, columns)
+        model = fit_live_model(self.model_name, labelled, columns)
         if model is None:
-            raise RuntimeError(f"{model_name} is not installed")
+            raise RuntimeError(f"{self.model_name} is not installed")
         rolled = generate_forecast(
             model,
             features.iloc[[-1]][columns],
             features["date"].iloc[-1],
             list(features["close"].to_numpy()),
-            model_name,
+            self.model_name,
             data.ticker,
         )
         return pd.DataFrame(
@@ -104,7 +113,9 @@ def booster(model_name: str, without: tuple[str, ...] = ()) -> Forecaster:
             }
         )
 
-    return forecast
+
+def booster(model_name: str, without: tuple[str, ...] = ()) -> Forecaster:
+    return Booster(model_name, without)
 
 
 def ensemble_stack(
