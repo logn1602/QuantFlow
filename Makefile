@@ -2,7 +2,7 @@
 # Run any pipeline stage with a single command.
 # Usage: make <target>
 
-.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest dashboard scheduler test eval all clean clean-dry
+.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest evaluate dashboard scheduler test eval all clean clean-dry
 
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
@@ -20,6 +20,7 @@ help:
 	@echo "  make ensemble     Run stacking ensemble only"
 	@echo "  make sentiment    Fetch + analyze news sentiment"
 	@echo "  make backtest     Run strategy backtest (run models first)"
+	@echo "  make evaluate     Rolling-origin evaluation, validation dates (SNAPSHOT=dir)"
 	@echo "  make dashboard    Launch Streamlit dashboard"
 	@echo "  make scheduler    Start the live data scheduler"
 	@echo "  make test         Run the offline test suite (no DB needed)"
@@ -71,6 +72,12 @@ ensemble:
 
 backtest:
 	python -m quantflow.pipelines.backtest
+
+# Reads a snapshot made by "python -m quantflow.pipelines.evaluate export";
+# see docs/evaluation.md. Test-date runs are deliberately not a target.
+SNAPSHOT ?= eval_snapshots/2026-11-06
+evaluate:
+	python -m quantflow.pipelines.evaluate run --snapshot $(SNAPSHOT)
 
 sentiment:
 	python -m quantflow.features.sentiment

@@ -38,6 +38,11 @@ mlruns/
 mlruns_artifacts/
 mlflow.db
 
+# Evaluation snapshots and run outputs (docs/evaluation.md): data exported
+# from the live database, and results; MLflow keeps the runs.
+eval_snapshots/
+eval_runs/
+
 # Streamlit (Phase 5)
 .streamlit/secrets.toml
 

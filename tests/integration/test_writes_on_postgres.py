@@ -383,3 +383,48 @@ def test_the_diagnostics_run_read_only_on_postgres(pg, monkeypatch, tmp_path):
     # Query 1 on this test's two daily bars: two dates, both with a daily bar.
     assert "| AAPL | 2026-04-09 | 2026-04-10 | 2 | 2 | 0 |" in text
     assert _count(pg, "SELECT count(*) FROM raw_prices") == 2  # nothing written
+
+
+def test_the_evaluation_snapshot_is_exported_read_only(pg, tmp_path, capsys):
+    """pipelines.evaluate export, end to end: daily bars built by the same
+    rule as the loaders, a date built from 15-min bars listed, articles
+    stored after the as-of date's news cutoff left out, the URL cut to its
+    host, and nothing written."""
+    from quantflow.evaluation.snapshot import read_snapshot
+    from quantflow.pipelines import evaluate
+
+    prices.insert_bars(_bars(["2026-04-07", "2026-04-08", "2026-04-09"]))
+    session = pd.date_range(
+        "2026-04-10 13:30", "2026-04-10 19:45", freq="15min", tz="UTC"
+    )
+    prices.insert_bars(
+        [{"ticker": "AAPL", "source": "yfinance", "ts": ts, "open": 2.0, "high": 2.0,
+          "low": 2.0, "close": 2.0, "volume": 1} for ts in session]
+    )  # fmt: skip
+    with pg.begin() as conn:
+        for stored, url in (
+            ("2026-04-10 22:40+00", "https://finance.yahoo.com/news/x?a=1"),
+            ("2026-04-11 00:30+00", "https://example.com/late"),  # after the cutoff
+        ):
+            conn.execute(
+                text("""
+                    INSERT INTO news_sentiment (ticker, source, published_at,
+                        headline, url, sentiment, score_pos, score_neg, score_neu,
+                        compound, inserted_at)
+                    VALUES ('AAPL', 'rss', '2026-04-10 20:00+00', :h, :url,
+                        'positive', 0.8, 0.1, 0.1, 0.7, :stored)
+                """),
+                {"h": f"headline {stored}", "url": url, "stored": stored},
+            )
+
+    code = evaluate.main(
+        ["export", "--as-of", "2026-04-10", "--tickers", "AAPL", "--out",
+         str(tmp_path), "--live"]
+    )  # fmt: skip
+    assert code == 0, capsys.readouterr().err
+    snapshot = read_snapshot(tmp_path / "2026-04-10")
+    bars = snapshot.prices["AAPL"]
+    assert len(bars) == 4 and bars["close"].iloc[-1] == 2.0  # last 15-min close
+    assert snapshot.built_dates == {"AAPL": [pd.Timestamp("2026-04-10")]}
+    assert snapshot.articles["url_domain"].tolist() == ["finance.yahoo.com"]
+    assert _count(pg, "SELECT count(*) FROM news_sentiment") == 2  # nothing written
