@@ -149,8 +149,10 @@ def ensemble_stack(
 # Separate rolling-origin weights for each horizon (Phase 3, E7): day 1 and
 # day 7 are different tasks, and one set of weights serves neither best. Each
 # day's weights are fitted on that day's rows of the earlier origins only
-# (11 or 12 rows, against 82 for one set).
-ROLLING_PER_HORIZON = True
+# (11 or 12 rows, against 82 for one set). On the validation dates they did
+# better at days 1 to 3 and worse from day 4, lower on only 4 of 8 tickers:
+# dropped (docs/evaluation.md, section 16).
+ROLLING_PER_HORIZON = False
 
 
 def ensemble_rolling(
