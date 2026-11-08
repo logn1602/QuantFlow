@@ -440,16 +440,22 @@ def tune_boosters(args) -> int:
              "tickers": ",".join(tickers),
              "workers": args.workers}
         )  # fmt: skip
-        mlflow.log_metrics(
-            {f"{row['candidate']}.mape": float(row["mape"])
-             for row in table.to_dict("records")}
-        )  # fmt: skip
+        mlflow.log_metrics(tuning_metrics(table))
         mlflow.log_artifacts(str(out))
         mlflow.end_run(status="FINISHED")
     except Exception as e:
         print(f"MLflow logging failed, so this is not logged: {e}", file=sys.stderr)
+        mlflow.end_run(status="FAILED")
         return 1
     return 0
+
+
+def tuning_metrics(table: pd.DataFrame) -> dict[str, float]:
+    """Each candidate's MAPE under a name MLflow accepts (no "#")."""
+    return {
+        f"{row['candidate'].replace('#', '_')}.mape": float(row["mape"])
+        for row in table.to_dict("records")
+    }
 
 
 # ── compare ───────────────────────────────────────────────────────────────────

@@ -331,6 +331,14 @@ def test_tune_scores_every_candidate_on_the_tuning_origins(
     ((_, _, tags),) = harness.call("start")
     assert tags["window"] == "tuning"
     assert harness.call("end") == [("end", "FINISHED")]
+    ((_, metrics),) = harness.call("metrics")
+    # MLflow refuses "#" in a metric name.
+    assert set(metrics) == {
+        "xgboost_00.mape",
+        "xgboost_01.mape",
+        "lightgbm_00.mape",
+        "lightgbm_01.mape",
+    }
 
 
 def test_tune_refuses_a_snapshot_with_no_tuning_origin(tmp_path, harness, capsys):
