@@ -78,18 +78,27 @@ def build_features(
 
     computed = compute_indicators(indexed)
     if computed.empty:
-        indicators = pd.DataFrame(columns=["date", *INDICATOR_COLUMNS])
+        indicators = _empty(INDICATOR_COLUMNS)
     else:
         indicators = _dated(rounded_for_storage(computed))
 
     flags = detect_anomalies(indexed[["close", "volume"]], ticker)
     if flags.empty:
-        anomalies = pd.DataFrame(columns=["date", "zscore"])
+        anomalies = _empty(["zscore"])
     else:
         anomalies = _dated(flags[["zscore"]].astype(float).round(STORED_DECIMALS))
 
     return merge_feature_inputs(
         prices, indicators, anomalies, daily_sentiment(articles)
+    )
+
+
+def _empty(columns: list[str]) -> pd.DataFrame:
+    """No rows, but typed columns, so merging it gives float columns of
+    missing values rather than object ones."""
+    return pd.DataFrame(
+        {"date": pd.Series(dtype="datetime64[ns]")}
+        | {column: pd.Series(dtype=float) for column in columns}
     )
 
 
@@ -104,7 +113,7 @@ def daily_sentiment(articles: pd.DataFrame) -> pd.DataFrame:
     """Articles averaged by UTC publish date, as the stored query does:
     mean compound, positive and negative counts, and every article counted."""
     if articles.empty:
-        return pd.DataFrame(columns=["date", *SENTIMENT_COLUMNS])
+        return _empty(SENTIMENT_COLUMNS)
     published = pd.to_datetime(articles["published_at"], utc=True)
     by_date = articles.assign(
         date=published.dt.tz_localize(None).dt.normalize(),

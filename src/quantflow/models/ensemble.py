@@ -376,6 +376,20 @@ def check_forecast_dates(df: pd.DataFrame, models: list[str], horizon: int) -> l
     return reference
 
 
+def combine_forecasts(meta_model, predicted, lower, upper) -> tuple:
+    """The ensemble's forecast and band from base forecasts, one column per
+    model in BASE_MODELS order: the meta-learner's prediction, and each
+    bound as the base bounds weighted by |coef| / sum(|coef|). Shared by the
+    live forecast and the evaluation, so both combine the same way."""
+    abs_coefs = np.abs(meta_model.coef_)
+    weights = abs_coefs / abs_coefs.sum()
+    return (
+        meta_model.predict(np.asarray(predicted, dtype=float)),
+        (np.asarray(lower, dtype=float) * weights).sum(axis=1),
+        (np.asarray(upper, dtype=float) * weights).sum(axis=1),
+    )
+
+
 def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     """
     Load 7-day base model forecasts from DB and apply meta-learner to produce
@@ -404,13 +418,9 @@ def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     lower = wide("lower_bound").fillna(0)
     upper = wide("upper_bound").fillna(0)
 
-    ensemble_preds = meta_model.predict(pivot.values)
-
-    # Weighted CI propagation using |coef| / sum(|coef|)
-    abs_coefs = np.abs(meta_model.coef_)
-    coef_weights = abs_coefs / abs_coefs.sum()
-    ens_lower = (lower.values * coef_weights).sum(axis=1)
-    ens_upper = (upper.values * coef_weights).sum(axis=1)
+    ensemble_preds, ens_lower, ens_upper = combine_forecasts(
+        meta_model, pivot.values, lower.values, upper.values
+    )
 
     return pd.DataFrame(
         {
