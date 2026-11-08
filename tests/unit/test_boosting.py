@@ -248,9 +248,10 @@ def test_the_scored_fit_never_sees_the_holdout(raw, monkeypatch, family):
 
 @pytest.mark.parametrize("family", ["xgboost", "lightgbm"])
 def test_tuning_settings_replace_only_what_they_name(family):
-    model = boosting._new_regressor(family, {"max_depth": 6, "n_estimators": 600})
+    before = dict(boosting.MODEL_PARAMS[family])
+    model = boosting._new_regressor(family, {"max_depth": 5, "n_estimators": 50})
     params = model.get_params()
-    assert params["max_depth"] == 6 and params["n_estimators"] == 600
-    assert params["learning_rate"] == boosting.MODEL_PARAMS[family]["learning_rate"]
+    assert params["max_depth"] == 5 and params["n_estimators"] == 50
+    assert params["learning_rate"] == before["learning_rate"]
     assert params["n_jobs"] == 1
-    assert boosting.MODEL_PARAMS[family]["max_depth"] == 4  # left as it was
+    assert boosting.MODEL_PARAMS[family] == before  # left as it was

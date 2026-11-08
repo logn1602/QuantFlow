@@ -58,11 +58,15 @@ MLFLOW_EXP = "stock_forecasting"
 # gave a different forecast on the laptop the evaluation ran on and on
 # GitHub's runner. One thread gives the same forecast everywhere, and lets
 # the evaluation run tickers in parallel processes without oversubscribing.
+#
+# E3: max_depth, learning_rate and n_estimators chosen on the tuning origins,
+# before any validation date (run E3-tuning; docs/evaluation.md, section 16).
+# They were 4, 0.05 and 300 for both.
 MODEL_PARAMS: dict[str, dict[str, Any]] = {
     "xgboost": {
-        "n_estimators": 300,
-        "max_depth": 4,
-        "learning_rate": 0.05,
+        "n_estimators": 600,
+        "max_depth": 6,
+        "learning_rate": 0.03,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "random_state": 42,
@@ -70,9 +74,9 @@ MODEL_PARAMS: dict[str, dict[str, Any]] = {
         "verbosity": 0,
     },
     "lightgbm": {
-        "n_estimators": 300,
+        "n_estimators": 600,
         "max_depth": 4,
-        "learning_rate": 0.05,
+        "learning_rate": 0.1,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "random_state": 42,

@@ -356,7 +356,9 @@ def test_the_tuning_candidates_are_the_current_settings_and_the_grid():
     assert len(candidates) == 1 + len(boosting.TUNING_GRID) == 13
     family, settings, forecaster = candidates["xgboost#00"]
     assert family == "xgboost"
-    assert settings == {"max_depth": 4, "learning_rate": 0.05, "n_estimators": 300}
+    assert settings == {
+        k: boosting.MODEL_PARAMS["xgboost"][k] for k in evaluate.TUNED_KEYS
+    }
     assert forecaster.params == settings and forecaster.model_name == "xgboost"
     grid = [candidates[f"xgboost#{i:02d}"][1] for i in range(1, 13)]
     assert grid == boosting.TUNING_GRID
