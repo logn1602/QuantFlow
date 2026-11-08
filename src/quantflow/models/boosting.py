@@ -99,8 +99,11 @@ TARGETS: dict[str, str] = {"xgboost": "price", "lightgbm": "price"}
 # decided per booster). Frozen at the starting day's values, they hold every
 # step near that day's price level, whatever the model predicts; rolled,
 # each day opens at the previous close and keeps the starting day's high and
-# low relative to its close.
-ROLL_PRICE_RANGE: dict[str, bool] = {"xgboost": True, "lightgbm": True}
+# low relative to its close. On the validation dates rolling them did worse
+# from day 2 for both boosters: the frozen values pull every step toward the
+# starting price, which on these dates helps. Dropped for both
+# (docs/evaluation.md, section 16).
+ROLL_PRICE_RANGE: dict[str, bool] = {"xgboost": False, "lightgbm": False}
 
 
 def training_target(model_name: str, rows: pd.DataFrame) -> pd.Series:
