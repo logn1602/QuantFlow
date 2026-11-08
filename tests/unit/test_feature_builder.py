@@ -361,3 +361,45 @@ def test_the_sentiment_change_needs_news_on_both_days(stored_bars):
 
 def test_has_news_is_a_feature():
     assert "has_news" in engineering.get_feature_cols()
+
+
+# ── The daily mean: exact, whatever the order ────────────────────────────────
+
+# Twelve compounds on one day whose float sum is not their exact sum.
+ONE_DAY = [0.9871, -0.9532, 0.0004, 0.3333, -0.6667, 0.1, 0.2, 0.3, -0.5911, 0.0007,
+           0.8123, -0.0101]  # fmt: skip
+
+
+def _one_day(compounds):
+    return pd.DataFrame([_article("2026-03-02 14:00", "neutral", c) for c in compounds])
+
+
+def test_the_daily_mean_is_the_exact_sum_over_the_count():
+    """It used to be pandas' mean of the rows as floats, which can differ in
+    the last bit from the exact one, and with the order of the rows."""
+    from decimal import Decimal
+
+    daily = engineering.daily_sentiment(_one_day(ONE_DAY), DAYS)
+    exact = sum((Decimal(str(c)) for c in ONE_DAY), Decimal(0))
+    assert daily["sentiment_compound"].iloc[0] == float(exact) / len(ONE_DAY)
+    assert daily["sentiment_compound"].iloc[0] == pytest.approx(
+        np.mean(ONE_DAY), abs=2.3e-16
+    )
+
+
+def test_the_features_do_not_depend_on_the_order_the_articles_come_in(stored_bars):
+    bars = daily_bars(stored_bars, "AAPL")
+    rows = pd.concat([ARTICLES, _one_day(ONE_DAY)], ignore_index=True)
+    built = engineering.build_features(bars, rows, "AAPL")
+    for seed in range(5):
+        shuffled = rows.sample(frac=1, random_state=seed).reset_index(drop=True)
+        pd.testing.assert_frame_equal(
+            engineering.build_features(bars, shuffled, "AAPL"), built
+        )
+
+
+def test_an_article_with_no_compound_is_counted_but_not_averaged():
+    rows = _one_day([0.5, None, -0.1])
+    daily = engineering.daily_sentiment(rows, DAYS).iloc[0]
+    assert daily["article_count"] == 3
+    assert daily["sentiment_compound"] == pytest.approx(0.2)

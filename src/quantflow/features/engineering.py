@@ -29,7 +29,7 @@ from quantflow.features.anomalies import (
     point_in_time_scores,
 )
 from quantflow.features.indicators import compute_indicators, rounded_for_storage
-from quantflow.features.news import available_at, bad_rows, window_dates
+from quantflow.features.news import day_window_dates, news_day, news_days, total
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -88,6 +88,29 @@ def build_features(
     depends only on its arguments, and no row depends on a later one: given
     the history up to a date, it gives what the live run would have built on
     that date, and its training rows are built the way its newest row is.
+
+    The articles are summed per news day first (features.news.news_days),
+    the form the live run reads them in, and the frame is built from those
+    sums (features_from_news).
+    """
+    if prices.empty:
+        return pd.DataFrame()
+    days = news_days(articles)
+    if fetched_at is None:
+        fetched_days = days.loc[days["counts"], "stored_day"]
+    else:
+        fetched_days = news_day(fetched_at)
+    return features_from_news(prices, days, fetched_days)
+
+
+def features_from_news(
+    prices: pd.DataFrame, days: pd.DataFrame, fetched_days
+) -> pd.DataFrame:
+    """build_features from a news-days summary (features.news.news_days'
+    frame) instead of article rows: what the live run reads.
+
+    fetched_days are the news days on which a fetch stored articles, for any
+    ticker.
     """
     if prices.empty:
         return pd.DataFrame()
@@ -102,14 +125,10 @@ def build_features(
 
     anomalies = _dated(point_in_time_scores(indexed["close"]).to_frame("zscore"))
 
-    if not articles.empty:
-        articles = articles[~bad_rows(articles)]
     merged = merge_feature_inputs(
-        prices, indicators, anomalies, daily_sentiment(articles, prices["date"])
+        prices, indicators, anomalies, window_sentiment(days, prices["date"])
     )
-    if fetched_at is None:
-        fetched_at = articles["inserted_at"] if not articles.empty else []
-    return _known_news(merged, fetched_at)
+    return _known_news(merged, fetched_days)
 
 
 def stage_anomaly_scores(prices: pd.DataFrame, ticker: str) -> pd.DataFrame:
@@ -124,7 +143,7 @@ def stage_anomaly_scores(prices: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return _dated(flags[["zscore"]].astype(float).round(STORED_DECIMALS))
 
 
-def _known_news(frame: pd.DataFrame, fetched_at) -> pd.DataFrame:
+def _known_news(frame: pd.DataFrame, fetched_days) -> pd.DataFrame:
     """True counts where the news could be known, missing where it could
     not (decision D6).
 
@@ -133,12 +152,12 @@ def _known_news(frame: pd.DataFrame, fetched_at) -> pd.DataFrame:
     there, counts read 0 when the window held no article. Before the first
     article ("not collected" is not "no news"), and on a date whose window
     saw no fetch at all (nothing was looked for), every sentiment column is
-    missing, counts included.
+    missing, counts included. fetched_days are the news days a fetch stored
+    articles on.
     """
     dates = frame["date"]
     with_articles = frame["article_count"].notna()
-    times = pd.Series(pd.to_datetime(pd.Series(fetched_at, dtype=object), utc=True))
-    fetched_dates = set(window_dates(times, dates).dropna())
+    fetched_dates = set(day_window_dates(fetched_days, dates).dropna())
     fetched = dates.isin(fetched_dates) | with_articles
     if with_articles.any():
         collected = dates >= dates[with_articles].min()
@@ -177,27 +196,46 @@ def daily_sentiment(articles: pd.DataFrame, trading_dates) -> pd.DataFrame:
     database, with each window closing at 12:00 UTC the next day. So weekend
     news lands on Monday, NewsAPI's a day after publication, and an article
     fetched late from when it arrived, in training exactly as live. One that
-    became available after the last date's cutoff counts nowhere yet.
+    became available after the last date's cutoff counts nowhere yet. The
+    rows no feature uses (features.news.bad_rows) are left out.
     """
-    if articles.empty:
+    return window_sentiment(news_days(articles), trading_dates)
+
+
+def window_sentiment(days: pd.DataFrame, trading_dates) -> pd.DataFrame:
+    """daily_sentiment from a news-days summary: each trading date's window
+    is a run of whole news days, so its counts and compound sum are theirs
+    added up.
+
+    The mean is the exact sum of the compounds, rounded once to a float,
+    over their count. It used to be pandas' mean of the rows as floats; the
+    two agree to the last bit or differ in it (at most 1.1e-16 on the
+    2026-11-06 snapshot), and only an exact sum is the same whatever order
+    the rows come in and whether they are added up per day or per window.
+    """
+    counted = days[days["counts"].astype(bool)]
+    if counted.empty:
         return _empty(SENTIMENT_COLUMNS)
-    dated = articles.assign(
-        date=window_dates(available_at(articles), trading_dates)
+    dated = counted.assign(
+        date=day_window_dates(counted["available_day"], trading_dates).to_numpy()
     ).dropna(subset=["date"])
     if dated.empty:
         return _empty(SENTIMENT_COLUMNS)
-    by_date = dated.assign(
-        compound=pd.to_numeric(dated["compound"]),
-        positive=dated["sentiment"].eq("positive"),
-        negative=dated["sentiment"].eq("negative"),
-    ).groupby("date", sort=True)
+    by_date = dated.groupby("date", sort=True)
+    sums = by_date[["articles", "positive", "negative", "compounds"]].sum()
+    compound_sum = by_date["compound_sum"].agg(total)
+    mean = [
+        float(s) / n if n else np.nan
+        for s, n in zip(compound_sum, sums["compounds"], strict=True)
+    ]
     return pd.DataFrame(
         {
-            "sentiment_compound": by_date["compound"].mean(),
-            "pos_count": by_date["positive"].sum(),
-            "neg_count": by_date["negative"].sum(),
-            "article_count": by_date.size(),
-        }
+            "sentiment_compound": np.asarray(mean, dtype=float),
+            "pos_count": sums["positive"],
+            "neg_count": sums["negative"],
+            "article_count": sums["articles"],
+        },
+        index=sums.index,
     ).reset_index()
 
 
