@@ -33,11 +33,13 @@ from quantflow.db.metrics import save_model_metrics
 from quantflow.evaluation.metrics import regression_metrics
 from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
 from quantflow.features.engineering import (
+    bollinger_features,
     engineer_features,
     get_feature_cols,
     load_features,
     load_news,
 )
+from quantflow.features.indicators import stored_bollinger_bands
 from quantflow.models import FORECAST_DAYS
 from quantflow.utils.logger import get_logger
 from quantflow.utils.trading_calendar import next_trading_days
@@ -209,7 +211,8 @@ def generate_forecast(
       - Lag features (1/2/3/5/10) cascade from the rolling price buffer
       - Returns (1d/5d) recomputed from the buffer
       - Rolling mean/std (5/10/20) recomputed from the buffer
-      - Bollinger position and width derived from updated rolling stats
+      - Bollinger position and width from the bands of the buffer's
+        last 20 closes, built as training builds them
       - Exogenous features (RSI, MACD, sentiment, anomaly, volume) stay frozen
         at their last known values, since we cannot extrapolate them forward.
     """
@@ -267,22 +270,20 @@ def generate_forecast(
                         float(np.std(w_prices, ddof=1)) if len(w_prices) > 1 else 0.0
                     )
 
-        # Bollinger Band position and width (derived from updated rolling_mean/std_20)
-        if (
-            "rolling_mean_20" in current_X.columns
-            and "rolling_std_20" in current_X.columns
-        ):
-            mean20 = float(current_X["rolling_mean_20"].values[0])
-            std20 = float(current_X["rolling_std_20"].values[0])
-            bb_upper = mean20 + 2 * std20
-            bb_lower = mean20 - 2 * std20
-            bb_range = bb_upper - bb_lower
-            if "bb_position" in current_X.columns and bb_range > 0:
-                current_X["bb_position"] = float(
-                    np.clip((pred - bb_lower) / bb_range, 0, 1)
-                )
-            if "bb_width" in current_X.columns and mean20 > 0:
-                current_X["bb_width"] = bb_range / mean20
+        # Bollinger position and width, from the bands as training reads
+        # them (population standard deviation, rounded as stored) and by the
+        # same formulas: no clipping, missing where training's would be.
+        bands = stored_bollinger_bands(prices)
+        position, width = bollinger_features(
+            pd.Series([pred]),
+            pd.Series([bands["bb_upper"]]),
+            pd.Series([bands["bb_lower"]]),
+            pd.Series([bands["bb_middle"]]),
+        )
+        if "bb_position" in current_X.columns:
+            current_X["bb_position"] = float(position.iloc[0])
+        if "bb_width" in current_X.columns:
+            current_X["bb_width"] = float(width.iloc[0])
 
         # RSI, MACD, volume, sentiment, anomaly stay frozen: exogenous signals
         # that cannot be extrapolated from price alone.

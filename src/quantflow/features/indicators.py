@@ -8,7 +8,7 @@ Reads raw OHLCV data from raw_prices, computes:
   - MACD             : Moving Average Convergence Divergence — trend indicator
   - MACD Signal      : 9-day EMA of MACD
   - MACD Histogram   : MACD - Signal (shows momentum shifts)
-  - Bollinger Upper  : 20-day SMA + 2 std devs
+  - Bollinger Upper  : 20-day SMA + 2 std devs (population, ddof 0)
   - Bollinger Middle : 20-day SMA
   - Bollinger Lower  : 20-day SMA - 2 std devs
 
@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 
+import numpy as np
 import pandas as pd
 import ta
 from sqlalchemy import text
@@ -45,6 +46,11 @@ _ROUNDING = {
     "bb_middle": 4,
     "bb_lower": 4,
 }
+
+# Bollinger bands: the mean of the last BB_WINDOW closes, plus and minus
+# BB_DEVIATIONS standard deviations.
+BB_WINDOW = 20
+BB_DEVIATIONS = 2
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -88,7 +94,9 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ── Bollinger Bands (20-period, 2 std devs) ─────────────────────────────
     # Price near upper band = overbought
     # Price near lower band = oversold
-    bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
+    bb = ta.volatility.BollingerBands(
+        close=df["close"], window=BB_WINDOW, window_dev=BB_DEVIATIONS
+    )
     result["bb_upper"] = bb.bollinger_hband()
     result["bb_middle"] = bb.bollinger_mavg()
     result["bb_lower"] = bb.bollinger_lband()
@@ -107,6 +115,27 @@ def rounded_for_storage(df: pd.DataFrame) -> pd.DataFrame:
     """The indicator columns at the precision technical_indicators keeps,
     which is what every reader of the table gets back."""
     return df[list(_ROUNDING)].astype(float).round(_ROUNDING)
+
+
+def stored_bollinger_bands(closes) -> dict[str, float]:
+    """The newest close's Bollinger bands as compute_indicators computes
+    them and rounded_for_storage rounds them, from the closes alone: ta
+    uses the population standard deviation (ddof 0) of the last BB_WINDOW
+    closes. For the boosters' rollout, which must rebuild the features
+    training saw from closes it predicted. Missing with fewer closes."""
+    window = np.asarray(closes, dtype=float)[-BB_WINDOW:]
+    if len(window) < BB_WINDOW:
+        return dict.fromkeys(("bb_upper", "bb_middle", "bb_lower"), np.nan)
+    middle = float(window.mean())
+    deviation = float(window.std(ddof=0))
+    bands = {
+        "bb_upper": middle + BB_DEVIATIONS * deviation,
+        "bb_middle": middle,
+        "bb_lower": middle - BB_DEVIATIONS * deviation,
+    }
+    return {
+        name: float(np.round(value, _ROUNDING[name])) for name, value in bands.items()
+    }
 
 
 def save_indicators(df: pd.DataFrame, ticker: str) -> int:
