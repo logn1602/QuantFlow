@@ -88,8 +88,11 @@ MODEL_PARAMS: dict[str, dict[str, Any]] = {
 #                 close x exp(prediction).
 # A tree predicts the mean target of a leaf, so on a price target it can
 # never forecast above the highest close it was trained on; a return carries
-# the level over from the latest close.
-TARGETS: dict[str, str] = {"xgboost": "log_return", "lightgbm": "log_return"}
+# the level over from the latest close. On the validation dates the return
+# target did better at days 1 and 2 and worse from day 3, as the predicted
+# returns compound over the rollout: dropped for both (docs/evaluation.md,
+# section 16).
+TARGETS: dict[str, str] = {"xgboost": "price", "lightgbm": "price"}
 
 
 def training_target(model_name: str, rows: pd.DataFrame) -> pd.Series:
