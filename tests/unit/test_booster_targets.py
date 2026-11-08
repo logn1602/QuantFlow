@@ -66,7 +66,9 @@ def test_the_log_return_is_of_the_next_close_over_this_one(log_returns):
 
 
 def test_the_live_model_is_fitted_on_log_returns(log_returns, monkeypatch):
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: Constant(0.0))
+    monkeypatch.setattr(
+        boosting, "_new_regressor", lambda name, params=None: Constant(0.0)
+    )
     labelled = _labelled()
     model = boosting.fit_live_model("xgboost", labelled, ["close_lag_1"])
     np.testing.assert_allclose(
@@ -77,7 +79,9 @@ def test_the_live_model_is_fitted_on_log_returns(log_returns, monkeypatch):
 def test_the_scored_models_holdout_predictions_are_closes(log_returns, monkeypatch):
     """The ensemble's stack and the holdout score read them as closes: a
     zero log return predicts each holdout day's own close."""
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: Constant(0.0))
+    monkeypatch.setattr(
+        boosting, "_new_regressor", lambda name, params=None: Constant(0.0)
+    )
     labelled = _labelled()
     result = boosting._train_scored("lightgbm", labelled, "AAPL")
     np.testing.assert_allclose(

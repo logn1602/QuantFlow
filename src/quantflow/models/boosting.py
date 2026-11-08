@@ -121,8 +121,20 @@ def predicted_close(model_name: str, predicted, close) -> np.ndarray:
     return values
 
 
-def _new_regressor(model_name: str):
-    """An unfitted regressor of the family; None if its package is missing.
+# Phase 3's E3: the settings tuned on the tuning window (evaluation/splits
+# .py, before any validation or test date) beside the current ones, each
+# replacing these three of MODEL_PARAMS.
+TUNING_GRID: list[dict[str, Any]] = [
+    {"max_depth": depth, "learning_rate": rate, "n_estimators": trees}
+    for depth in (3, 4, 6)
+    for rate in (0.03, 0.1)
+    for trees in (200, 600)
+]
+
+
+def _new_regressor(model_name: str, params: dict[str, Any] | None = None):
+    """An unfitted regressor of the family, with MODEL_PARAMS updated by
+    params (tuning only); None if its package is missing.
 
     Raises ValueError for a family MODEL_PARAMS does not define, which would
     otherwise fall through to LightGBM and be stored under the wrong name.
@@ -136,10 +148,10 @@ def _new_regressor(model_name: str):
         if model_name == "xgboost":
             import xgboost as xgb
 
-            return xgb.XGBRegressor(**MODEL_PARAMS["xgboost"])
+            return xgb.XGBRegressor(**(MODEL_PARAMS["xgboost"] | (params or {})))
         import lightgbm as lgb
 
-        return lgb.LGBMRegressor(**MODEL_PARAMS["lightgbm"])
+        return lgb.LGBMRegressor(**(MODEL_PARAMS["lightgbm"] | (params or {})))
     except ImportError:
         logger.error(f"{model_name} not installed. Run: pip install {model_name}")
         return None
@@ -217,11 +229,16 @@ def train_lightgbm(df: pd.DataFrame, ticker: str) -> dict:
     return _train_scored("lightgbm", df, ticker)
 
 
-def fit_live_model(model_name: str, labelled: pd.DataFrame, features: list[str]):
+def fit_live_model(
+    model_name: str,
+    labelled: pd.DataFrame,
+    features: list[str],
+    params: dict[str, Any] | None = None,
+):
     """A fresh model with the scored model's settings, fitted on every
     labelled row, including the 30 the scored model held out. Missing
-    values stay missing."""
-    model = _new_regressor(model_name)
+    values stay missing. params override MODEL_PARAMS, for tuning only."""
+    model = _new_regressor(model_name, params)
     if model is None:
         return None
     model.fit(labelled[features], training_target(model_name, labelled))

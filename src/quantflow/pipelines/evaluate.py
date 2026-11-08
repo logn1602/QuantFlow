@@ -8,6 +8,7 @@ The rolling-origin evaluation's command line (docs/evaluation.md).
     python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06
     python -m quantflow.pipelines.evaluate run --snapshot ... --window test --reason "..."
     python -m quantflow.pipelines.evaluate compare --incumbent eval_runs/B0 --candidate eval_runs/E1 --models xgboost
+    python -m quantflow.pipelines.evaluate tune --snapshot eval_snapshots/2026-11-06 --workers 3
 
 export reads the database once, read-only, into a snapshot directory;
 coverage and run read only the snapshot, and compare only two run folders,
@@ -38,6 +39,7 @@ from quantflow.db.snapshot import read_snapshot_tables
 from quantflow.evaluation import decision, report
 from quantflow.evaluation.rolling_origin import (
     MAX_WORKERS,
+    Forecaster,
     check_failure_rate,
     run_origins,
 )
@@ -56,7 +58,8 @@ from quantflow.features.engineering import (
     merge_feature_inputs,
     stage_anomaly_scores,
 )
-from quantflow.models.forecasters import COMBINERS, FORECASTERS, VARIANTS
+from quantflow.models.boosting import MODEL_PARAMS, TUNING_GRID
+from quantflow.models.forecasters import COMBINERS, FORECASTERS, VARIANTS, Booster
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("evaluate")
@@ -306,6 +309,139 @@ def run_evaluation(args) -> int:
     return 0
 
 
+# ── tune ──────────────────────────────────────────────────────────────────────
+
+TUNED_KEYS = ("max_depth", "learning_rate", "n_estimators")
+
+
+def tuning_candidates(models: list[str]) -> dict[str, tuple[str, dict, Forecaster]]:
+    """name -> (family, settings, forecaster): each booster's current
+    settings (#00) and every TUNING_GRID setting."""
+    out: dict[str, tuple[str, dict, Forecaster]] = {}
+    for family in models:
+        current = {k: MODEL_PARAMS[family][k] for k in TUNED_KEYS}
+        for i, settings in enumerate([current, *TUNING_GRID]):
+            out[f"{family}#{i:02d}"] = (
+                family,
+                settings,
+                Booster(family, params=settings),
+            )
+    return out
+
+
+def tuning_table(cells: pd.DataFrame, candidates: dict) -> pd.DataFrame:
+    """Per candidate, MAPE over the cells every candidate of its family
+    forecast, and its failed cells; the lowest MAPE per family is chosen."""
+    rows = []
+    for family in sorted({fam for fam, _, _ in candidates.values()}):
+        names = [n for n, (fam, _, _) in candidates.items() if fam == family]
+        shared = report.comparable(cells, names)
+        for name in names:
+            group = shared[shared["model"] == name]
+            rows.append(
+                {"family": family, "candidate": name, **candidates[name][1],
+                 "cells": len(group),
+                 "failed": int(cells.loc[cells["model"] == name, "status"]
+                               .eq("failed").sum()),
+                 "mape": float(np.mean(np.abs(group["actual"] - group["yhat"])
+                                       / group["actual"]) * 100)}
+            )  # fmt: skip
+    table = pd.DataFrame(rows)
+    best = table.groupby("family")["mape"].transform("min")
+    # The first of equal MAPEs: the current settings, listed first, win a tie.
+    table["chosen"] = (table["mape"] == best) & ~table.duplicated(["family", "mape"])
+    return table
+
+
+def tune_boosters(args) -> int:
+    """Phase 3's E3: every candidate's 7-day forecasts at the tuning
+    origins, which lie before the validation warmup (splits.OriginGrid
+    .tuning), and the setting with the lowest MAPE per booster."""
+    unknown = sorted(set(args.models) - set(MODEL_PARAMS))
+    if unknown:
+        print(f"Refusing: no booster named {', '.join(unknown)}.", file=sys.stderr)
+        return 2
+    commit, dirty = git_state()
+    snapshot = read_snapshot(args.snapshot)
+    dates = snapshot.trading_dates
+    origins, _ = origin_grid(len(dates)).window("tuning")
+    if not origins:
+        print(
+            "Refusing: the snapshot has no tuning origin (too little history "
+            "before the validation warmup).",
+            file=sys.stderr,
+        )
+        return 2
+    used = sorted({p + k for p in origins for k in range(HORIZON + 1)})
+    check_built_dates(snapshot, dates[used])
+    candidates = tuning_candidates(args.models)
+    tickers = args.tickers or snapshot.tickers
+
+    started = pd.Timestamp.now(tz="UTC")
+    label = args.label or f"tuning-{started:%Y%m%dT%H%M%S}"
+    out = Path(args.out) / label
+    out.mkdir(parents=True, exist_ok=False)
+    mlflow, mlflow_error = _start_mlflow(label, {"window": "tuning", "commit": commit})
+    clock = time.perf_counter()
+    try:
+        cells = run_origins(
+            {t: snapshot.prices[t] for t in tickers},
+            snapshot.articles,
+            [(p, "scored") for p in origins],
+            {name: forecaster for name, (_, _, forecaster) in candidates.items()},
+            window="tuning",
+            workers=args.workers,
+        )
+        cells.to_csv(out / "cells.csv", index=False)
+        table = tuning_table(cells, candidates)
+        table.to_csv(out / "tuning.csv", index=False)
+        header = {
+            "window": "tuning",
+            "snapshot digest": snapshot.digest,
+            "commit": commit + (" (uncommitted changes)" if dirty else ""),
+            "tickers": ", ".join(tickers),
+            "origins": f"{len(origins)}, {dates[origins[0]].date()} to "
+            f"{dates[origins[-1]].date()}, last target "
+            f"{dates[origins[-1] + HORIZON].date()}",
+            "workers": args.workers,
+            "seconds": round(time.perf_counter() - clock),
+        }
+        text = "\n".join(
+            ["# Booster tuning (Phase 3, E3)\n"]
+            + [f"- {key}: {value}" for key, value in header.items()]
+            + ["", "## Candidates\n", report.markdown_table(table, digits=4)]
+        )
+        (out / "report.md").write_text(text, encoding="utf-8")
+    except Exception:
+        if mlflow is not None:
+            mlflow.log_text(traceback.format_exc(), "traceback.txt")
+            mlflow.end_run(status="FAILED")
+        raise
+    chosen = table[table["chosen"]]
+    shown = [c for c in ("family", "candidate", *TUNED_KEYS, "mape") if c in chosen]
+    print(chosen[shown].to_string(index=False))
+    print(f"Report: {out / 'report.md'}")
+    if mlflow is None:
+        print(f"MLflow failed, so this is not logged: {mlflow_error}", file=sys.stderr)
+        return 1
+    try:
+        mlflow.log_params(
+            {"window": "tuning", "snapshot_digest": snapshot.digest, "commit": commit,
+             "dirty": dirty, "origins": len(origins), "tickers": ",".join(tickers),
+             "workers": args.workers}
+        )  # fmt: skip
+        mlflow.log_metrics(
+            {f"{row['candidate']}.mape": float(row["mape"])
+             for row in table.to_dict("records")}
+        )  # fmt: skip
+        mlflow.log_artifacts(str(out))
+        mlflow.end_run(status="FINISHED")
+    except Exception as e:
+        print(f"MLflow logging failed, so this is not logged: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 # ── compare ───────────────────────────────────────────────────────────────────
 
 
@@ -432,6 +568,22 @@ def main(argv: list[str] | None = None) -> int:
         help=f"tickers in parallel processes, at most {MAX_WORKERS}",
     )
 
+    tune = commands.add_parser(
+        "tune", help="the boosters' settings on the tuning origins (Phase 3, E3)"
+    )
+    tune.add_argument("--snapshot", type=Path, required=True)
+    tune.add_argument(
+        "--models",
+        type=lambda v: [m.strip().lower() for m in v.split(",") if m.strip()],
+        default=sorted(MODEL_PARAMS),
+    )
+    tune.add_argument("--tickers", type=_tickers, default=None)
+    tune.add_argument("--label", default="", help="the run's folder and MLflow name")
+    tune.add_argument("--out", type=Path, default=RUNS_ROOT)
+    tune.add_argument(
+        "--workers", type=int, choices=range(1, MAX_WORKERS + 1), default=1
+    )
+
     compare = commands.add_parser(
         "compare", help="the keep-or-drop rule, a candidate run against the incumbent"
     )
@@ -465,6 +617,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "compare":
             return compare_runs(args)
+        if args.command == "tune":
+            return tune_boosters(args)
         return run_evaluation(args)
     except Exception as e:
         print(f"Failed: {type(e).__name__}: {masked(str(e))}", file=sys.stderr)

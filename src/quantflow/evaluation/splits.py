@@ -75,21 +75,29 @@ class OriginGrid:
     test and validation are scored; each warmup list only fits the
     ensemble's first weights for its window. Every validation origin's last
     target falls before the first test target, so no choice made on the
-    validation dates sees a test-date close.
+    validation dates sees a test-date close. tuning (Phase 3's booster
+    settings) lies wholly before the validation warmup: its targets are
+    training data for every validation and test origin.
     """
 
     test: tuple[int, ...]
     test_warmup: tuple[int, ...]
     validation: tuple[int, ...]
     validation_warmup: tuple[int, ...]
+    tuning: tuple[int, ...] = ()
 
     def window(self, name: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        """(scored, warmup) origins of the "test" or "validation" window."""
+        """(scored, warmup) origins of the "test", "validation" or "tuning"
+        window; tuning has no warmup."""
         if name == "test":
             return self.test, self.test_warmup
         if name == "validation":
             return self.validation, self.validation_warmup
-        raise ValueError(f"unknown window {name!r}; expected test or validation")
+        if name == "tuning":
+            return self.tuning, ()
+        raise ValueError(
+            f"unknown window {name!r}; expected test, validation or tuning"
+        )
 
 
 def origin_grid(
@@ -124,6 +132,19 @@ def origin_grid(
             f"origin would train on {earliest + 1} rows, under "
             f"{MIN_ORIGIN_HISTORY}"
         )
+    # Tuning origins, on the same step back from the validation warmup:
+    # each one's last target comes before the first warmup origin, and the
+    # earliest still has MIN_ORIGIN_HISTORY rows to train on.
+    tuning_gap = math.ceil((horizon + 1) / step)
+    tuning = []
+    k = tuning_gap
+    while validation_warmup[0] - step * k + 1 >= MIN_ORIGIN_HISTORY:
+        tuning.append(validation_warmup[0] - step * k)
+        k += 1
     return OriginGrid(
-        tuple(test), tuple(test_warmup), tuple(validation), tuple(validation_warmup)
+        tuple(test),
+        tuple(test_warmup),
+        tuple(validation),
+        tuple(validation_warmup),
+        tuple(tuning[::-1]),
     )

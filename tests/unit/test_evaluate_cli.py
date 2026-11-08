@@ -265,3 +265,90 @@ def test_compare_refuses_test_date_cells(tmp_path, harness, capsys):
     assert _run(tmp_path, "--label", "b", "--window", "test", "--reason", "x") == 0
     assert _compare(tmp_path) == 1
     assert "D13" in capsys.readouterr().err
+
+
+# ── tune (Phase 3, E3) ────────────────────────────────────────────────────────
+
+LONG = pd.date_range("2024-01-02", periods=600, freq=TRADING_DAY)
+
+
+def _long_snapshot(tmp_path):
+    rng = np.random.default_rng(5)
+    prices = {}
+    for ticker in ("AAPL", "MSFT"):
+        close = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.01, len(LONG))))
+        prices[ticker] = pd.DataFrame(
+            {"date": LONG, "open": close, "high": close + 1, "low": close - 1,
+             "close": close, "volume": 1e6}
+        )  # fmt: skip
+    empty = pd.DataFrame(columns=["ticker", "date", "zscore"])
+    articles = pd.DataFrame(columns=["ticker", "source", "url_domain", "published_at",
+                                     "inserted_at", "sentiment", "score_pos",
+                                     "score_neg", "score_neu", "compound"])  # fmt: skip
+    return write_snapshot(
+        tmp_path / "long", as_of=LONG[-1], exported_at=pd.Timestamp("2026-01-01", tz="UTC"),
+        prices=prices, articles=articles, stored_indicators=empty.drop(columns="zscore"),
+        stored_anomalies=empty, built_dates={"AAPL": [], "MSFT": []},
+    )  # fmt: skip
+
+
+def _off_by(percent):
+    def forecast(data):
+        return ro.naive_forecast(data).assign(yhat=data.close * (1 + percent / 100))
+
+    return forecast
+
+
+def test_tune_scores_every_candidate_on_the_tuning_origins(
+    tmp_path, harness, monkeypatch
+):
+    from quantflow.evaluation.splits import origin_grid
+
+    _long_snapshot(tmp_path)
+    fake = {
+        "xgboost#00": ("xgboost", {"max_depth": 4}, _off_by(2)),
+        "xgboost#01": ("xgboost", {"max_depth": 3}, _off_by(1)),
+        "lightgbm#00": ("lightgbm", {"max_depth": 4}, _off_by(1)),
+        "lightgbm#01": ("lightgbm", {"max_depth": 3}, _off_by(1)),
+    }
+    monkeypatch.setattr(evaluate, "tuning_candidates", lambda models: fake)
+    code = evaluate.main(
+        ["tune", "--snapshot", str(tmp_path / "long"), "--out", str(tmp_path / "runs"),
+         "--label", "t"]
+    )  # fmt: skip
+    assert code == 0
+    out = tmp_path / "runs" / "t"
+    cells = pd.read_csv(out / "cells.csv", parse_dates=["origin", "target_date"])
+    grid = origin_grid(len(LONG))
+    assert set(cells["window"]) == {"tuning"}
+    assert cells["origin"].nunique() == len(grid.tuning) > 0
+    # No tuning target reaches the validation warmup.
+    assert cells["target_date"].max() < LONG[grid.validation_warmup[0]]
+    table = pd.read_csv(out / "tuning.csv").set_index("candidate")
+    assert table.loc["xgboost#01", "chosen"] and not table.loc["xgboost#00", "chosen"]
+    # A tie goes to the current settings, listed first.
+    assert table.loc["lightgbm#00", "chosen"] and not table.loc["lightgbm#01", "chosen"]
+    ((_, _, tags),) = harness.call("start")
+    assert tags["window"] == "tuning"
+    assert harness.call("end") == [("end", "FINISHED")]
+
+
+def test_tune_refuses_a_snapshot_with_no_tuning_origin(tmp_path, harness, capsys):
+    _snapshot(tmp_path)  # 530 dates: the grid leaves no room before its warmup
+    code = evaluate.main(
+        ["tune", "--snapshot", str(tmp_path / "snap"), "--out", str(tmp_path / "runs")]
+    )
+    assert code == 2 and "no tuning origin" in capsys.readouterr().err
+
+
+def test_the_tuning_candidates_are_the_current_settings_and_the_grid():
+    from quantflow.models import boosting
+
+    candidates = evaluate.tuning_candidates(["xgboost"])
+    assert len(candidates) == 1 + len(boosting.TUNING_GRID) == 13
+    family, settings, forecaster = candidates["xgboost#00"]
+    assert family == "xgboost"
+    assert settings == {"max_depth": 4, "learning_rate": 0.05, "n_estimators": 300}
+    assert forecaster.params == settings and forecaster.model_name == "xgboost"
+    grid = [candidates[f"xgboost#{i:02d}"][1] for i in range(1, 13)]
+    assert grid == boosting.TUNING_GRID

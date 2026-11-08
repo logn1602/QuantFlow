@@ -58,7 +58,9 @@ class FakeRegressor:
 
 @pytest.fixture
 def fake_regressors(monkeypatch):
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: FakeRegressor())
+    monkeypatch.setattr(
+        boosting, "_new_regressor", lambda name, params=None: FakeRegressor()
+    )
 
 
 def test_the_booster_adapter_forecasts_what_the_live_run_saves(
@@ -97,7 +99,7 @@ class RecordingRegressor(FakeRegressor):
 
 def test_the_booster_adapter_passes_missing_values_on(monkeypatch):
     model = RecordingRegressor()
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: model)
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name, params=None: model)
     forecasters.booster("xgboost")(_data(_prices()))
     # No articles: every news feature is missing, not 0.
     assert model.last[["has_news", "sentiment_compound"]].isna().all().all()
@@ -205,7 +207,7 @@ def test_every_model_and_baseline_is_registered():
 
 def test_the_ablation_boosters_fit_without_the_news_features(monkeypatch):
     model = RecordingRegressor()
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: model)
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name, params=None: model)
     forecasters.VARIANTS["xgboost_no_news"](_data(_prices()))
     assert not set(forecasters.NEWS_FEATURES) & set(model.last.columns)
     assert "close_lag_1" in model.last.columns

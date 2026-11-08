@@ -236,7 +236,7 @@ def test_the_scored_fit_never_sees_the_holdout(raw, monkeypatch, family):
     on must not reach the fit at all: early stopping or tuning reading it
     would quietly pick the model on the very rows that score it."""
     spy = SpyRegressor()
-    monkeypatch.setattr(boosting, "_new_regressor", lambda name: spy)
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name, params=None: spy)
     labelled = _labelled(raw)
     boosting._train_scored(family, labelled, "AAPL")
     assert spy.fit_kwargs == {}
@@ -244,3 +244,13 @@ def test_the_scored_fit_never_sees_the_holdout(raw, monkeypatch, family):
     pd.testing.assert_series_equal(
         spy.y, labelled["target_price"].iloc[:-HOLDOUT_DAYS], check_names=False
     )
+
+
+@pytest.mark.parametrize("family", ["xgboost", "lightgbm"])
+def test_tuning_settings_replace_only_what_they_name(family):
+    model = boosting._new_regressor(family, {"max_depth": 6, "n_estimators": 600})
+    params = model.get_params()
+    assert params["max_depth"] == 6 and params["n_estimators"] == 600
+    assert params["learning_rate"] == boosting.MODEL_PARAMS[family]["learning_rate"]
+    assert params["n_jobs"] == 1
+    assert boosting.MODEL_PARAMS[family]["max_depth"] == 4  # left as it was

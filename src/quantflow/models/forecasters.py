@@ -74,14 +74,21 @@ def prophet(data: OriginData) -> pd.DataFrame:
 class Booster:
     """XGBoost or LightGBM as boosting.run forecasts live: the live model
     fitted on every labelled row, rolled forward from the newest one.
-    without names features to leave out, for an ablation.
+    without names features to leave out, for an ablation; params replace
+    some of boosting.MODEL_PARAMS, for tuning.
 
     A class rather than a closure, so the harness's worker processes can
     receive it."""
 
-    def __init__(self, model_name: str, without: tuple[str, ...] = ()):
+    def __init__(
+        self,
+        model_name: str,
+        without: tuple[str, ...] = (),
+        params: dict | None = None,
+    ):
         self.model_name = model_name
         self.without = tuple(without)
+        self.params = dict(params or {})
 
     def __call__(self, data: OriginData) -> pd.DataFrame:
         raw = build_features(
@@ -94,7 +101,7 @@ class Booster:
             for c in get_feature_cols()
             if c in labelled.columns and c not in self.without
         ]
-        model = fit_live_model(self.model_name, labelled, columns)
+        model = fit_live_model(self.model_name, labelled, columns, self.params)
         if model is None:
             raise RuntimeError(f"{self.model_name} is not installed")
         rolled = generate_forecast(
