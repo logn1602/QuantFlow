@@ -23,7 +23,11 @@ import pandas as pd
 
 from quantflow.db.features import load_articles, load_fetch_times
 from quantflow.db.prices import PRICE_COLUMNS, indexed_by_date, load_daily_bars
-from quantflow.features.anomalies import STORED_DECIMALS, detect_anomalies
+from quantflow.features.anomalies import (
+    STORED_DECIMALS,
+    detect_anomalies,
+    point_in_time_scores,
+)
 from quantflow.features.indicators import compute_indicators, rounded_for_storage
 from quantflow.features.news import available_at, bad_rows, window_dates
 from quantflow.utils.logger import get_logger
@@ -71,18 +75,19 @@ def build_features(
     the evaluation.
 
     prices are daily bars (load_daily_bars' shape) and articles the stored
-    sentiment rows (load_articles' columns). Indicators and anomaly scores
-    are computed from the prices exactly as their stages do, at the
-    precision the tables keep, and sentiment is averaged over each trading
+    sentiment rows (load_articles' columns). Indicators are computed from
+    the prices exactly as their stage does, at the precision its table
+    keeps; anomaly scores are point-in-time (anomalies.point_in_time_scores,
+    decision D14): each date's from the prices up to it, where the stage
+    fits its fences on the whole history. Sentiment is averaged over each trading
     date's news window (daily_sentiment), leaving out the rows no feature
     should use (FinBERT placeholders, the general feed credited to AAPL:
     features.news.bad_rows). fetched_at holds the times any fetch stored
     articles, for any ticker (the ticker's own arrival times if omitted):
     a date whose window holds none has every news column missing (D6). It
-    depends only on its arguments: given the history up to
-    a date, it gives what the live run would have built on that date. The
-    stored anomaly rows cannot do that, because the IQR fences behind them
-    are fitted on the whole history.
+    depends only on its arguments, and no row depends on a later one: given
+    the history up to a date, it gives what the live run would have built on
+    that date, and its training rows are built the way its newest row is.
     """
     if prices.empty:
         return pd.DataFrame()
@@ -95,11 +100,7 @@ def build_features(
     else:
         indicators = _dated(rounded_for_storage(computed))
 
-    flags = detect_anomalies(indexed[["close", "volume"]], ticker)
-    if flags.empty:
-        anomalies = _empty(["zscore"])
-    else:
-        anomalies = _dated(flags[["zscore"]].astype(float).round(STORED_DECIMALS))
+    anomalies = _dated(point_in_time_scores(indexed["close"]).to_frame("zscore"))
 
     if not articles.empty:
         articles = articles[~bad_rows(articles)]
@@ -109,6 +110,18 @@ def build_features(
     if fetched_at is None:
         fetched_at = articles["inserted_at"] if not articles.empty else []
     return _known_news(merged, fetched_at)
+
+
+def stage_anomaly_scores(prices: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """The anomaly scores the anomaly stage stores for the dashboard (date,
+    zscore, flagged dates only), fitted on the whole history and rounded as
+    its table keeps them. No feature uses them; the evaluation's one-off
+    check compares them with the stored rows."""
+    indexed = indexed_by_date(prices, PRICE_COLUMNS)
+    flags = detect_anomalies(indexed[["close", "volume"]], ticker)
+    if flags.empty:
+        return _empty(["zscore"])
+    return _dated(flags[["zscore"]].astype(float).round(STORED_DECIMALS))
 
 
 def _known_news(frame: pd.DataFrame, fetched_at) -> pd.DataFrame:
@@ -257,8 +270,10 @@ def engineer_features(df: pd.DataFrame, drop_unlabeled: bool = True) -> pd.DataF
     df["bb_width"] = bb_range / df["bb_middle"].replace(0, np.nan)
 
     # ── Anomaly features ─────────────────────────────────────────────────────
-    df["zscore"] = df["zscore"].fillna(0)
-    df["is_anomaly"] = (df["zscore"].abs() >= 2.0).astype(int)
+    # zscore is 0 on a date neither detector flags and missing in their warmup.
+    df["is_anomaly"] = (
+        (df["zscore"].abs() >= 2.0).astype(float).where(df["zscore"].notna())
+    )
 
     # ── Sentiment features (decision D6) ─────────────────────────────────────
     # A missing article_count means the news could not be known that day

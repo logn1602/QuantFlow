@@ -48,6 +48,7 @@ from quantflow.features.engineering import (
     build_features,
     daily_sentiment,
     merge_feature_inputs,
+    stage_anomaly_scores,
 )
 from quantflow.models.forecasters import COMBINERS, FORECASTERS
 from quantflow.utils.logger import get_logger
@@ -92,14 +93,21 @@ def export_snapshot(as_of, tickers: list[str], root: Path = SNAPSHOT_ROOT) -> Pa
 
 def stored_feature_check(snapshot: Snapshot) -> pd.DataFrame:
     """Rebuilt against stored: the largest difference per ticker and column
-    between build_features on the whole snapshot and the frame merged from
-    the stored indicator and anomaly rows, which is what the live run reads.
-    Expected to be zero, or rounding-sized (docs/evaluation.md, section 2)."""
+    between what the stages would store for the whole snapshot and the rows
+    they did store: the indicators build_features computes, and the anomaly
+    stage's scores (engineering.stage_anomaly_scores; the features use
+    point-in-time scores instead, decision D14). Expected to be zero, or
+    rounding-sized (docs/evaluation.md, section 2)."""
     rows = []
     for ticker in snapshot.tickers:
         articles = snapshot.articles[snapshot.articles["ticker"] == ticker]
         prices = snapshot.prices[ticker]
-        rebuilt = build_features(prices, articles, ticker)
+        rebuilt = merge_feature_inputs(
+            prices,
+            build_features(prices, articles, ticker)[["date", *INDICATOR_COLUMNS]],
+            stage_anomaly_scores(prices, ticker),
+            daily_sentiment(articles, prices["date"]),
+        )
 
         def stored_rows(table: pd.DataFrame, t: str = ticker) -> pd.DataFrame:
             return table[table["ticker"] == t].drop(columns="ticker")

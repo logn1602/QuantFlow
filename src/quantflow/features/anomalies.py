@@ -135,6 +135,42 @@ def detect_anomalies(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return combined.sort_index()
 
 
+def point_in_time_scores(close: pd.Series) -> pd.Series:
+    """The model feature `zscore` for every date, from the prices up to that
+    date only (decision D14, docs/evaluation.md).
+
+    The same two detectors and the same rule as detect_anomalies: a date the
+    Z-score detector flags scores its rolling z-score, else a date the IQR
+    detector flags scores its return z-score, else 0. But each date's IQR
+    fences, and the return mean and standard deviation behind its z-score,
+    come from the returns up to that date (expanding), not the whole
+    history, so a later price never moves an earlier score. The Z-score
+    detector's 30-day window is trailing already. Missing until both have
+    ZSCORE_WINDOW observations: "not known yet" is not "no anomaly".
+
+    detect_anomalies, fitted on the whole history, stays the stage's rule
+    for the anomalies table, which the dashboard shows in hindsight.
+    """
+    close = close.astype(float)
+    rolling_z = (close - close.rolling(ZSCORE_WINDOW).mean()) / close.rolling(
+        ZSCORE_WINDOW
+    ).std()
+
+    returns = close.pct_change() * 100
+    history = returns.expanding(min_periods=ZSCORE_WINDOW)
+    q1, q3 = history.quantile(0.25), history.quantile(0.75)
+    spread = IQR_MULTIPLIER * (q3 - q1)
+    iqr_flag = (returns < q1 - spread) | (returns > q3 + spread)
+    return_z = (returns - history.mean()) / history.std()
+
+    score = pd.Series(0.0, index=close.index)
+    score[iqr_flag] = return_z[iqr_flag]
+    zscore_flag = rolling_z.abs() >= ZSCORE_THRESHOLD
+    score[zscore_flag] = rolling_z[zscore_flag]
+    ready = rolling_z.notna() & q1.notna() & return_z.notna()
+    return score.where(ready)
+
+
 # ── Database write ────────────────────────────────────────────────────────────
 
 

@@ -116,19 +116,25 @@ def test_built_features_match_the_rows_the_stages_store(
     anomalies.run(["AAPL"])
     assert fake_db.tables["technical_indicators"] and fake_db.tables["anomalies"]
 
+    bars = daily_bars(stored_bars, "AAPL")
     stored = engineering.merge_feature_inputs(
-        daily_bars(stored_bars, "AAPL"),
+        bars,
         _as_selected(
             fake_db.tables["technical_indicators"], engineering.INDICATOR_COLUMNS
         ),
         _as_selected(fake_db.tables["anomalies"], ["zscore"]),
         engineering.daily_sentiment(ARTICLES, DAYS),
     )
-    built = engineering.build_features(
-        daily_bars(stored_bars, "AAPL"), ARTICLES, "AAPL"
-    )
+    built = engineering.build_features(bars, ARTICLES, "AAPL")
+    stage = engineering.stage_anomaly_scores(bars, "AAPL")
 
-    pd.testing.assert_frame_equal(built, stored, check_dtype=False)
+    columns = ["date", *engineering.INDICATOR_COLUMNS]
+    pd.testing.assert_frame_equal(built[columns], stored[columns], check_dtype=False)
+    # The dashboard's flags are the stage's, fitted on the whole history.
+    stage_scores = bars[["date"]].merge(stage, on="date", how="left")["zscore"]
+    pd.testing.assert_series_equal(
+        stage_scores, stored["zscore"], check_dtype=False, check_names=False
+    )
 
 
 BAD_ROWS = pd.DataFrame(
@@ -215,13 +221,13 @@ def test_no_prices_gives_an_empty_frame():
     assert engineering.build_features(pd.DataFrame(), ARTICLES, "AAPL").empty
 
 
-# ── What depends on later data ────────────────────────────────────────────────
+# ── Nothing depends on later data ─────────────────────────────────────────────
 #
 # Indicators are trailing, so a later price cannot move an earlier one. The
-# anomaly scores are not: the IQR fences and the z-score stored on an
-# IQR-flagged date are fitted on the whole history. That is why the
-# evaluation rebuilds features from the history up to each date instead of
-# reading the stored rows, and why this test pins the behaviour.
+# anomaly stage's scores are not: its IQR fences, and the z-score it stores
+# on an IQR-flagged date, are fitted on the whole history. The features use
+# point-in-time scores instead (decision D14), so a training row is built the
+# way the newest row is.
 
 
 def _built(closes, price_bars):
@@ -243,13 +249,41 @@ def test_a_later_price_never_moves_an_earlier_indicator(price_bars):
     pd.testing.assert_frame_equal(before.loc[:79, columns], after.loc[:79, columns])
 
 
-def test_a_later_price_can_move_an_earlier_anomaly_score(price_bars):
+def test_a_later_price_never_moves_an_earlier_anomaly_score(price_bars):
     closes = _closes()
     calmer = closes.copy()
-    calmer[80:] = closes[79]  # flat after day 80: narrower IQR fences
+    calmer[80:] = closes[79]  # flat after day 80: narrower full-history fences
     before, after = _built(closes, price_bars), _built(calmer, price_bars)
     earlier = slice(0, 79)
-    assert not before.loc[earlier, "zscore"].equals(after.loc[earlier, "zscore"])
+    pd.testing.assert_series_equal(
+        before.loc[earlier, "zscore"], after.loc[earlier, "zscore"]
+    )
+
+
+def test_each_anomaly_score_is_the_stages_rule_on_the_history_up_to_its_date(
+    price_bars,
+):
+    """The stage's two detectors, run on the prices up to a date, either
+    flag that date (the score is their z-score) or not (the score is 0)."""
+    closes = _closes()
+    built = _built(closes, price_bars).set_index("date")["zscore"]
+    bars = daily_bars(
+        price_bars.frame(
+            [
+                price_bars.daily(d.date(), float(c))
+                for d, c in zip(DAYS, closes, strict=True)
+            ]
+        ),
+        "AAPL",
+    )
+    indexed = bars.set_index(pd.DatetimeIndex(bars["date"]).tz_localize("UTC"))
+    for i in range(anomalies.ZSCORE_WINDOW, N_DAYS):
+        flags = anomalies.detect_anomalies(indexed.iloc[: i + 1], "AAPL")
+        day = indexed.index[i]
+        expected = float(flags.loc[day, "zscore"]) if day in flags.index else 0.0
+        assert built.iloc[i] == pytest.approx(expected), DAYS[i].date()
+    assert built.iloc[: anomalies.ZSCORE_WINDOW].isna().all()  # the warmup
+    assert (built.iloc[anomalies.ZSCORE_WINDOW :] != 0).any()
 
 
 def test_news_not_yet_available_on_any_date_gives_missing_sentiment(stored_bars):
