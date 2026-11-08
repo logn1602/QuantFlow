@@ -102,6 +102,12 @@ class Booster:
             data.prices, data.articles, data.ticker, fetched_at=data.fetched_at
         )
         features = engineer_features(raw, drop_unlabeled=False)
+        # The forecast is scored by position against the dates after the
+        # origin, so it must start from the origin's own row.
+        if features.empty or features["date"].iloc[-1] != data.origin:
+            raise RuntimeError(
+                f"the newest feature row is not the origin, {data.origin.date()}"
+            )
         labelled = features.dropna(subset=["target_price"])
         columns = [
             c

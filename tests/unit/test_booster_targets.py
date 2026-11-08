@@ -89,7 +89,8 @@ def test_the_scored_models_holdout_predictions_are_closes(log_returns, monkeypat
     )
 
 
-def test_the_rollout_compounds_the_predicted_log_returns(log_returns):
+def test_the_rollout_compounds_the_predicted_log_returns(log_returns, monkeypatch):
+    monkeypatch.setitem(boosting.BANDS, "xgboost", "fixed_2pct")
     closes = list(100 + np.arange(40, dtype=float))
     X = pd.DataFrame([dict.fromkeys(get_feature_cols(), 0.5)])
     forecast = boosting.generate_forecast(

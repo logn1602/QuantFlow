@@ -112,7 +112,7 @@ def fit_arima(y):
             fitted = ARIMA(y, order=order).fit()
         except (np.linalg.LinAlgError, ValueError):
             continue
-        # Strictly lower: of equal AICs the first, the simpler, order wins.
+        # Strictly lower: of equal AICs the first in ARIMA_ORDER_GRID wins.
         if np.isfinite(fitted.aic) and (best is None or fitted.aic < best.aic):
             best, best_order = fitted, order
     if best is None:

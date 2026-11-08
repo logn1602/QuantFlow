@@ -233,3 +233,40 @@ def test_naives_band_in_the_ensemble_is_its_forecast(monkeypatch):
     assert np.allclose(out["yhat_lower"], 220.0) and np.allclose(
         out["yhat_upper"], 220.0
     )
+
+
+def test_the_worker_bound_forecasters_survive_pickling():
+    """The harness sends forecasters to worker processes by pickling them; a
+    closure would only fail there, at run time."""
+    import pickle
+
+    booster = forecasters.Booster(
+        "xgboost", without=("has_news",), params={"max_depth": 6}
+    )
+    copy = pickle.loads(pickle.dumps(booster))
+    assert (copy.model_name, copy.without, copy.params) == (
+        "xgboost",
+        ("has_news",),
+        {"max_depth": 6},
+    )
+    for name, variant in forecasters.BAND_VARIANTS.items():
+        copy = pickle.loads(pickle.dumps(variant))
+        assert (copy.model_name, copy.band) == (variant.model_name, variant.band), name
+    for forecaster in {
+        **forecasters.FORECASTERS,
+        **forecasters.COMBINERS,
+    }.values():
+        pickle.dumps(forecaster)  # raises for anything a worker cannot receive
+
+
+def test_a_booster_forecast_that_does_not_start_at_the_origin_fails(
+    monkeypatch, fake_regressors
+):
+    """Scored by position, a forecast rolled from an earlier row would be
+    compared with the wrong closes."""
+    real = forecasters.engineer_features
+    monkeypatch.setattr(
+        forecasters, "engineer_features", lambda *a, **k: real(*a, **k).iloc[:-1]
+    )
+    with pytest.raises(RuntimeError, match="not the origin"):
+        forecasters.booster("xgboost")(_data(_prices()))

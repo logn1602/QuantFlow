@@ -273,8 +273,9 @@ def test_the_tickers_really_run_in_other_processes():
     cells = ro.run_origins(
         prices, _articles(), ORIGINS, {"whose": _whose_process}, workers=3
     )
-    pids = set(cells["pid"])
-    assert os.getpid() not in pids and len(pids) > 1
+    # How the tickers spread over the workers depends on how fast each one
+    # starts, so only this process's absence is checked.
+    assert os.getpid() not in set(cells["pid"])
 
 
 def test_an_origin_whose_days_skip_a_trading_day_is_named():

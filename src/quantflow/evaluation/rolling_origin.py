@@ -138,20 +138,23 @@ BASELINES: dict[str, Forecaster] = {"naive": naive_forecast, "drift": drift_fore
 # ── The loop ──────────────────────────────────────────────────────────────────
 
 
+def _forecast_days(dates, position: int, horizon: int):
+    """(the data's next `horizon` dates after row `position`, the calendar's
+    next `horizon` trading days, whether they agree): the one check both
+    origin_data and calendar_mismatched apply, so they cannot disagree."""
+    dates = pd.DatetimeIndex(dates)
+    found = dates[position + 1 : position + 1 + horizon].normalize()
+    expected = next_trading_days(dates[position], horizon)
+    return found, expected, len(found) == horizon and bool((found == expected).all())
+
+
 def calendar_mismatched(dates, positions, horizon: int = HORIZON) -> list[int]:
     """The origin positions whose next `horizon` dates in the data are not
     the calendar's next trading days: a one-off closure the calendar cannot
     know, such as 2025-01-09, inside their forecast days. origin_data
     refuses such an origin (CalendarMismatchError); a window that may hold
     one, like the tuning window, leaves it out first and says so."""
-    dates = pd.DatetimeIndex(dates)
-    out = []
-    for position in positions:
-        found = dates[position + 1 : position + 1 + horizon].normalize()
-        expected = next_trading_days(dates[position], horizon)
-        if len(found) != horizon or not (found == expected).all():
-            out.append(position)
-    return out
+    return [p for p in positions if not _forecast_days(dates, p, horizon)[2]]
 
 
 def origin_data(
@@ -164,9 +167,8 @@ def origin_data(
     """The data cut at the origin in row `position`, and its target rows."""
     origin = pd.Timestamp(prices["date"].iloc[position])
     targets = prices.iloc[position + 1 : position + 1 + horizon]
-    expected = next_trading_days(origin, horizon)
-    found = pd.DatetimeIndex(targets["date"]).normalize()
-    if len(found) != horizon or not (found == expected).all():
+    found, expected, agree = _forecast_days(prices["date"], position, horizon)
+    if not agree:
         raise CalendarMismatchError(
             f"{ticker}: after {origin.date()} the data has "
             f"{[d.date().isoformat() for d in found]}, the calendar "
