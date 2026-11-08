@@ -3,10 +3,10 @@
 One definition each for MAPE, RMSE and MAE, and for the measures the
 rolling-origin evaluation adds (docs/evaluation.md, section 3): directional
 accuracy, skill against the naive forecast, prediction-band coverage and
-width, and the primary test of a model against naive. These were previously implemented
-twice — compute_metrics in the ARIMA/Prophet module and a private _mape in the
-ensemble — with the same formulas written out separately, which is how two
-copies drift.
+width, the interval score, and the primary test of a model against naive.
+The first three were previously implemented twice (compute_metrics in the
+ARIMA/Prophet module and a private _mape in the ensemble), with the same
+formulas written out separately, which is how two copies drift.
 
 MAPE is the headline metric everywhere in this project because it is unit-free
 and therefore comparable across tickers trading at very different prices. It is
@@ -121,6 +121,30 @@ def band_width(predicted, lower, upper) -> float | None:
     if not keep.any():
         return None
     return float(np.mean((hi[keep] - lo[keep]) / np.abs(p[keep])) * 100)
+
+
+def interval_score(actual, lower, upper, alpha: float = 0.05) -> float | None:
+    """The mean interval score of central (1 - alpha) bands, each as a
+    percentage of its actual so tickers can be pooled; lower is better.
+
+    For a band [l, u] and an actual y: (u - l) + (2 / alpha)(l - y) if y < l,
+    + (2 / alpha)(y - u) if y > u (Gneiting and Raftery, 2007). A band is
+    charged for its width and, beyond that, for every miss in proportion to
+    its size, so neither a narrow band that misses nor a wide one that
+    always covers scores well. Over the forecasts that have a band.
+    """
+    a, lo, hi = _as_array(actual), _as_array(lower), _as_array(upper)
+    keep = np.isfinite(a) & np.isfinite(lo) & np.isfinite(hi) & (a != 0)
+    if not keep.any():
+        return None
+    a, lo, hi = a[keep], lo[keep], hi[keep]
+    penalty = 2 / alpha
+    score = (
+        (hi - lo)
+        + penalty * np.clip(lo - a, 0, None)
+        + penalty * np.clip(a - hi, 0, None)
+    )
+    return float(np.mean(score / np.abs(a)) * 100)
 
 
 def newey_west_variance_of_mean(values, lag: int) -> float:

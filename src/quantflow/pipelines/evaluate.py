@@ -7,9 +7,11 @@ The rolling-origin evaluation's command line (docs/evaluation.md).
     python -m quantflow.pipelines.evaluate coverage --snapshot eval_snapshots/2026-11-06
     python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06
     python -m quantflow.pipelines.evaluate run --snapshot ... --window test --reason "..."
+    python -m quantflow.pipelines.evaluate compare --incumbent eval_runs/B0 --candidate eval_runs/E1 --models xgboost
 
-export reads the database once, read-only, into a snapshot directory; the
-other two read only the snapshot. run scores the validation dates unless
+export reads the database once, read-only, into a snapshot directory;
+coverage and run read only the snapshot, and compare only two run folders,
+applying Phase 3's keep-or-drop rule (evaluation/decision.py). run scores the validation dates unless
 given --window test with a reason: the test dates are reported, never used
 to choose, and every scoring of them is counted (docs/evaluation.md,
 section 2). A test-date run also refuses uncommitted changes to tracked
@@ -33,7 +35,7 @@ from quantflow.config import TICKERS
 from quantflow.db.prices import classify_bars, daily_bars
 from quantflow.db.readonly import is_local_database, masked, read_only_connection
 from quantflow.db.snapshot import read_snapshot_tables
-from quantflow.evaluation import report
+from quantflow.evaluation import decision, report
 from quantflow.evaluation.rolling_origin import check_failure_rate, run_origins
 from quantflow.evaluation.snapshot import (
     Snapshot,
@@ -297,6 +299,88 @@ def run_evaluation(args) -> int:
     return 0
 
 
+# ── compare ───────────────────────────────────────────────────────────────────
+
+
+def run_header(directory: Path) -> dict:
+    """The "- key: value" lines at the top of a run's report.md."""
+    header: dict[str, str] = {}
+    for line in (directory / "report.md").read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            break
+        if line.startswith("- ") and ": " in line:
+            key, value = line[2:].split(": ", 1)
+            header.setdefault(key, value)
+    return header
+
+
+def compare_runs(args) -> int:
+    """The keep-or-drop rule (evaluation/decision.py) for each named model,
+    the candidate run against the incumbent's, on the same snapshot."""
+    incumbent, candidate = Path(args.incumbent), Path(args.candidate)
+    heads = {"incumbent": run_header(incumbent), "candidate": run_header(candidate)}
+    digests = {side: head.get("snapshot digest") for side, head in heads.items()}
+    if not digests["incumbent"] or digests["incumbent"] != digests["candidate"]:
+        print(
+            "Refusing: the runs are not on the same snapshot "
+            f"({digests['incumbent']} against {digests['candidate']}).",
+            file=sys.stderr,
+        )
+        return 2
+    old = pd.read_csv(incumbent / "cells.csv")
+    new = pd.read_csv(candidate / "cells.csv")
+    results = [decision.compare(old, new, model) for model in args.models]
+    table = pd.DataFrame([decision.summary_row(r) for r in results])
+
+    parts = [f"# {candidate.name} against {incumbent.name}\n"]
+    parts += [
+        f"- incumbent: {incumbent} (commit {heads['incumbent'].get('commit', '?')})",
+        f"- candidate: {candidate} (commit {heads['candidate'].get('commit', '?')})",
+        f"- snapshot digest: {digests['candidate']}",
+        f"- rule: MAPE over the cells both forecast strictly lower, and lower on "
+        f"at least {decision.TICKERS_NEEDED} tickers; more failed cells drops "
+        "(docs/evaluation.md, section 16)",
+        "",
+        "## Decisions\n",
+        report.markdown_table(table, digits=4),
+    ]
+    for result in results:
+        parts += [
+            f"## {result.model}: per ticker\n",
+            report.markdown_table(result.per_ticker, digits=4),
+            f"## {result.model}: per horizon\n",
+            report.markdown_table(result.per_horizon, digits=4),
+        ]
+    text = "\n".join(parts)
+    out = candidate / f"compare-{incumbent.name}.md"
+    out.write_text(text, encoding="utf-8")
+    table.to_csv(candidate / f"compare-{incumbent.name}.csv", index=False)
+    print(table[["model", "decision", "reason"]].to_string(index=False))
+    print(f"Comparison: {out}")
+
+    tags = {"kind": "compare", "incumbent": incumbent.name, "candidate": candidate.name}
+    mlflow, error = _start_mlflow(f"{candidate.name} vs {incumbent.name}", tags)
+    if mlflow is None:
+        print(f"MLflow failed, so this is not logged: {error}", file=sys.stderr)
+        return 1
+    try:
+        mlflow.log_params(
+            {"snapshot_digest": digests["candidate"], "models": ",".join(args.models),
+             "tickers_needed": decision.TICKERS_NEEDED}
+        )  # fmt: skip
+        mlflow.log_metrics(
+            {f"{r.model}.{key}": float(value) for r in results
+             for key, value in (("keep", r.keep), ("mape_incumbent", r.mape_incumbent),
+                                ("mape_candidate", r.mape_candidate))}
+        )  # fmt: skip
+        mlflow.log_text(text, out.name)
+        mlflow.end_run(status="FINISHED")
+    except Exception as e:
+        print(f"MLflow logging failed, so this is not logged: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 # ── command line ──────────────────────────────────────────────────────────────
 
 
@@ -334,6 +418,17 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--label", default="", help="the run's folder and MLflow name")
     run.add_argument("--out", type=Path, default=RUNS_ROOT)
 
+    compare = commands.add_parser(
+        "compare", help="the keep-or-drop rule, a candidate run against the incumbent"
+    )
+    compare.add_argument("--incumbent", type=Path, required=True, help="a run folder")
+    compare.add_argument("--candidate", type=Path, required=True, help="a run folder")
+    compare.add_argument(
+        "--models",
+        type=lambda v: [m.strip().lower() for m in v.split(",") if m.strip()],
+        required=True,
+    )
+
     args = parser.parse_args(argv)
     try:
         if args.command == "export":
@@ -354,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
             print(table.to_string(index=False))
             print(f"News ablation: {report.news_ablation_status(table)}")
             return 0
+        if args.command == "compare":
+            return compare_runs(args)
         return run_evaluation(args)
     except Exception as e:
         print(f"Failed: {type(e).__name__}: {masked(str(e))}", file=sys.stderr)

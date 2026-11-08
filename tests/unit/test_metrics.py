@@ -32,6 +32,39 @@ def test_mae_matches_hand_computed_value():
     assert mae([10.0, 20.0], [13.0, 16.0]) == pytest.approx(3.5)
 
 
+def test_interval_score_matches_hand_computed_values():
+    from quantflow.evaluation.metrics import interval_score
+
+    # Inside [98, 102]: the width, 4, is 4% of 100.
+    assert interval_score([100.0], [98.0], [102.0]) == pytest.approx(4.0)
+    # Below [101, 103] by 1: width 2 + 40 x 1 = 42, 42% of 100.
+    assert interval_score([100.0], [101.0], [103.0]) == pytest.approx(42.0)
+    # Above [96, 99] by 1: 3 + 40 = 43, as a percentage of 100.
+    assert interval_score([100.0], [96.0], [99.0]) == pytest.approx(43.0)
+    # Pooled as the mean of each band's percentage of its own actual: 200
+    # below [202, 206] by 2 scores 4 + 40 x 2 = 84, 42% of 200; with the
+    # first band's 4%, the mean is 23%.
+    assert interval_score(
+        [100.0, 200.0], [98.0, 202.0], [102.0, 206.0]
+    ) == pytest.approx((4.0 + 42.0) / 2)
+
+
+def test_interval_score_charges_a_miss_by_alpha():
+    from quantflow.evaluation.metrics import interval_score
+
+    # An 80% band (alpha 0.2) pays 2 / 0.2 = 10 per unit missed.
+    assert interval_score([100.0], [101.0], [103.0], alpha=0.2) == pytest.approx(12.0)
+
+
+def test_interval_score_skips_forecasts_without_a_band():
+    from quantflow.evaluation.metrics import interval_score
+
+    assert interval_score([100.0, 100.0], [98.0, np.nan], [102.0, np.nan]) == (
+        pytest.approx(4.0)
+    )
+    assert interval_score([100.0], [np.nan], [np.nan]) is None
+
+
 def test_all_metrics_are_zero_for_perfect_predictions():
     actual = np.array([50.0, 75.0, 120.0])
     assert mape(actual, actual.copy()) == pytest.approx(0.0)

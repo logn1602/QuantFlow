@@ -215,3 +215,53 @@ def test_export_refuses_a_remote_database_without_live(monkeypatch, tmp_path):
         evaluate.main(["export", "--as-of", "2026-11-06", "--out", str(tmp_path)]) == 2
     )
     assert not any(tmp_path.iterdir())
+
+
+def _compare(tmp_path, incumbent="a", candidate="b", models="drift"):
+    return evaluate.main(
+        ["compare", "--incumbent", str(tmp_path / "runs" / incumbent),
+         "--candidate", str(tmp_path / "runs" / candidate), "--models", models]
+    )  # fmt: skip
+
+
+def test_compare_applies_the_rule_and_logs_it(tmp_path, harness, capsys):
+    _snapshot(tmp_path)
+    for label in ("a", "b"):
+        assert _run(tmp_path, "--label", label) == 0
+    harness.calls.clear()
+    assert _compare(tmp_path, models="drift,naive") == 0
+    out = tmp_path / "runs" / "b"
+    table = pd.read_csv(out / "compare-a.csv")
+    # The same code twice: a tie, which drops.
+    assert list(table["decision"]) == ["drop", "drop"]
+    assert "Decisions" in (out / "compare-a.md").read_text("utf-8")
+    assert "drift" in capsys.readouterr().out
+    ((_, name, tags),) = harness.call("start")
+    assert name == "b vs a" and tags["kind"] == "compare"
+    ((_, metrics),) = harness.call("metrics")
+    assert metrics["drift.keep"] == 0.0
+    assert harness.call("text") == [("text", "compare-a.md")]
+    assert harness.call("end") == [("end", "FINISHED")]
+
+
+def test_compare_refuses_runs_on_different_snapshots(tmp_path, harness, capsys):
+    _snapshot(tmp_path)
+    for label in ("a", "b"):
+        assert _run(tmp_path, "--label", label) == 0
+    report = tmp_path / "runs" / "b" / "report.md"
+    text = report.read_text("utf-8")
+    report.write_text(text.replace("snapshot digest: ", "snapshot digest: 0"), "utf-8")
+    harness.calls.clear()
+    assert _compare(tmp_path) == 2
+    assert "same snapshot" in capsys.readouterr().err
+    assert not (tmp_path / "runs" / "b" / "compare-a.csv").exists()
+    assert harness.calls == []
+
+
+def test_compare_refuses_test_date_cells(tmp_path, harness, capsys):
+    """Decision D13: the test dates are reported, never used to choose."""
+    _snapshot(tmp_path)
+    assert _run(tmp_path, "--label", "a") == 0
+    assert _run(tmp_path, "--label", "b", "--window", "test", "--reason", "x") == 0
+    assert _compare(tmp_path) == 1
+    assert "D13" in capsys.readouterr().err

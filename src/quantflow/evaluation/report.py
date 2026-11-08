@@ -62,6 +62,9 @@ def _summary(group: pd.DataFrame) -> dict:
         "band_width": metrics.band_width(
             group["yhat"], group["yhat_lower"], group["yhat_upper"]
         ),
+        "interval_score": metrics.interval_score(
+            group["actual"], group["yhat_lower"], group["yhat_upper"]
+        ),
     }
 
 
@@ -212,7 +215,7 @@ def news_ablation_status(coverage: pd.DataFrame) -> str:
     return "testable"
 
 
-def _table(df: pd.DataFrame, digits: int = 3) -> str:
+def markdown_table(df: pd.DataFrame, digits: int = 3) -> str:
     if df.empty:
         return "(none)\n"
 
@@ -246,11 +249,17 @@ def markdown(
         '\nThe headline\'s primary test is the only basis for "beats naive"; '
         "every per-ticker and per-horizon figure below is descriptive.\n"
     )
-    parts += ["## Headline\n", _table(headline(compared))]
-    parts += ["## Per ticker\n", _table(summary_table(compared, ["ticker", "model"]))]
-    parts += ["## Per horizon\n", _table(summary_table(compared, ["model", "h"]))]
-    parts += ["## Failures\n", _table(failures(rows))]
+    parts += ["## Headline\n", markdown_table(headline(compared))]
+    parts += [
+        "## Per ticker\n",
+        markdown_table(summary_table(compared, ["ticker", "model"])),
+    ]
+    parts += [
+        "## Per horizon\n",
+        markdown_table(summary_table(compared, ["model", "h"])),
+    ]
+    parts += ["## Failures\n", markdown_table(failures(rows))]
     if coverage is not None:
-        parts += ["## News coverage\n", _table(coverage)]
+        parts += ["## News coverage\n", markdown_table(coverage)]
         parts.append(f"News ablation: {news_ablation_status(coverage)}.\n")
     return "\n".join(parts)
