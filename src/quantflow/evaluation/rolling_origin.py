@@ -138,6 +138,22 @@ BASELINES: dict[str, Forecaster] = {"naive": naive_forecast, "drift": drift_fore
 # ── The loop ──────────────────────────────────────────────────────────────────
 
 
+def calendar_mismatched(dates, positions, horizon: int = HORIZON) -> list[int]:
+    """The origin positions whose next `horizon` dates in the data are not
+    the calendar's next trading days: a one-off closure the calendar cannot
+    know, such as 2025-01-09, inside their forecast days. origin_data
+    refuses such an origin (CalendarMismatchError); a window that may hold
+    one, like the tuning window, leaves it out first and says so."""
+    dates = pd.DatetimeIndex(dates)
+    out = []
+    for position in positions:
+        found = dates[position + 1 : position + 1 + horizon].normalize()
+        expected = next_trading_days(dates[position], horizon)
+        if len(found) != horizon or not (found == expected).all():
+            out.append(position)
+    return out
+
+
 def origin_data(
     ticker: str,
     prices: pd.DataFrame,

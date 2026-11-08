@@ -40,6 +40,7 @@ from quantflow.evaluation import decision, report
 from quantflow.evaluation.rolling_origin import (
     MAX_WORKERS,
     Forecaster,
+    calendar_mismatched,
     check_failure_rate,
     run_origins,
 )
@@ -372,6 +373,10 @@ def tune_boosters(args) -> int:
             file=sys.stderr,
         )
         return 2
+    # The window reaches 2025-01-09, a one-off closure the calendar does not
+    # know: an origin whose forecast days include it is left out, and listed.
+    left_out = calendar_mismatched(dates, origins)
+    origins = tuple(p for p in origins if p not in left_out)
     used = sorted({p + k for p in origins for k in range(HORIZON + 1)})
     check_built_dates(snapshot, dates[used])
     candidates = tuning_candidates(args.models)
@@ -403,6 +408,10 @@ def tune_boosters(args) -> int:
             "origins": f"{len(origins)}, {dates[origins[0]].date()} to "
             f"{dates[origins[-1]].date()}, last target "
             f"{dates[origins[-1] + HORIZON].date()}",
+            "left out (a closure the calendar does not know in their days)": ", ".join(
+                str(dates[p].date()) for p in left_out
+            )
+            or "none",
             "workers": args.workers,
             "seconds": round(time.perf_counter() - clock),
         }
@@ -427,7 +436,8 @@ def tune_boosters(args) -> int:
     try:
         mlflow.log_params(
             {"window": "tuning", "snapshot_digest": snapshot.digest, "commit": commit,
-             "dirty": dirty, "origins": len(origins), "tickers": ",".join(tickers),
+             "dirty": dirty, "origins": len(origins), "left_out": len(left_out),
+             "tickers": ",".join(tickers),
              "workers": args.workers}
         )  # fmt: skip
         mlflow.log_metrics(

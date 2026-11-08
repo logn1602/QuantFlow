@@ -965,7 +965,10 @@ commit on snapshot `f0c3957b`, on the validation dates, logged to MLflow.
 Tuning origins sit on the grid's 5-day step before the validation warmup, each one's
 day-7 target before the first warmup origin (2025-04-02): 24 origins, 2024-10-01 to
 2025-03-19 on the snapshot (the last target 2025-03-28), each training on 121 to 236
-rows. No tuning target is a
+rows. One is left out: 2025-01-03, whose forecast days include 2025-01-09, a one-off
+closure the trading calendar does not know (section 2), so the harness refuses it. The
+first tuning run stopped on it before scoring anything; the command now leaves such an
+origin out and names it. 23 origins are scored. No tuning target is a
 validation or test date. For each booster the candidates are the current settings and a
 grid of 12 (max depth 3, 4 or 6; learning rate 0.03 or 0.1; 200 or 600 trees; the
 sampling settings unchanged), each scored by its 7-day recursive MAPE over every

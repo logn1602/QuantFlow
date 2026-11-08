@@ -272,13 +272,13 @@ def test_compare_refuses_test_date_cells(tmp_path, harness, capsys):
 LONG = pd.date_range("2024-01-02", periods=600, freq=TRADING_DAY)
 
 
-def _long_snapshot(tmp_path):
+def _long_snapshot(tmp_path, dates=LONG):
     rng = np.random.default_rng(5)
     prices = {}
     for ticker in ("AAPL", "MSFT"):
-        close = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.01, len(LONG))))
+        close = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.01, len(dates))))
         prices[ticker] = pd.DataFrame(
-            {"date": LONG, "open": close, "high": close + 1, "low": close - 1,
+            {"date": dates, "open": close, "high": close + 1, "low": close - 1,
              "close": close, "volume": 1e6}
         )  # fmt: skip
     empty = pd.DataFrame(columns=["ticker", "date", "zscore"])
@@ -286,7 +286,7 @@ def _long_snapshot(tmp_path):
                                      "inserted_at", "sentiment", "score_pos",
                                      "score_neg", "score_neu", "compound"])  # fmt: skip
     return write_snapshot(
-        tmp_path / "long", as_of=LONG[-1], exported_at=pd.Timestamp("2026-01-01", tz="UTC"),
+        tmp_path / "long", as_of=dates[-1], exported_at=pd.Timestamp("2026-01-01", tz="UTC"),
         prices=prices, articles=articles, stored_indicators=empty.drop(columns="zscore"),
         stored_anomalies=empty, built_dates={"AAPL": [], "MSFT": []},
     )  # fmt: skip
@@ -352,3 +352,29 @@ def test_the_tuning_candidates_are_the_current_settings_and_the_grid():
     assert forecaster.params == settings and forecaster.model_name == "xgboost"
     grid = [candidates[f"xgboost#{i:02d}"][1] for i in range(1, 13)]
     assert grid == boosting.TUNING_GRID
+
+
+def test_tune_leaves_out_an_origin_whose_days_hold_an_unknown_closure(
+    tmp_path, harness, monkeypatch
+):
+    """Like 2025-01-09 in the real tuning window: the data skips a day the
+    calendar trades, so the origin whose 7 days span it is left out and
+    named, instead of the run failing."""
+    from quantflow.evaluation.splits import origin_grid
+
+    tuning = origin_grid(len(LONG)).tuning
+    origin = tuning[3]
+    full = pd.date_range(LONG[0], periods=len(LONG) + 1, freq=TRADING_DAY)
+    _long_snapshot(tmp_path, dates=full.delete(origin + 3))
+    fake = {"xgboost#00": ("xgboost", {"max_depth": 4}, _off_by(1))}
+    monkeypatch.setattr(evaluate, "tuning_candidates", lambda models: fake)
+    code = evaluate.main(
+        ["tune", "--snapshot", str(tmp_path / "long"), "--out", str(tmp_path / "runs"),
+         "--label", "t"]
+    )  # fmt: skip
+    assert code == 0
+    cells = pd.read_csv(tmp_path / "runs" / "t" / "cells.csv", parse_dates=["origin"])
+    assert cells["origin"].nunique() == len(tuning) - 1
+    assert full[origin] not in set(cells["origin"])
+    report = (tmp_path / "runs" / "t" / "report.md").read_text("utf-8")
+    assert str(full[origin].date()) in report

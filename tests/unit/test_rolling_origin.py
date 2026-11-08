@@ -275,3 +275,11 @@ def test_the_tickers_really_run_in_other_processes():
     )
     pids = set(cells["pid"])
     assert os.getpid() not in pids and len(pids) > 1
+
+
+def test_an_origin_whose_days_skip_a_trading_day_is_named():
+    """2025-01-09 was a one-off closure the calendar does not know: the
+    data skips it, so an origin whose next 7 days span it is listed."""
+    dates = DATES.delete(37)  # the data skips a day the calendar trades
+    assert ro.calendar_mismatched(dates, [25, 30, 35, 40]) == [30, 35]
+    assert ro.calendar_mismatched(DATES, [25, 30, 35, 40]) == []
