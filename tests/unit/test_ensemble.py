@@ -19,7 +19,7 @@ from quantflow.models.ensemble import (
     out_of_fold_meta_predictions,
 )
 
-BASE_COLS = ["arima", "prophet", "xgboost", "lightgbm"]
+BASE_COLS = ["arima", "prophet", "xgboost", "lightgbm", "naive"]
 
 
 @pytest.fixture
@@ -35,6 +35,7 @@ def stacked():
             "prophet": truth + rng.normal(0, 2.0, n),
             "xgboost": truth + rng.normal(0, 1.0, n),
             "lightgbm": truth + rng.normal(0, 1.2, n),
+            "naive": truth + rng.normal(0, 2.5, n),
         }
     )
 

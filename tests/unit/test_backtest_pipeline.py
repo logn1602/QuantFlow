@@ -31,7 +31,7 @@ def _stack(prices, seed=6):
     """A holdout stack over the last 30 closes, base models near the truth."""
     rng = np.random.default_rng(seed)
     actual = prices["y"].to_numpy()[-30:]
-    noisy = {m: actual + rng.normal(0, 1, 30) for m in ensemble.BASE_MODELS}
+    noisy = {m: actual + rng.normal(0, 1, 30) for m in ensemble.STACK_COLUMNS}
     return pd.DataFrame({"actual": actual} | noisy)
 
 

@@ -72,6 +72,14 @@ META_WARMUP_DAYS = DEFAULT_WARMUP_DAYS
 # Column order of the stacked holdout frame. The meta-learner's weight
 # vector is positional, so this order is load-bearing.
 BASE_MODELS = ["arima", "prophet", "xgboost", "lightgbm"]
+# The columns each ensemble weighs (Phase 3, E6, decided per ensemble): the
+# base models' forecasts and naive's, the latest close, so the weights can
+# lean toward "no change". Positional, like BASE_MODELS. STACK_COLUMNS is the
+# live 30-day stack's (ensemble_stack), ROLLING_COLUMNS the rolling-origin
+# weights' (ensemble_rolling, evaluated only).
+NAIVE = "naive"
+STACK_COLUMNS: list[str] = [*BASE_MODELS, NAIVE]
+ROLLING_COLUMNS: list[str] = [*BASE_MODELS, NAIVE]
 MLFLOW_EXP = "stock_forecasting"
 
 
@@ -133,7 +141,11 @@ def build_holdout_stack(
       lines up with actual across market holidays
     - XGBoost/LightGBM: predict(X_holdout) where target = close.shift(-1)
 
-    Returns DataFrame: [actual, arima, prophet, xgboost, lightgbm]
+    - Naive: the last train close for every holdout day, the forecast naive
+      would have made at the end of the train split, as ARIMA's and
+      Prophet's columns are forecasts from there
+
+    Returns DataFrame: [actual, arima, prophet, xgboost, lightgbm, naive]
     """
     if price_df.empty or len(price_df) < HOLDOUT_DAYS + 60:
         logger.warning(
@@ -142,7 +154,7 @@ def build_holdout_stack(
         )
         return pd.DataFrame()
 
-    _, holdout = train_holdout_split(price_df)
+    train, holdout = train_holdout_split(price_df)
     actual = holdout["y"].to_numpy()
 
     logger.info("  [1/4] ARIMA holdout predictions...")
@@ -175,6 +187,7 @@ def build_holdout_stack(
             "prophet": np.asarray(prophet_preds)[:n],
             "xgboost": np.asarray(xgb_preds)[:n],
             "lightgbm": np.asarray(lgb_preds)[:n],
+            NAIVE: np.full(n, float(train["y"].iloc[-1])),
         }
     )
 
@@ -250,7 +263,7 @@ def out_of_fold_meta_predictions(
     Returns (oof_preds, actuals) — both length len(stacked_df) - warmup.
     """
     return expanding_window_predictions(
-        stacked_df, BASE_MODELS, _fit_nnls, warmup=warmup
+        stacked_df, STACK_COLUMNS, _fit_nnls, warmup=warmup
     )
 
 
@@ -274,7 +287,7 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
     The returned model is fitted on ALL holdout days — that is the model used
     to generate the forward 7-day forecast.
     """
-    feature_cols = BASE_MODELS
+    feature_cols = STACK_COLUMNS
     X = stacked_df[feature_cols].values
     y = stacked_df["actual"].values
 
@@ -330,10 +343,7 @@ def tune_and_train_meta(stacked_df: pd.DataFrame) -> tuple:
 
     metrics = {
         "ensemble_mape": ens_mape,
-        "arima_mape": base_mapes["arima"],
-        "prophet_mape": base_mapes["prophet"],
-        "xgboost_mape": base_mapes["xgboost"],
-        "lightgbm_mape": base_mapes["lightgbm"],
+        **{f"{m}_mape": base_mapes[m] for m in feature_cols},
         "meta_learner": "nnls_convex",
         "oof_mape": ens_mape,
         "eval_days": eval_days,
@@ -392,7 +402,7 @@ def check_forecast_dates(df: pd.DataFrame, models: list[str], horizon: int) -> l
 
 def combine_forecasts(meta_model, predicted, lower, upper) -> tuple:
     """The ensemble's forecast and band from base forecasts, one column per
-    model in BASE_MODELS order: the meta-learner's prediction, and each
+    model in the meta-learner's column order: its prediction, and each
     bound as the base bounds weighted by |coef| / sum(|coef|). Shared by the
     live forecast and the evaluation, so both combine the same way."""
     abs_coefs = np.abs(meta_model.coef_)
@@ -404,7 +414,9 @@ def combine_forecasts(meta_model, predicted, lower, upper) -> tuple:
     )
 
 
-def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
+def generate_ensemble_forecast(
+    ticker: str, meta_model, latest_close: float | None = None
+) -> pd.DataFrame:
     """
     Load 7-day base model forecasts from DB and apply meta-learner to produce
     ensemble predictions. Confidence intervals are propagated as a weighted
@@ -414,7 +426,8 @@ def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     meta-learner was fitted.
 
     Raises ForecastAlignmentError unless all four base models cover the same
-    seven dates.
+    seven dates. With naive among STACK_COLUMNS, naive's forecast is
+    latest_close for every date, its band that same price (no width).
     """
     df = load_base_forecasts(ticker, BASE_MODELS)
     try:
@@ -426,11 +439,20 @@ def generate_ensemble_forecast(ticker: str, meta_model) -> pd.DataFrame:
     # complete: dates down, the base models across in the meta-learner's order.
     def wide(column: str) -> pd.DataFrame:
         table = df.pivot(index="forecast_date", columns="model", values=column)
-        return table.reindex(index=dates, columns=BASE_MODELS)
+        table = table.reindex(index=dates, columns=BASE_MODELS)
+        if column != "predicted_close":
+            table = table.fillna(0)
+        if NAIVE in STACK_COLUMNS:
+            if latest_close is None:
+                raise ValueError(
+                    f"{ticker}: the ensemble weighs naive, the latest close"
+                )
+            table[NAIVE] = float(latest_close)
+        return table[STACK_COLUMNS]
 
     pivot = wide("predicted_close")
-    lower = wide("lower_bound").fillna(0)
-    upper = wide("upper_bound").fillna(0)
+    lower = wide("lower_bound")
+    upper = wide("upper_bound")
 
     ensemble_preds, ens_lower, ens_upper = combine_forecasts(
         meta_model, pivot.values, lower.values, upper.values
@@ -470,7 +492,7 @@ def log_to_mlflow(
             mlflow.log_param("ticker", ticker)
             mlflow.log_param("model", "ensemble_stack")
             mlflow.log_param("meta_learner", metrics["meta_learner"])
-            mlflow.log_param("base_models", "arima,prophet,xgboost,lightgbm")
+            mlflow.log_param("base_models", ",".join(STACK_COLUMNS))
             mlflow.log_param("holdout_days", HOLDOUT_DAYS)
             mlflow.log_param("warmup_days", metrics["warmup_days"])
             mlflow.log_param("forecast_days", FORECAST_DAYS)
@@ -485,10 +507,7 @@ def log_to_mlflow(
             for key in (
                 "ensemble_mape",
                 "oof_mape",
-                "arima_mape",
-                "prophet_mape",
-                "xgboost_mape",
-                "lightgbm_mape",
+                *(f"{m}_mape" for m in STACK_COLUMNS),
                 "improvement_pct",
             ):
                 if metrics[key] is not None:
@@ -551,7 +570,10 @@ def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
         logger.info(f"{'=' * 50}")
 
         logger.info("Collecting out-of-fold holdout predictions...")
-        stacked_df = collect_holdout_stacks(ticker, news)
+        # Loaded here rather than through collect_holdout_stacks: the same
+        # reads, and the latest close is naive's forecast (STACK_COLUMNS).
+        prices = load_prices(ticker)
+        stacked_df = build_holdout_stack(prices, load_features(ticker, news), ticker)
         if stacked_df.empty:
             logger.error(f"{ticker}: stacking skipped")
             results[ticker] = 0
@@ -566,16 +588,10 @@ def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
 
         coefs = metrics["coefficients"]
         logger.info(
-            f"  Weights — ARIMA: {coefs['arima']:.3f} | Prophet: {coefs['prophet']:.3f} | "
-            f"XGBoost: {coefs['xgboost']:.3f} | LightGBM: {coefs['lightgbm']:.3f}"
+            "  Weights: " + " | ".join(f"{m}: {w:.3f}" for m, w in coefs.items())
         )
         if metrics["eval_days"] > 0:
-            base_best = min(
-                metrics["arima_mape"],
-                metrics["prophet_mape"],
-                metrics["xgboost_mape"],
-                metrics["lightgbm_mape"],
-            )
+            base_best = min(metrics[f"{m}_mape"] for m in STACK_COLUMNS)
             logger.info(
                 f"  MAPE (out-of-fold, {metrics['eval_days']} days) — "
                 f"Ensemble: {metrics['ensemble_mape']}% vs "
@@ -596,7 +612,9 @@ def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
 
         logger.info("Generating 7-day ensemble forecast...")
         try:
-            forecast_df = generate_ensemble_forecast(ticker, meta_model)
+            forecast_df = generate_ensemble_forecast(
+                ticker, meta_model, float(prices["y"].iloc[-1])
+            )
         except ForecastAlignmentError as e:
             # Carried to the end of the loop: one ticker's broken base run
             # should not cost the others their forecast, but the run must

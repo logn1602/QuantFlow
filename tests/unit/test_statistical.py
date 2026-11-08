@@ -329,3 +329,13 @@ def test_a_fixed_order_is_fitted_alone(fake_arima, monkeypatch):
     forecast = statistical.arima_forecast(HOLIDAY_IN_HOLDOUT["y"], 7)
     assert fake_arima.orders == [(5, 1, 0)]
     assert set(forecast["arima_order"]) == {"(5, 1, 0)"}
+
+
+def test_the_stacks_naive_column_is_the_last_train_close(
+    fake_prophet, fake_arima, no_boosters
+):
+    """Phase 3, E6: the forecast naive would have made at the end of the
+    train split, as ARIMA's and Prophet's columns are forecasts from there."""
+    stack = ensemble.build_holdout_stack(HOLIDAY_IN_HOLDOUT, pd.DataFrame(), "AAPL")
+    last_train_close = HOLIDAY_IN_HOLDOUT["y"].iloc[-31]
+    assert len(stack) == 30 and (stack["naive"] == last_train_close).all()

@@ -184,10 +184,11 @@ def test_the_ensemble_adapter_weights_the_base_forecasts_by_the_holdout_stack(
 ):
     actual = np.linspace(100, 110, 30)
     stack = pd.DataFrame({"actual": actual, "arima": actual, "prophet": actual + 5,
-                          "xgboost": actual + 3, "lightgbm": actual + 9})  # fmt: skip
+                          "xgboost": actual + 3, "lightgbm": actual + 9,
+                          "naive": actual + 7})  # fmt: skip
     monkeypatch.setattr(forecasters, "build_holdout_stack", lambda *a: stack)
     base = {"arima": _base(200.0), "prophet": _base(210.0), "xgboost": _base(190.0),
-            "lightgbm": _base(230.0)}  # fmt: skip
+            "lightgbm": _base(230.0), "naive": _base(220.0)}  # fmt: skip
     out = forecasters.ensemble_stack(_data(_prices()), base, pd.DataFrame())
     assert np.allclose(out["yhat"], 200.0)  # all weight on the perfect arima column
     assert np.allclose(out["yhat_upper"] - out["yhat_lower"], 2.0)
@@ -215,3 +216,20 @@ def test_the_ablation_boosters_fit_without_the_news_features(monkeypatch):
     assert not set(forecasters.NEWS_FEATURES) & set(model.last.columns)
     assert "close_lag_1" in model.last.columns
     assert set(forecasters.NEWS_FEATURES) <= set(get_feature_cols())
+
+
+def test_naives_band_in_the_ensemble_is_its_forecast(monkeypatch):
+    """Naive has no band; as live, its bounds are its forecast, not 0."""
+    actual = np.linspace(100, 110, 30)
+    stack = pd.DataFrame({"actual": actual, "arima": actual + 4, "prophet": actual + 5,
+                          "xgboost": actual + 3, "lightgbm": actual + 9,
+                          "naive": actual})  # fmt: skip
+    monkeypatch.setattr(forecasters, "build_holdout_stack", lambda *a: stack)
+    base = {"arima": _base(200.0), "prophet": _base(210.0), "xgboost": _base(190.0),
+            "lightgbm": _base(230.0)}  # fmt: skip
+    base["naive"] = _base(220.0).assign(yhat_lower=np.nan, yhat_upper=np.nan)
+    out = forecasters.ensemble_stack(_data(_prices()), base, pd.DataFrame())
+    assert np.allclose(out["yhat"], 220.0)  # all weight on the perfect naive column
+    assert np.allclose(out["yhat_lower"], 220.0) and np.allclose(
+        out["yhat_upper"], 220.0
+    )

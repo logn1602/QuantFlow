@@ -28,7 +28,9 @@ from quantflow.features.engineering import (
 )
 from quantflow.models.boosting import fit_live_model, generate_forecast
 from quantflow.models.ensemble import (
-    BASE_MODELS,
+    NAIVE,
+    ROLLING_COLUMNS,
+    STACK_COLUMNS,
     _fit_nnls,
     build_holdout_stack,
     combine_forecasts,
@@ -129,9 +131,9 @@ def ensemble_stack(
     data: OriginData, base: dict[str, pd.DataFrame], earlier: pd.DataFrame
 ) -> pd.DataFrame:
     """The live ensemble as it stands: NNLS weights fitted on the 30-day
-    holdout stack of the history up to the origin, applied to the four base
-    forecasts made at the origin."""
-    missing = [m for m in BASE_MODELS if m not in base]
+    holdout stack of the history up to the origin, applied to the forecasts
+    made at the origin, in STACK_COLUMNS."""
+    missing = [m for m in STACK_COLUMNS if m not in base]
     if missing:
         raise RuntimeError(f"no {', '.join(missing)} forecast to combine")
     raw = build_features(
@@ -140,23 +142,23 @@ def ensemble_stack(
     stack = build_holdout_stack(_ds_y(data), raw, data.ticker)
     if stack.empty:
         raise RuntimeError("the holdout stack could not be built")
-    meta = _fit_nnls(stack[BASE_MODELS].to_numpy(), stack["actual"].to_numpy())
-    return _combined(meta, base)
+    meta = _fit_nnls(stack[STACK_COLUMNS].to_numpy(), stack["actual"].to_numpy())
+    return _combined(meta, base, STACK_COLUMNS)
 
 
 def ensemble_rolling(
     data: OriginData, base: dict[str, pd.DataFrame], earlier: pd.DataFrame
 ) -> pd.DataFrame:
     """The ensemble with weights learned on the task it is used for (2c):
-    NNLS fitted on the base models' 7-day forecasts at the 12 grid origins
-    before this one, only the rows whose target is known by it, applied to
-    the four base forecasts made here. Fewer than 8 complete earlier origins
-    (ThinWindowError) or an all-zero solution fails the cells."""
-    missing = [m for m in BASE_MODELS if m not in base]
+    NNLS fitted on the 7-day forecasts in ROLLING_COLUMNS at the 12 grid
+    origins before this one, only the rows whose target is known by it,
+    applied to those forecasts made here. Fewer than 8 complete earlier
+    origins (ThinWindowError) or an all-zero solution fails the cells."""
+    missing = [m for m in ROLLING_COLUMNS if m not in base]
     if missing:
         raise RuntimeError(f"no {', '.join(missing)} forecast to combine")
-    meta = rolling_origin_fit(earlier, data.origin, BASE_MODELS, fit_nnls_strict)
-    return _combined(meta, base)
+    meta = rolling_origin_fit(earlier, data.origin, ROLLING_COLUMNS, fit_nnls_strict)
+    return _combined(meta, base, ROLLING_COLUMNS)
 
 
 # The harness adds the warmup origins before the window when a combiner needs
@@ -164,10 +166,13 @@ def ensemble_rolling(
 ensemble_rolling.needs_history = True  # type: ignore[attr-defined]
 
 
-def _combined(meta, base: dict[str, pd.DataFrame]) -> pd.DataFrame:
+def _combined(meta, base: dict[str, pd.DataFrame], columns: list[str]) -> pd.DataFrame:
     def column(name: str) -> np.ndarray:
-        # The live forecast fills a missing bound with 0 before weighting.
-        return np.column_stack([base[m][name].fillna(0) for m in BASE_MODELS])
+        # The live forecast fills a missing bound with 0 before weighting;
+        # naive has no band, so its bounds are its forecast, as live.
+        return np.column_stack(
+            [base[m]["yhat" if m == NAIVE else name].fillna(0) for m in columns]
+        )
 
     yhat, lower, upper = combine_forecasts(
         meta, column("yhat"), column("yhat_lower"), column("yhat_upper")

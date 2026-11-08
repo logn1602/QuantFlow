@@ -36,8 +36,9 @@ def _base(models_dates):
     return pd.DataFrame(rows)
 
 
-def _meta():
-    return ensemble.NNLSMeta(np.array([0.25, 0.25, 0.25, 0.25]))
+def _meta(naive=0.0):
+    rest = (1.0 - naive) / 4
+    return ensemble.NNLSMeta(np.array([rest, rest, rest, rest, naive]))
 
 
 def test_base_forecasts_on_different_dates_fail_loudly(read_tables):
@@ -70,10 +71,26 @@ def test_two_stored_runs_of_one_model_fail_as_misaligned_not_as_a_crash(read_tab
 
 def test_aligned_base_forecasts_give_one_ensemble_row_per_date(read_tables):
     read_tables["forecasts"] = _base(dict.fromkeys(ensemble.BASE_MODELS, SEVEN))
-    forecast = ensemble.generate_ensemble_forecast("AAPL", _meta())
+    forecast = ensemble.generate_ensemble_forecast("AAPL", _meta(), 97.0)
 
     assert [pd.Timestamp(d) for d in forecast["ds"]] == list(SEVEN)
     assert np.allclose(forecast["predicted_close"], 100.0 + np.arange(7))
+
+
+def test_naives_column_is_the_latest_close_with_no_band(read_tables):
+    """Naive is not stored with the base forecasts: its forecast is the
+    latest close, and its band that same price."""
+    read_tables["forecasts"] = _base(dict.fromkeys(ensemble.BASE_MODELS, SEVEN))
+    forecast = ensemble.generate_ensemble_forecast("AAPL", _meta(naive=1.0), 97.0)
+    assert np.allclose(forecast["predicted_close"], 97.0)
+    assert np.allclose(forecast["lower_bound"], 97.0)
+    assert np.allclose(forecast["upper_bound"], 97.0)
+
+
+def test_without_the_latest_close_naives_column_cannot_be_built(read_tables):
+    read_tables["forecasts"] = _base(dict.fromkeys(ensemble.BASE_MODELS, SEVEN))
+    with pytest.raises(ValueError, match="latest close"):
+        ensemble.generate_ensemble_forecast("AAPL", _meta())
 
 
 def test_one_misaligned_ticker_fails_the_run_after_the_others_finish(
@@ -89,12 +106,16 @@ def test_one_misaligned_ticker_fails_the_run_after_the_others_finish(
 
     rng = np.random.default_rng(1)
     truth = 100 + np.cumsum(rng.normal(0, 1, 30))
-    stack = pd.DataFrame({"actual": truth} | dict.fromkeys(ensemble.BASE_MODELS, truth))
+    stack = pd.DataFrame(
+        {"actual": truth} | dict.fromkeys(ensemble.STACK_COLUMNS, truth)
+    )
     saved = []
     monkeypatch.setattr(ensemble, "load_news", lambda: None)
     monkeypatch.setattr(
-        ensemble, "collect_holdout_stacks", lambda t, news=None: stack.copy()
+        ensemble, "load_prices", lambda t: pd.DataFrame({"ds": SEVEN, "y": 97.0})
     )
+    monkeypatch.setattr(ensemble, "load_features", lambda t, news=None: pd.DataFrame())
+    monkeypatch.setattr(ensemble, "build_holdout_stack", lambda *a: stack.copy())
     monkeypatch.setattr(ensemble, "save_model_metrics", lambda *a, **k: None)
     monkeypatch.setattr(ensemble, "log_to_mlflow", lambda *a, **k: None)
     monkeypatch.setattr(

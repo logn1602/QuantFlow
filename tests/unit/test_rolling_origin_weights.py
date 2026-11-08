@@ -16,14 +16,16 @@ from quantflow.models import ensemble, forecasters
 from quantflow.utils.trading_calendar import TRADING_DAY, next_trading_days
 
 DATES = pd.date_range("2025-01-02", periods=120, freq=TRADING_DAY)
-MODELS = ensemble.BASE_MODELS
+MODELS = ensemble.ROLLING_COLUMNS
 H = 7
 
 
 def _cells(origins, offsets=None, failed=()):
     """Base cells at each origin: model m forecasts actual + offsets[m].
     failed holds (origin, model) pairs whose cells failed."""
-    offsets = offsets or {"arima": 0.0, "prophet": 5.0, "xgboost": 3.0, "lightgbm": 9.0}
+    offsets = offsets or {
+        "arima": 0.0, "prophet": 5.0, "xgboost": 3.0, "lightgbm": 9.0, "naive": 7.0
+    }  # fmt: skip
     rows = []
     for o in origins:
         for h in range(1, H + 1):
@@ -108,7 +110,7 @@ def _data(origin):
 def test_the_combiner_weights_todays_base_forecasts_by_the_earlier_cells():
     origin = GRID[15]
     base = {"arima": _base(200.0), "prophet": _base(210.0), "xgboost": _base(190.0),
-            "lightgbm": _base(230.0)}  # fmt: skip
+            "lightgbm": _base(230.0), "naive": _base(220.0)}  # fmt: skip
     out = forecasters.ensemble_rolling(_data(origin), base, _cells(GRID[3:15]))
     assert np.allclose(out["yhat"], 200.0)
     assert np.allclose(out["yhat_upper"] - out["yhat_lower"], 2.0)
