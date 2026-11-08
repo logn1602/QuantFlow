@@ -87,10 +87,14 @@ Test-date ledger:
 |---|---|---|---|---|---|
 | 1 | 2026-11-08 | 2 | `7f9133c` | `9a069158` | T1: the current system (R0's commit): naive, drift, ARIMA, Prophet, XGBoost, LightGBM, the ensemble with the old weights. 25 origins x 8 tickers. |
 | 2 | 2026-11-08 | 2 | `cff181e` | `ed9be5e8` | T2: the final Phase 2 commit, after D2 was settled on R7: the same models plus the ensemble with the new weights, scored beside the old (12 test-warmup origins supply the new weights' first rows). |
+| 3 | 2026-11-08 | 3 | `7beb3ff` | `93bdf518` | T3: the final Phase 3 model set, after every Phase 3 choice was settled on the validation dates (section 16): every model and both ensembles. |
 
 Kept, and worse on the test dates (for the README, rule above): the live ensemble
 kept the old weights by D2 on the validation dates (3.381% against 3.389% MAPE);
 on the test dates the new weights score 3.298% and the old 3.676%. The old weights
+stay. Phase 3 (T3 against T2, section 16): XGBoost's tuned settings (E3) and the live
+stack's naive column (E6) were kept on the validation dates, and on the test dates
+XGBoost went from 3.440% to 3.538% and the live stack from 3.676% to 3.711%. Both
 stay.
 
 ### How a run flows
@@ -1118,3 +1122,26 @@ Phase 2 left it.
   cause was XGBoost's 600 deeper trees, fitted for the forecast and again in the 30-day
   stack, and my own test runs competing for the CPU. A first F1 run blocked on a stderr
   pipe and was stopped (MLflow `101edc3c`, killed).
+
+### The test dates, scored once (T3, 2026-11-08)
+
+T3 (`7beb3ff`, MLflow `93bdf518`, ledger entry 3): the final model set on the 25 test
+origins (12 test-warmup origins for the rolling weights), 1,400 cells per model, none
+failed. Reported, not used to choose anything (D13).
+
+| Model | T2 MAPE (Phase 2's final) | T3 MAPE (Phase 3's final) | Mean skill | Tickers with positive skill | Holm p against naive |
+|---|---|---|---|---|---|
+| naive | 3.1481 | 3.1481 | 0 | | |
+| ARIMA | 3.1658 | 3.1658 | -0.007 | 1 | 0.41 |
+| drift | 3.1887 | 3.1887 | -0.010 | 1 | 0.28 |
+| ensemble_rolling | 3.2978 | 3.2852 | -0.041 | 1 | 0.041 (worse) |
+| XGBoost | 3.4398 | 3.5377 | -0.170 | 0 | 0.0004 (worse) |
+| LightGBM | 3.5579 | 3.5566 | -0.174 | 1 | under 0.0001 (worse) |
+| ensemble_stack | 3.6756 | 3.7106 | -0.228 | 0 | under 0.0001 (worse) |
+| Prophet | 6.5771 | 6.5771 | -1.096 | 0 | under 0.0001 (worse) |
+
+Nothing beats naive on the test dates either. Between T2 and T3 XGBoost changed by the
+fixes F1 and F2 as well as E3's settings, and the ensembles by XGBoost and E6, so no
+single change can be read off this table; the per-change measurements are the
+validation runs above. The test dates have now been scored three times (T1 and T2 in
+Phase 2, T3 in Phase 3); Phase 4 reuses T3 if the code has not changed.
