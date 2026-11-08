@@ -301,14 +301,21 @@ The rule (decision D7): an article becomes **available** at the later of its pub
 time plus its source's delay (24 hours for NewsAPI, none for RSS) and its `inserted_at`,
 the moment it actually reached the database. Row t gets the articles that became
 available after the previous trading date's cutoff and at or before t's, with the
-cutoff at 00:00 UTC after each date. Weekend and holiday news lands on the next trading
-day; an article fetched late counts from when it arrived, in training exactly as live.
+cutoff at **12:00 UTC on the calendar day after each date**. Weekend and holiday news
+lands on the next trading day; an article fetched late counts from when it arrived, in
+training exactly as live.
 
-Why the end of the UTC day and not the 22:30 cron time: the workflow's sentiment step
-stores its articles a few minutes after 22:30, so a 22:30 cutoff would push every
-article the workflow fetches to the next day's row. The cost: as a training row, day t
-can also hold the few articles another fetcher (the laptop scheduler, a manual run)
-stores between the workflow's model step and midnight.
+Why noon the next day and not the 22:30 cron time or midnight (D7 as first decided
+said midnight; amended 2026-11-08): GitHub starts the scheduled run late. Of the 141
+fetches in the 2026-11-06 snapshot, 63 began between 23:00 and 23:59 UTC and 73 between
+00:00 and 06:45 UTC (the latest, 8 hours late). The sentiment step runs before the
+models, so with a midnight cutoff a late run's articles would land in the next date's
+row: about half the live forecasts would not use the news their own run fetched, and 15
+of 135 trading dates (2026-04-21 to 10-30) would have no fetch in their window, against
+5 at noon, all real outages. Noon holds every run seen and is still before the next
+session opens (13:30 UTC at the earliest). The cost: as a training row, day t can also
+hold articles another fetcher (the laptop scheduler, a manual run) stores between the
+workflow's run and noon; none of the 141 fetches started between 07:00 and 12:00 UTC.
 
 The 24-hour figure was checked against the stored `inserted_at` values on the
 2026-11-06 snapshot: no NewsAPI article was stored sooner than 24.0 hours after its
@@ -379,9 +386,9 @@ still ship (section 2): they make training match the live run whatever the cover
 
 **Outcome on the 2026-11-06 snapshot** (digest `f0c3957b`, 2026-11-08): the stored news
 starts in April 2026 (first article published 2026-04-02, first stored 2026-04-10), so
-only the last validation origin, 2026-04-23, has a real article: 8 of the 336
-validation (ticker, origin) rows, 2.4%, and none of the 2,440 training rows at the first
-validation origin. The test origins have 160 of 200 (80%). So the news ablation reads
+only two validation origins, 2026-04-09 and 04-23, have a real article: 16 of the 336 validation (ticker, origin) rows, 4.8%, and none of the 2,440
+training rows at the first validation origin. The test origins have 200 of 200. (With
+the midnight cutoff first decided: 2.4% and 80%.) So the news ablation reads
 **"not enough data yet"**: R6 is reported and decides nothing, Phase 3's news-variant
 experiments do not run, and the sentiment features stay in the boosters as they are,
 with the 2d corrections. The test dates' 80% cannot stand in: they never choose
@@ -394,15 +401,15 @@ checked, is a premium endpoint (one request with the free key, 2026-11-08). So t
 gets its test on dates still to come, with the plan fixed before any of them exist:
 
 - **Window**: forward origins every 5 trading days from 2026-11-09, the first trading
-  date after the snapshot, horizon 7. **42 origins** (proposed 2026-11-08, confirmed at
-  Checkpoint 2b), as many as the validation window every other decision uses: the last
+  date after the snapshot, horizon 7. **42 origins** (confirmed by the owner on
+  2026-11-08), as many as the validation window every other decision uses: the last
   origin is 2027-09-03 and its day-7 target 2027-09-15, 213 trading days after the
   snapshot by the project calendar. Scored once, when that close is in; no interim
   look, since an early look that misses invites another.
 - **Snapshot**: a new one, exported then on the owner's go-ahead (D5). The 2026-11-06
   snapshot and its test dates stay as they are.
 - **Gate**: D15 on the forward origins: at least half the (ticker, origin) rows with a
-  real article, or "not enough data" again. The test origins had 80%, so a working
+  real article, or "not enough data" again. Every test origin had one, so a working
   daily fetch clears it with room. It depends on the daily workflow fetching every
   trading day until then: GitHub disables a scheduled workflow after 60 days without
   repository activity (it did on 2026-11-03), and under D6 a day without a fetch has
@@ -498,6 +505,19 @@ with Phase 4 too.
   Well under 10 MB of egress.
 - **Written to `eval_snapshots/<as-of>/`** (git-ignored) with a manifest: as-of date,
   export time, row counts and a SHA-256 per file.
+- **The 2026-11-06 snapshot** (digest `f0c3957b314290dd5a1a1541ce7f73a896724b76365a5cd8896e31081f26e05f`)
+  was exported on 2026-11-08 under the midnight cutoff, so it holds the articles stored
+  by 2026-11-07 00:00 UTC. Under the amended D7 the as-of date's window runs to 12:00;
+  that only touches the 2026-11-06 row, a target date, while every origin's window
+  closes by 2026-10-29 12:00 (the last test origin is 2026-10-28). So it holds every
+  article any origin can use, and it is not re-exported.
+- **Kept off the public repository.** The snapshot holds Yahoo prices and per-article
+  scores, publish and insert times and URL hosts (no headline text, no full URLs), so it
+  is never committed or published; reports cite its digest. A copy of it, and of R0's
+  outputs, is kept outside the repository on the owner's laptop in
+  `C:\QuantFlow-backups\` (`eval_snapshots\2026-11-06\`, `eval_runs\R0\` with
+  `eval_runs\R0.sha256`), checked on 2026-11-08 against the manifest's hashes and
+  R0's file hashes.
 - **Every run reads only the snapshot.** MLflow records the snapshot hash and the git
   commit. All Phase 2 and Phase 3 runs use the 2026-11-06 snapshot, so they compare
   like for like, and repeated runs cost the database nothing.
@@ -771,7 +791,7 @@ Decided by the owner; the body above applies them.
 | D4 | Live features built in-process through the harness's function (second branch). |
 | D5 | One read-only snapshot export per snapshot, on the owner's go-ahead, into git-ignored `eval_snapshots/`; the coverage report runs on it first. |
 | D6 | Missing stays missing for the boosters; no forward fill; `has_news`; sentiment missing before collection began and on rows whose window saw no fetch. |
-| D7 | An article is available at the later of publish time plus its source's delay and `inserted_at`; rows cut at 00:00 UTC after each trading date. A trusted historical archive, if one is ever added, counts from publish time plus its delay, not from arrival: a per-source rule (added 2026-11-08, section 4). |
+| D7 | An article is available at the later of publish time plus its source's delay and `inserted_at`; rows cut at 12:00 UTC on the calendar day after each trading date (first decided as 00:00 UTC; amended 2026-11-08 because GitHub starts the 22:30 run up to 8 hours late, section 4). A trusted historical archive, if one is ever added, counts from publish time plus its delay, not from arrival: a per-source rule (added 2026-11-08, section 4). |
 | D8 | One primary test per model (per-origin difference from naive averaged over tickers and horizons, Newey-West, Holm across models); everything else descriptive; drift baseline beside naive. |
 | D9 | No manual GitHub workflow for the evaluation now. |
 | D10 | Prediction-band coverage and width reported per horizon. |
@@ -780,6 +800,7 @@ Decided by the owner; the body above applies them.
 | D13 | The rule for the test dates (section 2): every keep-or-drop decision on the validation dates only, D2 included; test results reported, never used to choose, and anything kept stays kept if it looks worse there, as the README says; every test scoring counted (ledger, MLflow tag) and the count and phases stated in the README. Phase 2 scores the test dates twice (T1, T2). |
 | D14 | Point-in-time anomaly scores for the features, on `feat/evaluation-live` with D4: the live training rows stop looking ahead (section 2). A correction, measured as R5. The README's "features are backward-looking" claim is corrected in Phase 4. |
 | D15 | News coverage per window is reported before any news run; under half of the validation (ticker, date) rows with a real article means the ablation is "not enough data" and no news feature is kept or dropped on it (section 4). |
+| D16 | The news gets a forward test: 42 origins every 5 trading days from 2026-11-09, scored once after the last target (2027-09-15) on a new snapshot, with the D15 gate and a keep-or-drop rule written before scoring (section 4). Confirmed 2026-11-08. |
 
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
 origin's close) as a fifth stack column, so the ensemble can lean on it; not freezing

@@ -38,10 +38,10 @@ def _date_of(*article):
     return news.window_dates(news.available_at(frame), DATES).iloc[0]
 
 
-def test_the_cutoff_is_midnight_utc_after_the_trading_date():
-    assert news_cutoff("2026-03-03") == pd.Timestamp("2026-03-04 00:00", tz="UTC")
+def test_the_cutoff_is_noon_utc_the_day_after_the_trading_date():
+    assert news_cutoff("2026-03-03") == pd.Timestamp("2026-03-04 12:00", tz="UTC")
     late_new_york = pd.Timestamp("2026-03-03 23:30", tz="America/New_York")
-    assert news_cutoff(late_new_york) == pd.Timestamp("2026-03-05 00:00", tz="UTC")
+    assert news_cutoff(late_new_york) == pd.Timestamp("2026-03-05 12:00", tz="UTC")
 
 
 def test_an_article_stored_after_the_workflow_counts_that_day():
@@ -50,21 +50,29 @@ def test_an_article_stored_after_the_workflow_counts_that_day():
     )
 
 
-def test_an_article_stored_after_midnight_counts_the_next_day():
-    assert _date_of("2026-03-03 21:30", "2026-03-04 00:05") == pd.Timestamp(
+def test_an_article_stored_by_a_late_scheduled_run_counts_that_day():
+    """GitHub starts the 22:30 UTC run hours late (up to 06:45 UTC seen); the
+    articles that run stores still belong to the day it forecasts from."""
+    assert _date_of("2026-03-03 21:30", "2026-03-04 06:50") == pd.Timestamp(
+        "2026-03-03"
+    )
+
+
+def test_an_article_stored_after_noon_counts_the_next_day():
+    assert _date_of("2026-03-03 21:30", "2026-03-04 12:05") == pd.Timestamp(
         "2026-03-04"
     )
 
 
 def test_a_saturday_article_lands_on_monday():
-    assert _date_of("2026-03-07 10:00", "2026-03-07 10:05") == pd.Timestamp(
+    assert _date_of("2026-03-07 14:00", "2026-03-07 14:05") == pd.Timestamp(
         "2026-03-09"
     )
 
 
 def test_a_newsapi_article_counts_a_day_after_it_was_published():
     stored_early = _date_of(
-        "2026-03-03 10:00", "2026-03-03 10:05", {"source": "newsapi"}
+        "2026-03-03 14:00", "2026-03-03 14:05", {"source": "newsapi"}
     )
     assert stored_early == pd.Timestamp("2026-03-04")
 
@@ -78,7 +86,7 @@ def test_an_article_fetched_late_counts_from_when_it_arrived():
 
 
 def test_news_after_the_last_cutoff_has_no_date_yet():
-    assert pd.isna(_date_of("2026-03-09 23:00", "2026-03-10 00:30"))
+    assert pd.isna(_date_of("2026-03-09 23:00", "2026-03-10 12:30"))
 
 
 def test_placeholder_rows_are_bad_and_real_neutral_rows_are_not():
@@ -147,3 +155,10 @@ def test_the_daily_workflow_runs_after_the_close_and_before_the_cutoff():
         run = pd.Timestamp(f"{day} {hour:02d}:{minute:02d}", tz="UTC")
         close = pd.Timestamp(f"{day} 16:00", tz="America/New_York").tz_convert("UTC")
         assert close < run < news_cutoff(day)
+
+
+def test_the_cutoff_comes_before_the_next_session_opens():
+    """A row's news never reaches into the session it forecasts."""
+    for day, next_day in (("2026-01-15", "2026-01-16"), ("2026-07-15", "2026-07-16")):
+        opens = pd.Timestamp(f"{next_day} 09:30", tz="America/New_York")
+        assert news_cutoff(day) < opens.tz_convert("UTC")

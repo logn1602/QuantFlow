@@ -128,19 +128,23 @@ def next_trading_days(after, n: int) -> pd.DatetimeIndex:
     return pd.date_range(start=start, periods=n, freq=TRADING_DAY)
 
 
+NEWS_CUTOFF_AFTER_DATE = pd.Timedelta(hours=36)
+
+
 def news_cutoff(trading_date) -> pd.Timestamp:
-    """The end of the news window for a trading date: 00:00 UTC on the next
+    """The end of the news window for a trading date: 12:00 UTC on the next
     calendar day.
 
     A trading date's row may use the news that became available after the
-    previous trading date's cutoff and at or before its own. Midnight rather
-    than the daily workflow's 22:30 UTC start, because the workflow's
-    sentiment step stores its articles a few minutes after 22:30; a 22:30
-    cutoff would push every article it fetches into the next day's row
-    (docs/evaluation.md, section 4). Only the calendar date of trading_date
-    is used.
+    previous trading date's cutoff and at or before its own. The daily
+    workflow is scheduled for 22:30 UTC, but GitHub starts scheduled runs
+    late: in the 2026-11-06 snapshot, 73 of 141 fetches began between 00:00
+    and 06:45 UTC. Noon holds every one of them on the day it forecasts
+    from, and is still before the next session opens (13:30 UTC at the
+    earliest). Decision D7, amended 2026-11-08 (docs/evaluation.md, section
+    4). Only the calendar date of trading_date is used.
     """
     day = pd.Timestamp(trading_date)
     if day.tzinfo is not None:
         day = day.tz_convert("UTC").tz_localize(None)
-    return (day.normalize() + pd.Timedelta(days=1)).tz_localize("UTC")
+    return (day.normalize() + NEWS_CUTOFF_AFTER_DATE).tz_localize("UTC")

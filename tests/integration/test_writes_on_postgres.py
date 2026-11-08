@@ -404,7 +404,7 @@ def test_the_evaluation_snapshot_is_exported_read_only(pg, tmp_path, capsys):
     with pg.begin() as conn:
         for stored, url in (
             ("2026-04-10 22:40+00", "https://finance.yahoo.com/news/x?a=1"),
-            ("2026-04-11 00:30+00", "https://example.com/late"),  # after the cutoff
+            ("2026-04-11 12:30+00", "https://example.com/late"),  # after the cutoff
         ):
             conn.execute(
                 text("""
