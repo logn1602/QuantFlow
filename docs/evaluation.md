@@ -85,7 +85,13 @@ Test-date ledger:
 
 | # | Date | Phase | Commit | MLflow run | What was scored |
 |---|---|---|---|---|---|
-| | | | | | None yet. |
+| 1 | 2026-11-08 | 2 | `7f9133c` | `9a069158` | T1: the current system (R0's commit): naive, drift, ARIMA, Prophet, XGBoost, LightGBM, the ensemble with the old weights. 25 origins x 8 tickers. |
+| 2 | 2026-11-08 | 2 | `cff181e` | `ed9be5e8` | T2: the final Phase 2 commit, after D2 was settled on R7: the same models plus the ensemble with the new weights, scored beside the old (12 test-warmup origins supply the new weights' first rows). |
+
+Kept, and worse on the test dates (for the README, rule above): the live ensemble
+kept the old weights by D2 on the validation dates (3.381% against 3.389% MAPE);
+on the test dates the new weights score 3.298% and the old 3.676%. The old weights
+stay.
 
 ### How a run flows
 
