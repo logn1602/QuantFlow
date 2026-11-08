@@ -39,7 +39,9 @@ def _stack(prices, seed=6):
 def wired(monkeypatch):
     prices = _prices()
     stack = _stack(prices)
-    monkeypatch.setattr(ensemble, "collect_holdout_stacks", lambda ticker: stack.copy())
+    monkeypatch.setattr(
+        ensemble, "collect_holdout_stacks", lambda ticker, news=None: stack.copy()
+    )
     monkeypatch.setattr(pipeline, "load_prices", lambda ticker: prices)
     saved: list[dict] = []
     monkeypatch.setattr(pipeline, "replace_backtest_result", saved.append)
@@ -72,17 +74,23 @@ def test_the_saved_result_covers_the_out_of_fold_window(wired):
 
 
 def test_an_empty_stack_saves_nothing(monkeypatch, wired):
-    monkeypatch.setattr(ensemble, "collect_holdout_stacks", lambda t: pd.DataFrame())
+    monkeypatch.setattr(
+        ensemble, "collect_holdout_stacks", lambda t, news=None: pd.DataFrame()
+    )
     assert pipeline.run_backtest("AAPL") == {}
     assert wired == []
 
 
 def test_one_tickers_error_does_not_stop_the_others(monkeypatch):
-    def flaky(ticker):
+    news = object()  # read once, handed to every ticker
+
+    def flaky(ticker, given):
+        assert given is news
         if ticker == "AAPL":
             raise RuntimeError("boom")
         return {"total_return": 1.0}
 
+    monkeypatch.setattr(pipeline, "load_news", lambda: news)
     monkeypatch.setattr(pipeline, "run_backtest", flaky)
     assert pipeline.run(["AAPL", "MSFT"]) == {"AAPL": {}, "MSFT": {"total_return": 1.0}}
 

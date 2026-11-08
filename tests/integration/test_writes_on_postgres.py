@@ -11,6 +11,8 @@ The write-path claims the unit tests can only fake, checked on real Postgres:
     and two runs replacing them at once both succeed;
   - the daily-bar rule works on the types the real driver returns;
   - the model features line up with prices whatever the session time zone;
+  - the news sums the live run reads equal the ones the evaluation adds up
+    from the article rows, at every edge of the rules, and so do the features;
   - the ensemble reads only each base model's latest stored run;
   - save_anomalies counts only the rows Postgres wrote;
   - the read-only diagnostics in scripts/diagnostics/ run end to end.
@@ -431,3 +433,86 @@ def test_the_evaluation_snapshot_is_exported_read_only(pg, tmp_path, capsys):
     assert snapshot.built_dates == {"AAPL": [pd.Timestamp("2026-04-10")]}
     assert snapshot.articles["url_domain"].tolist() == ["finance.yahoo.com"]
     assert _count(pg, "SELECT count(*) FROM news_sentiment") == 2  # nothing written
+
+
+def _story(n, ticker, published, inserted=None, **columns):
+    """A news_sentiment row, stored when published unless inserted is given."""
+    row = {
+        "ticker": ticker,
+        "source": "rss",
+        "headline": f"story {n}",
+        "url": "https://finance.yahoo.com/news/x",
+        "published_at": pd.Timestamp(published, tz="UTC"),
+        "inserted_at": pd.Timestamp(inserted or published, tz="UTC"),
+        "sentiment": "positive",
+        "score_pos": 0.8,
+        "score_neg": 0.1,
+        "score_neu": 0.1,
+        "compound": 0.7,
+    }
+    return row | columns
+
+
+def test_the_news_sums_the_live_run_reads_are_the_evaluations(pg, install_engine):
+    """The live run reads the news summed per day in SQL (load_news); the
+    evaluation sums the article rows in Python (news_days). Same sums, at
+    every edge the rules have, in a New York session, and so the same
+    features, bit for bit."""
+    from quantflow.db.features import ARTICLE_SELECT
+    from quantflow.features import news
+    from quantflow.features.engineering import build_features, load_news
+
+    days = pd.bdate_range("2026-04-06", "2026-04-17")
+    prices.insert_bars(_bars(days) + _bars(days, "MSFT"))
+    cutoff = pd.Timestamp("2026-04-09 12:00")  # the 8th's
+    us = pd.Timedelta("1us")
+    stories = [
+        _story(1, "AAPL", cutoff),  # on the cutoff: the 8th
+        _story(2, "AAPL", cutoff + us, compound=-0.3333),  # just after: the 9th
+        # NewsAPI: available a day after publishing, here exactly at a cutoff.
+        _story(3, "AAPL", cutoff - pd.Timedelta(hours=24), source="newsapi"),
+        # Stored two days late: counts from when it arrived.
+        _story(4, "MSFT", "2026-04-08 15:00", "2026-04-10 23:00", source="newsapi",
+               sentiment="negative", compound=-0.9012),
+        _story(5, "MSFT", "2026-04-11 15:00"),  # Saturday: Monday's
+        # A FinBERT placeholder, and one a hair off it.
+        _story(6, "AAPL", "2026-04-13 15:00", sentiment="neutral", compound=0.0,
+               score_pos=0.33, score_neg=0.33, score_neu=0.34),
+        _story(7, "AAPL", "2026-04-13 16:00", sentiment="neutral", compound=0.0,
+               score_pos=0.3301, score_neg=0.3299, score_neu=0.34),
+        _story(8, "AAPL", "2026-04-13 17:00", compound=None),
+        # The general feed under AAPL, at any host case or port; not MSFT's,
+        # nor a look-alike host, nor a missing link.
+        _story(9, "AAPL", "2026-04-14 15:00", url="https://feeds.marketwatch.com/a"),
+        _story(10, "AAPL", "2026-04-14 15:00", url="https://MarketWatch.com:443/b"),
+        _story(11, "AAPL", "2026-04-14 15:00", url="https://notmarketwatch.com/c"),
+        _story(12, "MSFT", "2026-04-14 15:00", url="https://feeds.marketwatch.com/a"),
+        _story(13, "AAPL", "2026-04-14 15:00", url=None, compound=0.1234),
+        _story(14, "AAPL", "2026-04-14 15:00", url="ftp://feeds.marketwatch.com/d"),
+    ]  # fmt: skip
+    with pg.begin() as conn:
+        insert_rows(conn, "news_sentiment", stories)
+        rows = pd.read_sql(text(ARTICLE_SELECT), conn)
+    assert len(rows) == len(stories)
+
+    with pg.connect() as conn:
+        schema = conn.exec_driver_sql("SELECT current_schema()").scalar_one()
+    new_york = _schema_engine(pg.url, schema, timezone="America/New_York")
+    install_engine(new_york)
+    try:
+        read = load_news()
+        features = {t: load_features(t) for t in ("AAPL", "MSFT")}
+    finally:
+        new_york.dispose()
+
+    summed = news.news_days(rows)
+    pd.testing.assert_frame_equal(read, summed)
+    assert read.loc[~read["counts"], "articles"].sum() == 4  # 6, 9, 10 and 14
+    for ticker, live in features.items():
+        built = build_features(
+            prices.load_daily_bars(ticker),
+            rows[rows["ticker"] == ticker],
+            ticker,
+            fetched_at=rows["inserted_at"],
+        )
+        pd.testing.assert_frame_equal(live, built)

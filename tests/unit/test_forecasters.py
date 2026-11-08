@@ -63,8 +63,11 @@ def test_the_booster_adapter_forecasts_what_the_live_run_saves(
 ):
     prices = _prices()
     saved = {}
+    monkeypatch.setattr(boosting, "load_news", lambda: None)
     monkeypatch.setattr(
-        boosting, "load_features", lambda t: build_features(prices, pd.DataFrame(), t)
+        boosting,
+        "load_features",
+        lambda t, news: build_features(prices, pd.DataFrame(), t),
     )
     monkeypatch.setattr(
         boosting,
