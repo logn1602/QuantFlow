@@ -6,7 +6,8 @@ closes, and records one cell per forecast day:
 
     for each ticker, for each origin o:
         prices    dated on or before o
-        articles  stored by news_cutoff(o)
+        articles  the ticker's, stored by news_cutoff(o)
+        fetches   when any ticker's articles were stored, by news_cutoff(o)
         targets   the next HORIZON dates in the data, which must be the
                   next HORIZON trading days (CalendarMismatchError if not)
             |
@@ -78,8 +79,11 @@ class OriginData:
     ticker: str
     origin: pd.Timestamp
     prices: pd.DataFrame  # daily bars dated on or before origin
-    articles: pd.DataFrame  # stored by news_cutoff(origin)
+    articles: pd.DataFrame  # the ticker's, stored by news_cutoff(origin)
     dates: pd.DatetimeIndex  # the HORIZON dates to forecast
+    # When a fetch stored articles for any ticker, by news_cutoff(origin): a
+    # date whose window holds none was not looked at (decision D6).
+    fetched_at: pd.Series | None = None
 
     @property
     def close(self) -> float:
@@ -146,16 +150,20 @@ def origin_data(
         )
     if articles.empty:
         cut_articles = articles
+        fetched_at = pd.Series(dtype="datetime64[ns, UTC]")
     else:
         stored = pd.to_datetime(articles["inserted_at"], utc=True)
-        keep = articles["ticker"].eq(ticker) & (stored <= news_cutoff(origin))
+        by_cutoff = stored <= news_cutoff(origin)
+        keep = articles["ticker"].eq(ticker) & by_cutoff
         cut_articles = articles[keep].reset_index(drop=True)
+        fetched_at = pd.Series(stored[by_cutoff].unique())
     data = OriginData(
         ticker=ticker,
         origin=origin,
         prices=prices.iloc[: position + 1].reset_index(drop=True),
         articles=cut_articles,
         dates=expected,
+        fetched_at=fetched_at,
     )
     return data, targets.reset_index(drop=True)
 

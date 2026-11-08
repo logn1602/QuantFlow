@@ -6,18 +6,22 @@ boosters train on, and the prediction target. The live run and the
 evaluation call the same function, build_features (decision D4,
 docs/evaluation.md).
 
-This module is leakage-critical. Every transform here is backward-looking by
-construction: lags use a positive shift, rolling windows are trailing, and
-sentiment is forward-filled so a day with no news inherits the last known
-score rather than seeing a future one. tests/unit/test_engineering.py asserts
-that by perturbing future rows and requiring no earlier feature value to move,
-and includes a probe that plants a deliberate leak to prove the check fires.
+This module is leakage-critical. engineer_features is backward-looking by
+construction: lags use a positive shift and rolling windows are trailing.
+tests/unit/test_engineering.py asserts that by perturbing future rows and
+requiring no earlier feature value to move, and includes a probe that plants
+a deliberate leak to prove the check fires.
+
+Missing news is not neutral (decision D6): a date whose window was fetched
+and held no article reads has_news 0, counts 0 and a missing compound, never
+the last known value; before the ticker's first article, and on a date whose
+window saw no fetch for any ticker, every news feature is missing.
 """
 
 import numpy as np
 import pandas as pd
 
-from quantflow.db.features import load_articles
+from quantflow.db.features import load_articles, load_fetch_times
 from quantflow.db.prices import PRICE_COLUMNS, indexed_by_date, load_daily_bars
 from quantflow.features.anomalies import STORED_DECIMALS, detect_anomalies
 from quantflow.features.indicators import compute_indicators, rounded_for_storage
@@ -36,6 +40,7 @@ INDICATOR_COLUMNS = [
     "bb_lower",
 ]
 SENTIMENT_COLUMNS = ["sentiment_compound", "pos_count", "neg_count", "article_count"]
+COUNT_COLUMNS = ["pos_count", "neg_count", "article_count"]
 
 
 def load_features(ticker: str) -> pd.DataFrame:
@@ -51,11 +56,16 @@ def load_features(ticker: str) -> pd.DataFrame:
     if prices.empty:
         logger.warning(f"No price data for {ticker}")
         return pd.DataFrame()
-    return build_features(prices, load_articles(ticker), ticker)
+    return build_features(
+        prices, load_articles(ticker), ticker, fetched_at=load_fetch_times()
+    )
 
 
 def build_features(
-    prices: pd.DataFrame, articles: pd.DataFrame, ticker: str
+    prices: pd.DataFrame,
+    articles: pd.DataFrame,
+    ticker: str,
+    fetched_at=None,
 ) -> pd.DataFrame:
     """The feature frame for a history: one function for the live run and
     the evaluation.
@@ -66,8 +76,10 @@ def build_features(
     precision the tables keep, and sentiment is averaged over each trading
     date's news window (daily_sentiment), leaving out the rows no feature
     should use (FinBERT placeholders, the general feed credited to AAPL:
-    features.news.bad_rows). It depends only on its arguments: given the
-    history up to
+    features.news.bad_rows). fetched_at holds the times any fetch stored
+    articles, for any ticker (the ticker's own arrival times if omitted):
+    a date whose window holds none has every news column missing (D6). It
+    depends only on its arguments: given the history up to
     a date, it gives what the live run would have built on that date. The
     stored anomaly rows cannot do that, because the IQR fences behind them
     are fitted on the whole history.
@@ -91,9 +103,39 @@ def build_features(
 
     if not articles.empty:
         articles = articles[~bad_rows(articles)]
-    return merge_feature_inputs(
+    merged = merge_feature_inputs(
         prices, indicators, anomalies, daily_sentiment(articles, prices["date"])
     )
+    if fetched_at is None:
+        fetched_at = articles["inserted_at"] if not articles.empty else []
+    return _known_news(merged, fetched_at)
+
+
+def _known_news(frame: pd.DataFrame, fetched_at) -> pd.DataFrame:
+    """True counts where the news could be known, missing where it could
+    not (decision D6).
+
+    A date is known from the ticker's first article on, if a fetch for any
+    ticker stored something in its window (or the date has an article):
+    there, counts read 0 when the window held no article. Before the first
+    article ("not collected" is not "no news"), and on a date whose window
+    saw no fetch at all (nothing was looked for), every sentiment column is
+    missing, counts included.
+    """
+    dates = frame["date"]
+    with_articles = frame["article_count"].notna()
+    times = pd.Series(pd.to_datetime(pd.Series(fetched_at, dtype=object), utc=True))
+    fetched_dates = set(window_dates(times, dates).dropna())
+    fetched = dates.isin(fetched_dates) | with_articles
+    if with_articles.any():
+        collected = dates >= dates[with_articles].min()
+    else:
+        collected = pd.Series(False, index=frame.index)
+    known = fetched & collected
+    out = frame.copy()
+    out[COUNT_COLUMNS] = out[COUNT_COLUMNS].fillna(0).where(known)
+    out["sentiment_compound"] = out["sentiment_compound"].where(known)
+    return out
 
 
 def _empty(columns: list[str]) -> pd.DataFrame:
@@ -218,19 +260,26 @@ def engineer_features(df: pd.DataFrame, drop_unlabeled: bool = True) -> pd.DataF
     df["zscore"] = df["zscore"].fillna(0)
     df["is_anomaly"] = (df["zscore"].abs() >= 2.0).astype(int)
 
-    # ── Sentiment features ───────────────────────────────────────────────────
-    # ffill first so days with no news inherit the last known sentiment,
-    # rather than defaulting to 0 (neutral) which dilutes the signal.
-    df["sentiment_compound"] = df["sentiment_compound"].ffill().fillna(0)
-    df["pos_count"] = df["pos_count"].ffill().fillna(0)
-    df["neg_count"] = df["neg_count"].ffill().fillna(0)
-    df["article_count"] = df["article_count"].ffill().fillna(0)
+    # ── Sentiment features (decision D6) ─────────────────────────────────────
+    # A missing article_count means the news could not be known that day
+    # (not collected yet, or no fetch): every news feature is missing there.
+    # A count of 0 means fetched and nothing found: has_news 0, counts 0 and
+    # no compound. Nothing is carried forward from an earlier day.
+    counts = df["article_count"]
+    known = counts.notna()
+    with_news = counts > 0
+    compound = df["sentiment_compound"].where(with_news)
+    df["has_news"] = with_news.astype(float).where(known)
+    df["sentiment_compound"] = compound
 
-    # Rolling sentiment (3-day average)
-    df["sentiment_3d"] = df["sentiment_compound"].rolling(3).mean().fillna(0)
+    # The mean compound of every article in the last three dates' windows.
+    compound_sum = (compound * counts).where(with_news, 0.0).where(known)
+    total = compound_sum.rolling(3, min_periods=1).sum()
+    articles = counts.rolling(3, min_periods=1).sum()
+    df["sentiment_3d"] = (total / articles.where(articles > 0)).where(known)
 
-    # Sentiment momentum
-    df["sentiment_change"] = df["sentiment_compound"].diff().fillna(0)
+    # Sentiment momentum: missing unless both days had news.
+    df["sentiment_change"] = compound - compound.shift(1)
 
     # ── Target variables ─────────────────────────────────────────────────────
     df["target_price"] = df["close"].shift(-1)  # next day's price
@@ -290,4 +339,5 @@ def get_feature_cols() -> list[str]:
         "pos_count",
         "neg_count",
         "article_count",
+        "has_news",
     ]

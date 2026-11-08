@@ -30,3 +30,14 @@ def load_articles(ticker: str) -> pd.DataFrame:
     """Every stored article for the ticker, in the order they arrived."""
     with get_engine().connect() as conn:
         return pd.read_sql(_ARTICLES, conn, params={"t": ticker})
+
+
+_FETCH_TIMES = text("SELECT DISTINCT inserted_at FROM news_sentiment")
+
+
+def load_fetch_times() -> pd.Series:
+    """Every moment a fetch stored articles, for any ticker: a date whose
+    news window holds none was not looked at (decision D6)."""
+    with get_engine().connect() as conn:
+        stored = pd.read_sql(_FETCH_TIMES, conn)
+    return pd.to_datetime(stored["inserted_at"], utc=True)

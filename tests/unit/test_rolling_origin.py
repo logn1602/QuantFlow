@@ -62,6 +62,29 @@ def test_a_forecaster_never_sees_past_its_origin():
         assert last_article <= news_cutoff(origin)
 
 
+def test_a_forecaster_gets_every_tickers_fetch_times_up_to_the_cutoff():
+    """Decision D6 needs to know whether any fetch ran, not only whether
+    this ticker had news."""
+    seen = []
+
+    def spy(data):
+        seen.append((data.origin, data.fetched_at))
+        return ro.naive_forecast(data)
+
+    origin = DATES[35]
+    other = pd.DataFrame(
+        {"ticker": ["MSFT", "MSFT"],
+         "inserted_at": [news_cutoff(origin) - pd.Timedelta(hours=1),
+                         news_cutoff(origin) + pd.Timedelta(hours=1)]}
+    )  # fmt: skip
+    articles = pd.concat([_articles(), other], ignore_index=True)
+    ro.run_origins({"AAPL": _bars()}, articles, [(35, "scored")], {"spy": spy})
+    ((at, fetched),) = seen
+    assert at == origin
+    assert fetched.max() <= news_cutoff(origin)
+    assert news_cutoff(origin) - pd.Timedelta(hours=1) in set(fetched)
+
+
 def test_cells_are_scored_against_the_next_trading_days():
     bars = _bars()
     cells = ro.run_origins(

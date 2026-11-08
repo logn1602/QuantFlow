@@ -63,7 +63,9 @@ def booster(model_name: str) -> Forecaster:
     fitted on every labelled row, rolled forward from the newest one."""
 
     def forecast(data: OriginData) -> pd.DataFrame:
-        raw = build_features(data.prices, data.articles, data.ticker)
+        raw = build_features(
+            data.prices, data.articles, data.ticker, fetched_at=data.fetched_at
+        )
         features = engineer_features(raw, drop_unlabeled=False)
         labelled = features.dropna(subset=["target_price"])
         columns = [c for c in get_feature_cols() if c in labelled.columns]
@@ -98,7 +100,9 @@ def ensemble_stack(
     missing = [m for m in BASE_MODELS if m not in base]
     if missing:
         raise RuntimeError(f"no {', '.join(missing)} forecast to combine")
-    raw = build_features(data.prices, data.articles, data.ticker)
+    raw = build_features(
+        data.prices, data.articles, data.ticker, fetched_at=data.fetched_at
+    )
     stack = build_holdout_stack(_ds_y(data), raw, data.ticker)
     if stack.empty:
         raise RuntimeError("the holdout stack could not be built")

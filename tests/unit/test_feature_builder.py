@@ -255,3 +255,75 @@ def test_a_later_price_can_move_an_earlier_anomaly_score(price_bars):
 def test_news_not_yet_available_on_any_date_gives_missing_sentiment(stored_bars):
     after_the_last_cutoff = _article("2026-06-01 15:00", "positive", 0.6)
     assert _counts(stored_bars, after_the_last_cutoff) == {}
+
+
+# ── Missing news is not neutral (decision D6, finding F6) ─────────────────────
+
+# One fetch a day, at 23:00 UTC, as the daily workflow stores its articles.
+FETCHES = pd.DatetimeIndex(DAYS + pd.Timedelta(hours=23)).tz_localize("UTC")
+NEWS_COLUMNS = [
+    "sentiment_compound", "sentiment_3d", "sentiment_change", "pos_count",
+    "neg_count", "article_count", "has_news",
+]  # fmt: skip
+
+
+def _news(stored_bars, articles, fetched_at=FETCHES):
+    raw = engineering.build_features(
+        daily_bars(stored_bars, "AAPL"), pd.DataFrame(articles), "AAPL",
+        fetched_at=fetched_at,
+    )  # fmt: skip
+    out = engineering.engineer_features(raw, drop_unlabeled=False)
+    return out.set_index("date")[NEWS_COLUMNS]
+
+
+MARCH = [
+    _article("2026-03-02 14:00", "positive", 0.5),
+    _article("2026-03-02 15:30", "positive", 0.3),
+    _article("2026-03-04 14:00", "negative", -0.4),
+]
+
+
+def test_after_the_last_article_a_day_reads_no_news_not_the_last_value(stored_bars):
+    day = _news(stored_bars, MARCH).loc["2026-03-05"]
+    assert day["has_news"] == 0 and day["article_count"] == 0
+    assert day["pos_count"] == 0 and day["neg_count"] == 0
+    assert np.isnan(day["sentiment_compound"])  # not -0.4 carried forward
+
+
+def test_before_the_first_article_every_news_feature_is_missing(stored_bars):
+    """Not collected yet is not "no news"."""
+    before = _news(stored_bars, MARCH).loc[:"2026-02-27"]
+    assert len(before) > 10 and before.isna().all().all()
+
+
+def test_a_window_with_no_fetch_for_any_ticker_has_every_news_feature_missing(
+    stored_bars,
+):
+    no_fetch_on_the_5th = FETCHES[
+        FETCHES.normalize() != pd.Timestamp("2026-03-05", tz="UTC")
+    ]
+    news = _news(stored_bars, MARCH, fetched_at=no_fetch_on_the_5th)
+    assert news.loc["2026-03-05"].isna().all()
+    assert news.loc["2026-03-06", "article_count"] == 0  # fetched, nothing found
+
+
+def test_the_three_day_sentiment_averages_every_article_in_the_three_windows(
+    stored_bars,
+):
+    news = _news(stored_bars, MARCH)["sentiment_3d"]
+    assert news["2026-03-02"] == pytest.approx((0.5 + 0.3) / 2)
+    assert news["2026-03-03"] == pytest.approx((0.5 + 0.3) / 2)
+    assert news["2026-03-04"] == pytest.approx((0.5 + 0.3 - 0.4) / 3)
+    assert news["2026-03-06"] == pytest.approx(-0.4)
+    assert np.isnan(news["2026-03-09"])  # the 5th, 6th and 9th had none
+
+
+def test_the_sentiment_change_needs_news_on_both_days(stored_bars):
+    two_days = [*MARCH, _article("2026-03-05 14:00", "positive", 0.2)]
+    change = _news(stored_bars, two_days)["sentiment_change"]
+    assert np.isnan(change["2026-03-03"]) and np.isnan(change["2026-03-04"])
+    assert change["2026-03-05"] == pytest.approx(0.2 - (-0.4))
+
+
+def test_has_news_is_a_feature():
+    assert "has_news" in engineering.get_feature_cols()
