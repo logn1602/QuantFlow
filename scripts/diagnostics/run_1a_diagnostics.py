@@ -31,11 +31,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from quantflow import config
-from quantflow.db.connection import get_engine
+from quantflow import config  # noqa: F401  (tests patch its settings through here)
+from quantflow.db.readonly import is_local_database, masked, read_only_connection
 
 SQL_FILE = Path(__file__).with_name("1a_diagnostics.sql")
-LOCAL_HOSTS = {"localhost", "127.0.0.1"}
 
 
 def queries() -> dict[str, str]:
@@ -46,14 +45,6 @@ def queries() -> dict[str, str]:
         name.strip(): sql.strip()
         for name, sql in zip(parts[1::2], parts[2::2], strict=True)
     }
-
-
-def masked(message: str) -> str:
-    """message with the connection settings replaced, for printing errors."""
-    for secret in (config.DB_PASSWORD, config.DB_USER, config.DB_HOST, config.DB_NAME):
-        if secret:
-            message = message.replace(secret, "<masked>")
-    return message
 
 
 def as_markdown(df: pd.DataFrame) -> str:
@@ -74,45 +65,25 @@ def as_markdown(df: pd.DataFrame) -> str:
 
 def run(out: Path) -> None:
     results = {}
-    engine = get_engine()
-    try:
-        with engine.connect() as conn:
-            txn = conn.begin()
-            try:
-                # The first statement of the transaction: one snapshot for all
-                # four queries, and no writes possible.
-                conn.exec_driver_sql(
-                    "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+    # One read-only snapshot transaction for all four queries (db.readonly).
+    with read_only_connection() as conn:
+        # Each query goes through the same connection's own cursor with no
+        # parameters, so it reaches Postgres exactly as written (a "%" in the
+        # SQL is an operator, not a placeholder).
+        dbapi = conn.connection.dbapi_connection
+        if dbapi is None:
+            raise RuntimeError("no DBAPI connection to run the queries on")
+        cursor = dbapi.cursor()
+        try:
+            for name, sql in queries().items():
+                cursor.execute(sql)
+                columns = [column[0] for column in cursor.description]
+                results[name] = pd.DataFrame(
+                    cursor.fetchall(), columns=columns, dtype=object
                 )
-                read_only = conn.exec_driver_sql(
-                    "SHOW transaction_read_only"
-                ).scalar_one()
-                if read_only != "on":
-                    raise RuntimeError(
-                        f"transaction_read_only is {read_only!r}; stopping"
-                    )
-                conn.exec_driver_sql("SET LOCAL statement_timeout = '120s'")
-                # Each query goes through the same connection's own cursor with
-                # no parameters, so it reaches Postgres exactly as written (a
-                # "%" in the SQL is an operator, not a placeholder).
-                dbapi = conn.connection.dbapi_connection
-                if dbapi is None:
-                    raise RuntimeError("no DBAPI connection to run the queries on")
-                cursor = dbapi.cursor()
-                try:
-                    for name, sql in queries().items():
-                        cursor.execute(sql)
-                        columns = [column[0] for column in cursor.description]
-                        results[name] = pd.DataFrame(
-                            cursor.fetchall(), columns=columns, dtype=object
-                        )
-                        print(f"  {name}: {len(results[name])} rows")
-                finally:
-                    cursor.close()
-            finally:
-                txn.rollback()
-    finally:
-        engine.dispose()
+                print(f"  {name}: {len(results[name])} rows")
+        finally:
+            cursor.close()
 
     sections = [f"### {name}\n\n{as_markdown(df)}\n" for name, df in results.items()]
     out.write_text("\n".join(sections), encoding="utf-8")
@@ -129,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    local = config.DB_HOST in LOCAL_HOSTS
+    local = is_local_database()
     if not local and not args.live:
         print(
             "Refusing: .env points at a non-local database; pass --live.",

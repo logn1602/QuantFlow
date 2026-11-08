@@ -85,9 +85,7 @@ def test_one_misaligned_ticker_fails_the_run_after_the_others_finish(
         ),
         "AAPL": _base(dict.fromkeys(ensemble.BASE_MODELS, SEVEN)),
     }
-    read_tables["forecasts"] = lambda params: by_ticker[
-        params.get("ticker", params.get("t"))
-    ]
+    read_tables["forecasts"] = lambda params: by_ticker[params["ticker"]]
 
     rng = np.random.default_rng(1)
     truth = 100 + np.cumsum(rng.normal(0, 1, 30))

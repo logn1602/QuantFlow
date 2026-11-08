@@ -1,0 +1,183 @@
+"""tests/unit/test_rolling_origin.py
+
+Covers the rolling-origin loop and its baselines with fake forecasters: no
+model is trained. The spy forecaster is the leakage check: whatever it is
+given at an origin must predate that origin's cut.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from quantflow.evaluation import rolling_origin as ro
+from quantflow.utils.trading_calendar import TRADING_DAY, news_cutoff
+
+DATES = pd.date_range("2026-01-05", periods=60, freq=TRADING_DAY)
+H = 7
+
+
+def _bars(seed=1):
+    rng = np.random.default_rng(seed)
+    close = 100 * np.exp(np.cumsum(rng.normal(0.001, 0.01, len(DATES))))
+    return pd.DataFrame(
+        {"date": DATES, "open": close, "high": close + 1, "low": close - 1,
+         "close": close, "volume": 1e6}
+    )  # fmt: skip
+
+
+def _articles():
+    """One article per day, stored the evening it was published."""
+    return pd.DataFrame(
+        {
+            "ticker": "AAPL",
+            "source": "rss",
+            "published_at": [
+                pd.Timestamp(f"{d.date()} 20:00", tz="UTC") for d in DATES
+            ],
+            "inserted_at": [pd.Timestamp(f"{d.date()} 22:40", tz="UTC") for d in DATES],
+        }
+    )
+
+
+ORIGINS = [(30, "warmup"), (35, "scored"), (40, "scored")]
+
+
+class Spy:
+    def __init__(self):
+        self.seen = []
+
+    def __call__(self, data):
+        self.seen.append(
+            (data.origin, data.prices["date"].max(), data.articles["inserted_at"].max())
+        )
+        return ro.naive_forecast(data)
+
+
+def test_a_forecaster_never_sees_past_its_origin():
+    spy = Spy()
+    ro.run_origins({"AAPL": _bars()}, _articles(), ORIGINS, {"spy": spy})
+    assert len(spy.seen) == len(ORIGINS)
+    for origin, last_price, last_article in spy.seen:
+        assert last_price == origin
+        assert last_article <= news_cutoff(origin)
+
+
+def test_cells_are_scored_against_the_next_trading_days():
+    bars = _bars()
+    cells = ro.run_origins(
+        {"AAPL": bars}, _articles(), ORIGINS, {"naive": ro.naive_forecast}
+    )
+    at_35 = cells[cells["origin"] == DATES[35]]
+    assert at_35["target_date"].tolist() == list(DATES[36 : 36 + H])
+    assert np.allclose(at_35["actual"], bars["close"].iloc[36 : 36 + H])
+    assert (at_35["origin_close"] == bars["close"].iloc[35]).all()
+    assert set(cells["role"]) == {"warmup", "scored"}
+    assert set(cells["window"]) == {"validation"}
+    assert cells.groupby("origin").size().eq(H).all()
+
+
+def test_a_gap_in_the_data_fails_the_run_instead_of_shifting_the_targets():
+    bars = _bars().drop(index=38).reset_index(drop=True)
+    with pytest.raises(ro.CalendarMismatchError):
+        ro.run_origins(
+            {"AAPL": bars}, _articles(), [(35, "scored")], {"naive": ro.naive_forecast}
+        )
+
+
+def test_a_failing_model_gives_failed_cells_and_the_others_carry_on():
+    def broken(data):
+        raise ValueError("did not converge")
+
+    cells = ro.run_origins(
+        {"AAPL": _bars()},
+        _articles(),
+        ORIGINS,
+        {"broken": broken, "naive": ro.naive_forecast},
+    )
+    failed = cells[cells["model"] == "broken"]
+    assert failed["status"].eq("failed").all() and failed["yhat"].isna().all()
+    assert failed["error"].str.contains("did not converge").all()
+    assert cells[cells["model"] == "naive"]["status"].eq("ok").all()
+
+
+def test_a_non_finite_forecast_is_a_failed_cell():
+    def nan_on_day_3(data):
+        out = ro.naive_forecast(data)
+        out.loc[2, "yhat"] = np.nan
+        return out
+
+    cells = ro.run_origins(
+        {"AAPL": _bars()}, _articles(), [(35, "scored")], {"m": nan_on_day_3}
+    )
+    assert cells["status"].eq("failed").all()
+    assert cells["error"].eq("non-finite forecast").all()
+
+
+def test_the_wrong_number_of_rows_is_a_bug_not_a_failure():
+    with pytest.raises(ro.ForecasterContractError):
+        ro.run_origins(
+            {"AAPL": _bars()}, _articles(), [(35, "scored")],
+            {"short": lambda data: ro.naive_forecast(data).iloc[:5]},
+        )  # fmt: skip
+
+
+def test_a_combiner_gets_the_base_forecasts_at_its_origin_and_only_earlier_cells():
+    calls = []
+
+    def combiner(data, base, earlier):
+        calls.append((data.origin, sorted(base), sorted(set(earlier["origin"]))))
+        return base["naive"]
+
+    ro.run_origins(
+        {"AAPL": _bars()}, _articles(), ORIGINS,
+        {"naive": ro.naive_forecast, "drift": ro.drift_forecast}, {"ens": combiner},
+    )  # fmt: skip
+    assert [c[0] for c in calls] == [DATES[30], DATES[35], DATES[40]]
+    assert all(c[1] == ["drift", "naive"] for c in calls)
+    assert calls[0][2] == [] and calls[2][2] == [DATES[30], DATES[35]]
+
+
+def test_a_combiner_is_not_given_a_failed_base_forecast():
+    seen = []
+
+    def combiner(data, base, earlier):
+        seen.append(sorted(base))
+        return base["naive"]
+
+    def broken(data):
+        raise RuntimeError("x")
+
+    ro.run_origins(
+        {"AAPL": _bars()}, _articles(), [(35, "scored")],
+        {"naive": ro.naive_forecast, "broken": broken}, {"ens": combiner},
+    )  # fmt: skip
+    assert seen == [["naive"]]
+
+
+def test_naive_repeats_the_close_and_drift_uses_only_the_history():
+    bars = _bars()
+    data, _ = ro.origin_data("AAPL", bars, _articles(), 35, H)
+    assert np.allclose(ro.naive_forecast(data)["yhat"], bars["close"].iloc[35])
+    drift = np.mean(np.diff(np.log(bars["close"].iloc[:36].to_numpy())))
+    expected = bars["close"].iloc[35] * np.exp(drift * np.arange(1, H + 1))
+    assert np.allclose(ro.drift_forecast(data)["yhat"], expected)
+
+
+def test_extra_forecast_columns_travel_with_the_cells():
+    def flagged(data):
+        return ro.naive_forecast(data).assign(yearly_seasonality=True)
+
+    cells = ro.run_origins(
+        {"AAPL": _bars()}, _articles(), [(35, "scored")], {"p": flagged}
+    )
+    assert cells["yearly_seasonality"].all()
+
+
+def test_a_model_failing_over_ten_percent_fails_the_run():
+    cells = pd.DataFrame(
+        {"model": ["a"] * 10 + ["b"] * 10,
+         "status": ["failed"] * 1 + ["ok"] * 9 + ["failed"] * 2 + ["ok"] * 8}
+    )  # fmt: skip
+    with pytest.raises(ro.FailureRateError, match="b 20%"):
+        ro.check_failure_rate(cells)
+    ro.check_failure_rate(cells[cells["model"] == "a"])  # exactly 10%: allowed

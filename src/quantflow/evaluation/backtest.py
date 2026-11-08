@@ -28,34 +28,32 @@ Metrics reported vs buy-and-hold benchmark:
   - Alpha         (strategy annualised return - benchmark annualised return)
   - Number of trades
 
-Results are saved to backtest_results table for dashboard rendering.
+This module holds the simulation and its metrics only. The run that builds
+the holdout stack, saves the results to the backtest_results table and
+offers a command line is quantflow.pipelines.backtest: it needs the
+ensemble, and evaluation never imports models (tests/unit/
+test_package_boundaries.py). The meta-learner's out-of-fold loop comes in as
+an argument, the way out_of_fold.py takes its fitter.
 
 Usage:
-    python backtest.py                  # run all tickers
-    python backtest.py --ticker AAPL    # single ticker
-    python backtest.py --show           # print saved results
+    python -m quantflow.pipelines.backtest                # run all tickers
+    python -m quantflow.pipelines.backtest --ticker AAPL  # single ticker
+    python -m quantflow.pipelines.backtest --show         # print saved results
 """
 
-import argparse
-import json
-import sys
 import warnings
-from datetime import datetime
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
 
-from quantflow.config import TICKERS
-from quantflow.db.connection import get_engine
-from quantflow.db.prices import load_daily_close as load_prices
+from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
 from quantflow.utils.logger import get_logger
 
 warnings.filterwarnings("ignore")
 
 logger = get_logger("backtest")
 
-HOLDOUT_DAYS = 30
 INITIAL_CAPITAL = 10_000.0
 TRANSACTION_COST = 0.001  # 0.1% per trade
 RISK_FREE_RATE = 0.045  # 4.5% annualised (US T-bill, 2024–2026)  # noqa: RUF003
@@ -171,85 +169,68 @@ def compute_metrics(sim: dict) -> dict:
     }
 
 
-# ── DB operations ─────────────────────────────────────────────────────────────
+# ── The out-of-fold window ────────────────────────────────────────────────────
 
 
-def save_results(ticker: str, metrics: dict, sim: dict, eval_days: int):
-    """Persist one backtest run. holdout_days stores the true evaluation
-    length (the out-of-fold window), not the full 30-day holdout."""
-    engine = get_engine()
-    with engine.begin() as conn:
-        conn.execute(
-            text("""
-            DELETE FROM backtest_results WHERE ticker = :t
-        """),
-            {"t": ticker},
+def backtest_out_of_fold(
+    stacked_df: pd.DataFrame, closes, oof_fn: Callable, ticker: str
+) -> dict | None:
+    """Simulate the strategy on out-of-fold ensemble predictions only.
+
+    stacked_df is the holdout stack built from `closes`, so its rows are the
+    holdout's closes. oof_fn(stacked_df) returns (predictions, actuals), each
+    day predicted by a meta-learner fitted only on the days before it;
+    simulating on in-sample predictions would hand the strategy look-ahead
+    information.
+
+    Returns {"metrics", "sim", "eval_days", "warmup"}, or None when no
+    out-of-fold day is left or the first one has no previous close.
+    """
+    ensemble_preds, oof_actuals = oof_fn(stacked_df)
+    eval_days = len(ensemble_preds)
+    if eval_days == 0:
+        logger.error(f"{ticker}: backtest skipped: no out-of-fold days available")
+        return None
+
+    # stacked row i  <->  holdout day i, at price index len(train) + i
+    # oof index j    <->  stacked row (warmup + j)
+    # so day j's close is at price index (start + j), and the previous close
+    # (needed to generate day j's signal) is at (start + j - 1).
+    y_all = np.asarray(closes, dtype=float)
+    train, _ = train_holdout_split(pd.Series(y_all))
+    warmup = len(stacked_df) - eval_days
+    start = len(train) + warmup
+
+    if start < 1:
+        logger.error(
+            f"{ticker}: backtest skipped: not enough price history "
+            f"for a previous-close on the first evaluation day"
         )
+        return None
 
-        conn.execute(
-            text("""
-            INSERT INTO backtest_results (
-                ticker, run_at, holdout_days, initial_capital,
-                final_value, total_return, annualized_return,
-                sharpe_ratio, max_drawdown, win_rate, num_trades,
-                benchmark_return, alpha,
-                daily_values, benchmark_values
-            ) VALUES (
-                :ticker, :run_at, :holdout_days, :initial_capital,
-                :final_value, :total_return, :annualized_return,
-                :sharpe_ratio, :max_drawdown, :win_rate, :num_trades,
-                :benchmark_return, :alpha,
-                :daily_values, :benchmark_values
-            )
-        """),
-            {
-                "ticker": ticker,
-                "run_at": datetime.now(),
-                "holdout_days": eval_days,
-                "initial_capital": INITIAL_CAPITAL,
-                "final_value": metrics["final_value"],
-                "total_return": metrics["total_return"],
-                "annualized_return": metrics["annualised_return"],
-                "sharpe_ratio": metrics["sharpe_ratio"],
-                "max_drawdown": metrics["max_drawdown"],
-                "win_rate": metrics["win_rate"],
-                "num_trades": metrics["num_trades"],
-                "benchmark_return": metrics["benchmark_return"],
-                "alpha": metrics["alpha"],
-                "daily_values": json.dumps(sim["daily_values"]),
-                "benchmark_values": json.dumps(sim["benchmark_values"]),
-            },
-        )
+    actual_prices = y_all[start : start + eval_days]
+    prev_prices = y_all[start - 1 : start - 1 + eval_days]
 
+    assert len(prev_prices) == len(actual_prices) == len(ensemble_preds), (
+        f"length mismatch: prev={len(prev_prices)} "
+        f"actual={len(actual_prices)} preds={len(ensemble_preds)}"
+    )
+    # oof_actuals comes from the stack, actual_prices from the raw price series.
+    # If they disagree the windows are misaligned by at least one day.
+    assert np.allclose(actual_prices, oof_actuals), (
+        "evaluation window misaligned with out-of-fold actuals"
+    )
 
-def load_results() -> pd.DataFrame:
-    engine = get_engine()
-    query = text("""
-        SELECT ticker, total_return, annualized_return, sharpe_ratio,
-               max_drawdown, win_rate, num_trades, benchmark_return, alpha,
-               final_value, holdout_days, run_at::date AS run_date
-        FROM backtest_results
-        ORDER BY alpha DESC
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(query, conn)
-
-
-def load_daily_series(ticker: str) -> dict:
-    engine = get_engine()
-    query = text("""
-        SELECT daily_values, benchmark_values
-        FROM backtest_results
-        WHERE ticker = :t
-        ORDER BY run_at DESC LIMIT 1
-    """)
-    with engine.connect() as conn:
-        row = conn.execute(query, {"t": ticker}).fetchone()
-    if not row:
-        return {}
+    logger.info(
+        f"Simulating long/flat strategy on {eval_days} out-of-fold days "
+        f"({warmup} warmup days consumed)..."
+    )
+    sim = simulate_strategy(prev_prices, actual_prices, ensemble_preds)
     return {
-        "daily_values": json.loads(row[0]),
-        "benchmark_values": json.loads(row[1]),
+        "metrics": compute_metrics(sim),
+        "sim": sim,
+        "eval_days": eval_days,
+        "warmup": warmup,
     }
 
 
@@ -278,218 +259,3 @@ def log_to_mlflow(ticker: str, metrics: dict, eval_days: int):
             mlflow.log_metric("num_trades", metrics["num_trades"])
     except Exception as e:
         logger.warning(f"MLflow logging failed: {e}")
-
-
-# ── Main backtest runner ──────────────────────────────────────────────────────
-
-
-def run_backtest(ticker: str) -> dict:
-    """
-    End-to-end backtest for one ticker:
-      1. Collect 30-day out-of-fold holdout predictions from all 4 base models
-      2. Generate out-of-fold ensemble predictions (expanding-window NNLS)
-      3. Simulate long/flat trading strategy on those predictions only
-      4. Compute + save metrics
-    """
-    from quantflow.models.ensemble import (
-        HOLDOUT_DAYS as STACK_HOLDOUT_DAYS,
-    )
-    from quantflow.models.ensemble import (
-        collect_holdout_stacks,
-        out_of_fold_meta_predictions,
-        tune_and_train_meta,
-    )
-
-    logger.info(f"{'=' * 50}")
-    logger.info(f"Backtesting — {ticker}")
-    logger.info(f"{'=' * 50}")
-
-    # Step 1: Holdout stacks
-    logger.info("Collecting holdout predictions from 4 base models...")
-    stacked_df = collect_holdout_stacks(ticker)
-    if stacked_df.empty:
-        logger.error(f"{ticker}: backtest skipped — insufficient data")
-        return {}
-
-    # Step 2: Out-of-fold ensemble predictions. Simulating on in-sample
-    # predictions would hand the strategy look-ahead information.
-    logger.info("Training NNLS meta-learner...")
-    # Called for its logging side effect only: it reports the NNLS weights and
-    # the out-of-fold comparison. The returned model is deliberately unused —
-    # the simulation below runs on out_of_fold_meta_predictions instead.
-    _meta_model, _meta_metrics = tune_and_train_meta(stacked_df)
-
-    ensemble_preds, oof_actuals = out_of_fold_meta_predictions(stacked_df)
-    eval_days = len(ensemble_preds)
-    if eval_days == 0:
-        logger.error(f"{ticker}: backtest skipped — no out-of-fold days available")
-        return {}
-
-    # Step 3: Price series aligned to the out-of-fold window.
-    #
-    # stacked_df row i  <->  price index (len_y - STACK_HOLDOUT_DAYS + i)
-    # oof index j       <->  stacked row (warmup + j)
-    # so day j's close is at price index (start + j), and the previous close
-    # — needed to generate day j's signal — is at (start + j - 1).
-    price_df = load_prices(ticker)
-    y_all = price_df["y"].values
-    warmup = len(stacked_df) - eval_days
-    start = len(y_all) - STACK_HOLDOUT_DAYS + warmup
-
-    if start < 1:
-        logger.error(
-            f"{ticker}: backtest skipped — not enough price history "
-            f"for a previous-close on the first evaluation day"
-        )
-        return {}
-
-    actual_prices = y_all[start : start + eval_days]
-    prev_prices = y_all[start - 1 : start - 1 + eval_days]
-
-    assert len(prev_prices) == len(actual_prices) == len(ensemble_preds), (
-        f"length mismatch: prev={len(prev_prices)} "
-        f"actual={len(actual_prices)} preds={len(ensemble_preds)}"
-    )
-    # oof_actuals comes from the stack, actual_prices from the raw price series.
-    # If they disagree the windows are misaligned by at least one day.
-    assert np.allclose(actual_prices, oof_actuals), (
-        "evaluation window misaligned with out-of-fold actuals"
-    )
-
-    # Step 4: Strategy simulation
-    logger.info(
-        f"Simulating long/flat strategy on {eval_days} out-of-fold days "
-        f"({warmup} warmup days consumed)..."
-    )
-    sim = simulate_strategy(prev_prices, actual_prices, ensemble_preds)
-    metrics = compute_metrics(sim)
-
-    logger.info(
-        f"  Return: {metrics['total_return']:+.2f}% | "
-        f"Benchmark: {metrics['benchmark_return']:+.2f}% | "
-        f"Alpha: {metrics['alpha']:+.2f}%"
-    )
-    logger.info(
-        f"  Sharpe: {metrics['sharpe_ratio']:.3f} | "
-        f"Max DD: {metrics['max_drawdown']:.2f}% | "
-        f"Win rate: {metrics['win_rate']:.1f}% | "
-        f"Trades: {metrics['num_trades']}"
-    )
-
-    # Step 5: Persist + track
-    save_results(ticker, metrics, sim, eval_days)
-    log_to_mlflow(ticker, metrics, eval_days)
-
-    return metrics
-
-
-def run(tickers: list | None = None) -> dict:
-    tickers = tickers or TICKERS
-    all_results = {}
-    for ticker in tickers:
-        try:
-            all_results[ticker] = run_backtest(ticker)
-        except Exception as e:
-            logger.exception(f"{ticker}: backtest failed — {type(e).__name__}: {e}")
-            all_results[ticker] = {}
-    return all_results
-
-
-# ── Display ───────────────────────────────────────────────────────────────────
-
-
-def show_results():
-    df = load_results()
-    if df.empty:
-        print("No backtest results found. Run: python backtest.py")
-        return
-
-    # Window length comes from the stored rows, which hold the true
-    # out-of-fold evaluation length rather than the full holdout.
-    windows = sorted({int(d) for d in df["holdout_days"].dropna()})
-    window = f"{windows[0]}-day" if len(windows) == 1 else "mixed-length"
-
-    print(f"\n{'=' * 90}")
-    print(
-        f"  QuantFlow — Backtest Results "
-        f"(Ensemble Long/Flat Strategy, {window} out-of-fold window)"
-    )
-    print(f"{'=' * 90}")
-
-    display = df[
-        [
-            "ticker",
-            "total_return",
-            "annualized_return",
-            "sharpe_ratio",
-            "max_drawdown",
-            "win_rate",
-            "num_trades",
-            "benchmark_return",
-            "alpha",
-        ]
-    ].copy()
-    display.columns = [
-        "Ticker",
-        "Return%",
-        "Ann.Return%",
-        "Sharpe",
-        "MaxDD%",
-        "WinRate%",
-        "Trades",
-        "Benchmark%",
-        "Alpha%",
-    ]
-    for col in ["Return%", "Ann.Return%", "MaxDD%", "Benchmark%", "Alpha%"]:
-        display[col] = display[col].map(lambda x: f"{x:+.2f}%")
-    display["Sharpe"] = display["Sharpe"].map(lambda x: f"{x:.3f}")
-    display["WinRate%"] = display["WinRate%"].map(lambda x: f"{x:.1f}%")
-
-    print(display.to_string(index=False))
-    print()
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Backtest the stacking ensemble strategy"
-    )
-    parser.add_argument("--ticker", type=str, help="Single ticker (e.g. AAPL)")
-    parser.add_argument("--show", action="store_true", help="Print saved results")
-    args = parser.parse_args()
-
-    if args.show:
-        show_results()
-    else:
-        tickers = [args.ticker.upper()] if args.ticker else None
-        logger.info("Starting backtest pipeline...")
-        results = run(tickers=tickers)
-
-        print("\n--- Backtest Results ---")
-        for ticker, m in results.items():
-            if m:
-                print(
-                    f"  {ticker}: return={m['total_return']:+.2f}% | "
-                    f"alpha={m['alpha']:+.2f}% | sharpe={m['sharpe_ratio']:.3f} | "
-                    f"win={m['win_rate']:.1f}%"
-                )
-
-        # Exit rule: fail only when EVERY ticker failed. A single ticker with
-        # thin history should not red-flag the whole daily refresh, but a total
-        # failure must not be reported as success.
-        succeeded = [t for t, m in results.items() if m]
-        empty = [t for t, m in results.items() if not m]
-
-        if empty:
-            print(f"\nWARNING: no results for {', '.join(empty)}", file=sys.stderr)
-
-        if results and not succeeded:
-            print("\n--- BACKTEST FAILED ---", file=sys.stderr)
-            print(
-                f"All {len(results)} ticker(s) failed — see the log above.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        print("\nTo see full table:  python backtest.py --show")

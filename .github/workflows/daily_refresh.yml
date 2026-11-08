@@ -136,7 +136,7 @@ jobs:
 
       - name: Run strategy backtest
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
-        run: python -m quantflow.evaluation.backtest
+        run: python -m quantflow.pipelines.backtest
 
       - name: Summary
         run: |

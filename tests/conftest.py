@@ -357,20 +357,11 @@ class PriceBars:
         ]
 
     def frame(self, *groups):
-        """raw_prices as Postgres returns them, ordered by ts.
-
-        Carries every column a loader projection could ask for: the bar
-        itself, plus the `ts::date AS date`, `ts::date AS ds` and
-        `close AS y` aliases that the loaders selected before the daily-bar
-        fix. Those aliases are what lets the regression tests fail against the
-        pre-fix loaders rather than error out on a missing column.
-        """
+        """raw_prices as Postgres returns them, ordered by ts."""
         rows = []
         for group in groups:
             rows.extend(group if isinstance(group, list) else [group])
-        df = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
-        utc_day = df["ts"].dt.tz_convert("UTC").dt.date
-        return df.assign(date=utc_day, ds=utc_day, y=df["close"])
+        return pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
 
 
 @pytest.fixture

@@ -354,7 +354,7 @@ def run_backtest_job():
     if _paused_for_prices("Backtest job"):
         return
     try:
-        from quantflow.evaluation.backtest import run as backtest_run
+        from quantflow.pipelines.backtest import run as backtest_run
 
         results = backtest_run()
         for ticker, m in results.items():

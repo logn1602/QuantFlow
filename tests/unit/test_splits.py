@@ -120,3 +120,74 @@ def test_boundary_is_inclusive(series):
     assert (
         has_enough_history(series.iloc[: HOLDOUT_DAYS + minimum - 1], minimum) is False
     )
+
+
+# ── Rolling origins ───────────────────────────────────────────────────────────
+
+from itertools import pairwise  # noqa: E402
+
+from quantflow.evaluation import splits  # noqa: E402
+
+SNAPSHOT_DATES = 648  # trading dates per ticker, 2024-04-10 to 2026-11-06
+
+
+def test_the_horizon_is_the_published_forecast_length():
+    from quantflow.models import FORECAST_DAYS
+
+    assert splits.HORIZON == FORECAST_DAYS
+
+
+def test_the_grid_on_the_snapshot_matches_the_design():
+    from quantflow.utils.trading_calendar import TRADING_DAY
+
+    days = pd.date_range("2024-04-10", "2026-11-06", freq=TRADING_DAY)
+    days = days[days != pd.Timestamp("2025-01-09")]  # the one-off closure
+    assert len(days) == SNAPSHOT_DATES
+    grid = splits.origin_grid(len(days))
+
+    def span(positions):
+        return days[positions[0]].date().isoformat(), days[
+            positions[-1]
+        ].date().isoformat()
+
+    assert len(grid.test) == 25 and span(grid.test) == ("2026-05-07", "2026-10-28")
+    assert span(grid.test_warmup) == ("2026-02-10", "2026-04-30")
+    assert len(grid.validation) == 42
+    assert span(grid.validation) == ("2025-06-30", "2026-04-23")
+    assert span(grid.validation_warmup) == ("2025-04-02", "2025-06-23")
+
+
+def test_every_window_steps_evenly_and_ends_where_the_data_does():
+    grid = splits.origin_grid(SNAPSHOT_DATES)
+    for positions in (
+        grid.test,
+        grid.test_warmup,
+        grid.validation,
+        grid.validation_warmup,
+    ):
+        assert all(b - a == splits.ORIGIN_STEP for a, b in pairwise(positions))
+    assert grid.test[-1] + splits.HORIZON == SNAPSHOT_DATES - 1
+    assert grid.test_warmup[-1] + splits.ORIGIN_STEP == grid.test[0]
+    assert grid.validation_warmup[-1] + splits.ORIGIN_STEP == grid.validation[0]
+
+
+def test_no_validation_target_reaches_the_test_window():
+    grid = splits.origin_grid(SNAPSHOT_DATES)
+    first_test_target = grid.test[0] + 1
+    assert grid.validation[-1] + splits.HORIZON < first_test_target
+    assert (
+        grid.validation[-1] + splits.ORIGIN_STEP + splits.HORIZON >= first_test_target
+    )
+
+
+def test_a_window_is_chosen_by_name():
+    grid = splits.origin_grid(SNAPSHOT_DATES)
+    assert grid.window("test") == (grid.test, grid.test_warmup)
+    assert grid.window("validation") == (grid.validation, grid.validation_warmup)
+    with pytest.raises(ValueError, match="unknown window"):
+        grid.window("holdout")
+
+
+def test_too_little_history_is_refused():
+    with pytest.raises(ValueError, match="too few"):
+        splits.origin_grid(400)

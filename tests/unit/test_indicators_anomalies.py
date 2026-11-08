@@ -147,6 +147,25 @@ def test_anomalies_are_flagged_on_trading_dates_not_15min_bars(
     assert pd.Timestamp(SESSION_DAYS[1], tz="UTC") in flagged.index
 
 
+def test_a_date_both_detectors_flag_keeps_the_zscore_row():
+    """The rule run() has always stored, now in one function the features
+    can call too: one row per date, Z-score first, in date order."""
+    days = pd.date_range("2026-01-02", periods=60, freq="B", tz="UTC")
+    close = np.full(60, 100.0) + np.sin(np.arange(60)) * 0.1
+    close[45] = 130.0  # a jump: a high Z-score and an outsized daily return
+    frame = pd.DataFrame({"close": close, "volume": 1e6}, index=days)
+
+    zscore = anomalies.detect_zscore_anomalies(frame, "AAPL")
+    iqr = anomalies.detect_iqr_anomalies(frame, "AAPL")
+    both = zscore.index.intersection(iqr.index)
+    assert days[45] in both  # the case under test exists
+
+    flags = anomalies.detect_anomalies(frame, "AAPL")
+    assert flags.index.is_unique and flags.index.is_monotonic_increasing
+    assert set(flags.index) == set(zscore.index) | set(iqr.index)
+    assert flags.loc[days[45], "zscore"] == zscore.loc[days[45], "zscore"]
+
+
 def test_saving_anomalies_counts_only_rows_written(fake_db):
     """save_anomalies added one to its count per INSERT sent, so a row that ON
     CONFLICT DO NOTHING skipped was still reported as written. A run with no

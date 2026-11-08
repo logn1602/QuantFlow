@@ -272,7 +272,7 @@ src/quantflow/
 ├── features/              indicators, anomalies, sentiment, engineering
 ├── models/                statistical (ARIMA/Prophet), boosting, ensemble
 ├── evaluation/            splits, metrics, out_of_fold, backtest
-├── pipelines/             seed, run_models, scheduler
+├── pipelines/             seed, run_models, backtest, scheduler
 └── dashboard/             Streamlit app
 
 sql/                       Schema DDL and migrations

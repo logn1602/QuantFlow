@@ -74,7 +74,7 @@ PRICE_READING_STAGES = (
     "python -m quantflow.features.indicators",
     "python -m quantflow.features.anomalies",
     "python -m quantflow.pipelines.run_models",
-    "python -m quantflow.evaluation.backtest",
+    "python -m quantflow.pipelines.backtest",
 )
 
 
