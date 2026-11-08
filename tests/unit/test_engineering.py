@@ -57,7 +57,7 @@ def raw():
 
 def test_feature_count_is_34():
     """The README advertises 34 features (33 plus has_news, decision D6). If
-    this fails, either the code or the README is wrong — fix whichever is
+    this fails, either the code or the README is wrong; fix whichever is
     lying."""
     assert len(get_feature_cols()) == 34
 
