@@ -126,6 +126,8 @@ class FakeForecast:
 
 
 class FakeARIMA:
+    aic = 0.0  # every order alike, when the order is chosen by AIC
+
     def __init__(self, endog, order):
         self.last = float(np.asarray(endog)[-1])
 
@@ -144,6 +146,7 @@ def test_the_arima_adapter_forecasts_from_the_closes_up_to_the_origin(monkeypatc
     out = forecasters.arima(_data(prices))
     assert len(out) == 7 and np.allclose(out["yhat"], prices["close"].iloc[-1])
     assert np.allclose(out["yhat_upper"] - out["yhat_lower"], 4.0)
+    assert out["arima_order"].nunique() == 1  # the order travels with the cells
 
 
 class FakeProphet:

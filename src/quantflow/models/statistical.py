@@ -46,7 +46,12 @@ warnings.filterwarnings("ignore")
 
 logger = get_logger("forecasting")
 
-ARIMA_ORDER = (5, 1, 0)
+# ARIMA's order (Phase 3, E4): None chooses it for each fit, by AIC on that
+# fit's own closes, over ARIMA_ORDER_GRID; a tuple fixes it (it was
+# (5, 1, 0)). Every order in the grid differences once and has no trend, so
+# their AICs compare like with like; (0, 1, 0) is the naive forecast.
+ARIMA_ORDER: tuple[int, int, int] | None = None
+ARIMA_ORDER_GRID = [(p, 1, q) for p in range(6) for q in range(3)]
 MLFLOW_EXP = "stock_forecasting"
 # The seed Prophet's interval is simulated from (prophet_forecast).
 PROPHET_INTERVAL_SEED = 42
@@ -89,15 +94,37 @@ def prophet_settings(history: pd.DataFrame) -> dict:
 # interval), so a caller can treat either model's forecast the same way.
 
 
+def fit_arima(y):
+    """ARIMA fitted on the closes y, and its order: ARIMA_ORDER if set,
+    else the order in ARIMA_ORDER_GRID with the lowest AIC. An order that
+    cannot be fitted is skipped; RuntimeError if none can."""
+    from statsmodels.tsa.arima.model import ARIMA
+
+    y = np.asarray(y, dtype=float)
+    if ARIMA_ORDER is not None:
+        return ARIMA(y, order=ARIMA_ORDER).fit(), tuple(ARIMA_ORDER)
+    best, best_order = None, None
+    for order in ARIMA_ORDER_GRID:
+        try:
+            fitted = ARIMA(y, order=order).fit()
+        except (np.linalg.LinAlgError, ValueError):
+            continue
+        # Strictly lower: of equal AICs the first, the simpler, order wins.
+        if np.isfinite(fitted.aic) and (best is None or fitted.aic < best.aic):
+            best, best_order = fitted, order
+    if best is None:
+        raise RuntimeError("no ARIMA order in the grid could be fitted")
+    return best, best_order
+
+
 def arima_forecast(y, steps: int) -> pd.DataFrame:
-    """ARIMA_ORDER fitted on the closes y, forecast `steps` ahead.
+    """ARIMA fitted on the closes y (fit_arima), forecast `steps` ahead,
+    with the order it used.
 
     get_forecast's mean is what forecast() returns, so the holdout score,
     which used forecast(), is unchanged by going through here.
     """
-    from statsmodels.tsa.arima.model import ARIMA
-
-    fitted = ARIMA(np.asarray(y, dtype=float), order=ARIMA_ORDER).fit()
+    fitted, order = fit_arima(y)
     result = fitted.get_forecast(steps=steps)
     interval = np.asarray(result.conf_int(alpha=0.05))
     return pd.DataFrame(
@@ -105,6 +132,7 @@ def arima_forecast(y, steps: int) -> pd.DataFrame:
             "yhat": np.asarray(result.predicted_mean, dtype=float),
             "yhat_lower": interval[:, 0],
             "yhat_upper": interval[:, 1],
+            "arima_order": str(tuple(order)),
         }
     )
 
