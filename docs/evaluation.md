@@ -622,8 +622,8 @@ failing on the code before it, as in Phase 1:
   the last value.
 - Point-in-time: a Saturday article lands on Monday instead of vanishing; a NewsAPI
   article lands a day later; an article stored days after it was published counts from
-  when it was stored, not on its publish date; an article stored at 22:35 UTC counts
-  that day, one stored at 00:05 UTC the next.
+  when it was stored, not on its publish date; an article stored by a run that GitHub
+  started late (06:50 UTC) counts that day, one stored at 12:05 UTC the next.
 - Bad rows: a placeholder row and a MarketWatch row under AAPL change no feature.
 - Decision C: changing `ARIMA_ORDER` changes the order the ensemble's stack fits.
 - Known problem #6: the backtest runs the out-of-fold loop once.
