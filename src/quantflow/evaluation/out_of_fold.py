@@ -17,6 +17,11 @@ must be re-scored on that same window for the comparison to be like-for-like.
 The loop takes the fitting function as an argument rather than importing one.
 That keeps evaluation independent of any particular meta-learner, and avoids a
 circular import: quantflow.models.ensemble imports this module, not the reverse.
+
+The rolling-origin form below (docs/evaluation.md, section 5) fits the
+weights on the task they are used for: the base models' 7-day forecasts at
+the grid origins before an origin, keeping only rows whose target is known
+by it. The evaluation and the live ensemble call the same function.
 """
 
 from collections.abc import Callable
@@ -64,3 +69,82 @@ def expanding_window_predictions(
         preds[j] = float(meta.predict(X[i : i + 1])[0])
 
     return preds, y[warmup:]
+
+
+# ── The rolling-origin form ───────────────────────────────────────────────────
+
+# Grid origins before an origin whose forecasts the weights are fitted on, and
+# how many of them must have every base model's forecast.
+WINDOW_ORIGINS = 12
+MIN_COMPLETE_ORIGINS = 8
+
+
+class ThinWindowError(RuntimeError):
+    """Too few complete earlier origins to fit the weights on."""
+
+
+def rolling_origin_stack(
+    cells: pd.DataFrame,
+    origin,
+    models: list[str],
+    window: int = WINDOW_ORIGINS,
+    min_complete: int = MIN_COMPLETE_ORIGINS,
+) -> pd.DataFrame:
+    """The rows the weights at `origin` may be fitted on.
+
+    cells are rolling-origin cells (origin, h, target_date, model, yhat,
+    actual, status). From the `window` latest origins before `origin`, the
+    complete ones (every model in `models` has a scorable forecast for every
+    horizon there) give one row per (origin, h) whose target date is on or
+    before `origin`: origin, h, one column per model, actual. Origin o - 5's
+    horizons 6 and 7 fall after o, so they are left out.
+
+    Raises ThinWindowError if fewer than `min_complete` origins are
+    complete: the ensemble fails rather than guessing.
+    """
+    origin = pd.Timestamp(origin)
+    dated = cells.assign(
+        origin=pd.to_datetime(cells["origin"]),
+        target_date=pd.to_datetime(cells["target_date"]),
+    )
+    base = dated[dated["model"].isin(models) & (dated["origin"] < origin)]
+    recent = sorted(base["origin"].unique())[-window:]
+    base = base[base["origin"].isin(recent)]
+    scorable = base["status"].eq("ok") & np.isfinite(
+        pd.to_numeric(base["yhat"], errors="coerce").to_numpy(dtype=float)
+    )
+    per_model = (
+        base.assign(scorable=scorable)
+        .groupby(["origin", "model"])["scorable"]
+        .all()
+        .unstack("model")
+        .reindex(columns=models)
+    )
+    complete = per_model.index[per_model.fillna(False).astype(bool).all(axis=1)]
+    if len(complete) < min_complete:
+        raise ThinWindowError(
+            f"{len(complete)} of the {len(recent)} origins before "
+            f"{origin.date()} have every base forecast; {min_complete} needed"
+        )
+    rows = base[base["origin"].isin(complete) & (base["target_date"] <= origin)]
+    wide = rows.pivot_table(
+        index=["origin", "h"], columns="model", values="yhat", aggfunc="first"
+    )[models]
+    actual = rows.groupby(["origin", "h"])["actual"].first()
+    return wide.assign(actual=actual).reset_index()
+
+
+def rolling_origin_fit(
+    cells: pd.DataFrame,
+    origin,
+    models: list[str],
+    fit_fn: Callable,
+    window: int = WINDOW_ORIGINS,
+    min_complete: int = MIN_COMPLETE_ORIGINS,
+):
+    """The meta-learner for `origin`: fit_fn(X, y) on rolling_origin_stack's
+    rows, X the base forecasts in `models` order, y the actuals."""
+    stack = rolling_origin_stack(cells, origin, models, window, min_complete)
+    return fit_fn(
+        stack[models].to_numpy(dtype=float), stack["actual"].to_numpy(dtype=float)
+    )

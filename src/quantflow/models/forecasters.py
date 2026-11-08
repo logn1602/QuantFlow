@@ -14,6 +14,7 @@ takes them as functions.
 import numpy as np
 import pandas as pd
 
+from quantflow.evaluation.out_of_fold import rolling_origin_fit
 from quantflow.evaluation.rolling_origin import (
     BASELINES,
     Combiner,
@@ -31,6 +32,7 @@ from quantflow.models.ensemble import (
     _fit_nnls,
     build_holdout_stack,
     combine_forecasts,
+    fit_nnls_strict,
 )
 from quantflow.models.statistical import (
     arima_forecast,
@@ -121,7 +123,30 @@ def ensemble_stack(
     if stack.empty:
         raise RuntimeError("the holdout stack could not be built")
     meta = _fit_nnls(stack[BASE_MODELS].to_numpy(), stack["actual"].to_numpy())
+    return _combined(meta, base)
 
+
+def ensemble_rolling(
+    data: OriginData, base: dict[str, pd.DataFrame], earlier: pd.DataFrame
+) -> pd.DataFrame:
+    """The ensemble with weights learned on the task it is used for (2c):
+    NNLS fitted on the base models' 7-day forecasts at the 12 grid origins
+    before this one, only the rows whose target is known by it, applied to
+    the four base forecasts made here. Fewer than 8 complete earlier origins
+    (ThinWindowError) or an all-zero solution fails the cells."""
+    missing = [m for m in BASE_MODELS if m not in base]
+    if missing:
+        raise RuntimeError(f"no {', '.join(missing)} forecast to combine")
+    meta = rolling_origin_fit(earlier, data.origin, BASE_MODELS, fit_nnls_strict)
+    return _combined(meta, base)
+
+
+# The harness adds the warmup origins before the window when a combiner needs
+# earlier origins' cells.
+ensemble_rolling.needs_history = True  # type: ignore[attr-defined]
+
+
+def _combined(meta, base: dict[str, pd.DataFrame]) -> pd.DataFrame:
     def column(name: str) -> np.ndarray:
         # The live forecast fills a missing bound with 0 before weighting.
         return np.column_stack([base[m][name].fillna(0) for m in BASE_MODELS])
@@ -139,7 +164,10 @@ FORECASTERS: dict[str, Forecaster] = {
     "xgboost": booster("xgboost"),
     "lightgbm": booster("lightgbm"),
 }
-COMBINERS: dict[str, Combiner] = {"ensemble_stack": ensemble_stack}
+COMBINERS: dict[str, Combiner] = {
+    "ensemble_stack": ensemble_stack,
+    "ensemble_rolling": ensemble_rolling,
+}
 
 # Run only when named in --models: the news ablation's pair (R6).
 VARIANTS: dict[str, Forecaster] = {

@@ -277,7 +277,9 @@ def run_origins(
                 if ticker_cells
                 else pd.DataFrame(columns=CELL_COLUMNS)
             )
-            for name, combiner in combiners.items():
+            # Warmup origins only supply base cells for the combiners that
+            # need earlier origins; no combiner is scored there.
+            for name, combiner in combiners.items() if role == "scored" else ():
                 _, cells = _call(
                     name, combiner, (data, base, earlier), data, targets, horizon
                 )

@@ -144,7 +144,8 @@ def test_the_wrong_number_of_rows_is_a_bug_not_a_failure():
         )  # fmt: skip
 
 
-def test_a_combiner_gets_the_base_forecasts_at_its_origin_and_only_earlier_cells():
+def test_a_combiner_runs_at_scored_origins_with_their_base_forecasts_and_earlier_cells():
+    """Warmup origins only supply base cells for the combiners."""
     calls = []
 
     def combiner(data, base, earlier):
@@ -155,9 +156,9 @@ def test_a_combiner_gets_the_base_forecasts_at_its_origin_and_only_earlier_cells
         {"AAPL": _bars()}, _articles(), ORIGINS,
         {"naive": ro.naive_forecast, "drift": ro.drift_forecast}, {"ens": combiner},
     )  # fmt: skip
-    assert [c[0] for c in calls] == [DATES[30], DATES[35], DATES[40]]
+    assert [c[0] for c in calls] == [DATES[35], DATES[40]]
     assert all(c[1] == ["drift", "naive"] for c in calls)
-    assert calls[0][2] == [] and calls[2][2] == [DATES[30], DATES[35]]
+    assert calls[0][2] == [DATES[30]] and calls[1][2] == [DATES[30], DATES[35]]
 
 
 def test_a_combiner_is_not_given_a_failed_base_forecast():

@@ -193,7 +193,7 @@ def test_the_ensemble_adapter_refuses_a_missing_base_forecast():
 
 def test_every_model_and_baseline_is_registered():
     assert set(forecasters.FORECASTERS) == {"naive", "drift", *ensemble.BASE_MODELS}
-    assert set(forecasters.COMBINERS) == {"ensemble_stack"}
+    assert set(forecasters.COMBINERS) == {"ensemble_stack", "ensemble_rolling"}
     assert set(forecasters.VARIANTS) == {"xgboost_no_news", "lightgbm_no_news"}
 
 
