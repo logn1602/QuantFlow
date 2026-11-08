@@ -388,3 +388,78 @@ def test_tune_leaves_out_an_origin_whose_days_hold_an_unknown_closure(
     assert full[origin] not in set(cells["origin"])
     report = (tmp_path / "runs" / "t" / "report.md").read_text("utf-8")
     assert str(full[origin].date()) in report
+
+
+def _fails_every_other_origin(data):
+    if data.origin.dayofyear % 2:
+        raise RuntimeError("no forecast")
+    return ro.naive_forecast(data).assign(yhat=data.close * 1.001)
+
+
+def _tune(tmp_path, *extra):
+    return evaluate.main(
+        ["tune", "--snapshot", str(tmp_path / "long"), "--out", str(tmp_path / "runs"),
+         "--label", "t", *extra]
+    )  # fmt: skip
+
+
+def test_a_candidate_over_the_failure_limit_is_never_chosen(
+    tmp_path, harness, monkeypatch
+):
+    """Scored only on the cells it managed, a candidate that failed half of
+    them could look best; the harness's 10% limit rules it out instead."""
+    _long_snapshot(tmp_path)
+    fake = {
+        "xgboost#00": ("xgboost", {"max_depth": 4}, _off_by(2)),
+        "xgboost#01": ("xgboost", {"max_depth": 3}, _fails_every_other_origin),
+    }
+    monkeypatch.setattr(evaluate, "tuning_candidates", lambda models: fake)
+    assert _tune(tmp_path) == 0
+    table = pd.read_csv(tmp_path / "runs" / "t" / "tuning.csv").set_index("candidate")
+    assert not table.loc["xgboost#01", "eligible"]
+    assert table.loc["xgboost#00", "chosen"] and not table.loc["xgboost#01", "chosen"]
+
+
+def test_tune_refuses_an_unknown_booster(tmp_path, harness):
+    assert _tune(tmp_path, "--models", "xgbost") == 2
+    assert harness.calls == []
+
+
+def test_a_tuning_run_that_raises_is_logged_as_failed(tmp_path, harness, monkeypatch):
+    _long_snapshot(tmp_path)
+    short = {
+        "xgboost#00": ("xgboost", {}, lambda data: ro.naive_forecast(data).iloc[:3])
+    }
+    monkeypatch.setattr(evaluate, "tuning_candidates", lambda models: short)
+    assert _tune(tmp_path) == 1
+    assert harness.call("text") == [("text", "traceback.txt")]
+    assert harness.call("end") == [("end", "FAILED")]
+
+
+def test_compare_refuses_a_run_from_uncommitted_code(tmp_path, harness, capsys):
+    """A decision must rest on code that is in a commit."""
+    _snapshot(tmp_path)
+    for label in ("a", "b"):
+        assert _run(tmp_path, "--label", label) == 0
+    report = tmp_path / "runs" / "b" / "report.md"
+    text = report.read_text("utf-8").replace(
+        "- commit: abc1234def", "- commit: abc1234def (uncommitted changes)"
+    )
+    report.write_text(text, "utf-8")
+    assert _compare(tmp_path) == 2
+    assert "uncommitted" in capsys.readouterr().err
+
+
+def test_a_compare_whose_logging_fails_ends_its_mlflow_run(tmp_path, monkeypatch):
+    _snapshot(tmp_path)
+    monkeypatch.setattr(evaluate, "FORECASTERS", dict(ro.BASELINES))
+    monkeypatch.setattr(evaluate, "COMBINERS", {})
+    monkeypatch.setattr(evaluate, "git_state", lambda: ("abc1234def", False))
+    monkeypatch.setitem(sys.modules, "mlflow", FakeMlflow())
+    for label in ("a", "b"):
+        assert _run(tmp_path, "--label", label) == 0
+    failing = FakeMlflow(fail_log=True)
+    monkeypatch.setitem(sys.modules, "mlflow", failing)
+    assert _compare(tmp_path) == 1
+    assert failing.call("end") == [("end", "FAILED")]
+    assert (tmp_path / "runs" / "b" / "compare-a.csv").exists()

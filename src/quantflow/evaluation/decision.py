@@ -22,9 +22,9 @@ import numpy as np
 import pandas as pd
 
 from quantflow.evaluation import metrics
+from quantflow.evaluation.report import KEY
 from quantflow.evaluation.rolling_origin import MAX_FAILURE_SHARE
 
-KEY = ["ticker", "origin", "h"]
 # Of the 8 tickers: a change must help most of them, not one or two.
 TICKERS_NEEDED = 5
 WINDOW = "validation"
@@ -131,6 +131,32 @@ def compare(
         .sort_values(KEY, kind="stable")
         .reset_index(drop=True)
     )
+    # The failure rules come first: they decide without any shared cell.
+    total = len(new)
+    drop_for_failures = None
+    if failed_new / total > failure_limit:
+        drop_for_failures = (
+            f"drop: fails {failed_new} of {total} cells, over the "
+            f"{failure_limit:.0%} limit"
+        )
+    elif failed_new > failed_old:
+        drop_for_failures = (
+            f"drop: fails {failed_new} cells, the incumbent {failed_old}"
+        )
+    if both.empty:
+        if drop_for_failures is None:
+            raise ValueError(
+                f"no cells both runs forecast for {model}: the incumbent "
+                f"failed {failed_old} of {len(old)}"
+            )
+        return Comparison(
+            model=model, keep=False, reason=drop_for_failures, cells=0,
+            mape_incumbent=np.nan, mape_candidate=np.nan, tickers=0,
+            tickers_better=0, failed_incumbent=failed_old,
+            failed_candidate=failed_new, per_ticker=pd.DataFrame(),
+            per_horizon=pd.DataFrame(), paired_test=None,
+        )  # fmt: skip
+
     per_ticker = _table(both, "ticker")
     per_horizon = _table(both, "h")
     mape_old = metrics.mape(both["actual"], both["yhat_incumbent"])
@@ -143,15 +169,9 @@ def compare(
     per_origin = pd.Series(ape_new - ape_old).groupby(both["origin"]).mean()
     paired = metrics.mean_difference_test(per_origin.to_numpy(), lag=1)
 
-    total = len(new)
     keep = False
-    if failed_new / total > failure_limit:
-        reason = (
-            f"drop: fails {failed_new} of {total} cells, over the "
-            f"{failure_limit:.0%} limit"
-        )
-    elif failed_new > failed_old:
-        reason = f"drop: fails {failed_new} cells, the incumbent {failed_old}"
+    if drop_for_failures is not None:
+        reason = drop_for_failures
     elif not mape_new < mape_old:
         reason = (
             f"drop: MAPE {mape_new:.4f}% is not below the incumbent's {mape_old:.4f}%"

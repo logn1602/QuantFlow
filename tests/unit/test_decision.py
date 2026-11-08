@@ -133,3 +133,24 @@ def test_the_paired_test_and_the_tables_are_reported():
     assert row["coverage_incumbent"] == pytest.approx(100.0)
     assert row["coverage_candidate"] == pytest.approx(100.0)
     assert decision.summary_row(result)["decision"] == "keep"
+
+
+def test_a_candidate_that_failed_every_cell_is_dropped_not_an_error():
+    candidate = _cells(dict.fromkeys(TICKERS, 1.0))
+    candidate[["status", "yhat"]] = ["failed", np.nan]
+    result = decision.compare(_cells({}), candidate, "xgboost")
+    assert not result.keep and "limit" in result.reason
+    assert result.cells == 0
+
+
+def test_an_incumbent_that_failed_every_cell_cannot_be_compared_with():
+    incumbent = _cells({})
+    incumbent[["status", "yhat"]] = ["failed", np.nan]
+    with pytest.raises(ValueError, match="no cells both runs forecast"):
+        decision.compare(incumbent, _cells({}), "xgboost")
+
+
+def test_a_run_with_a_cell_twice_is_refused():
+    cells = _cells({})
+    with pytest.raises(ValueError, match="cells twice"):
+        decision.compare(pd.concat([cells, cells.iloc[[0]]]), _cells({}), "xgboost")

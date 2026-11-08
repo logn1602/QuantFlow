@@ -11,12 +11,12 @@ The rolling-origin evaluation's command line (docs/evaluation.md).
     python -m quantflow.pipelines.evaluate tune --snapshot eval_snapshots/2026-11-06 --workers 3
 
 export reads the database once, read-only, into a snapshot directory;
-coverage and run read only the snapshot, and compare only two run folders,
-applying Phase 3's keep-or-drop rule (evaluation/decision.py). run scores the validation dates unless
-given --window test with a reason: the test dates are reported, never used
-to choose, and every scoring of them is counted (docs/evaluation.md,
-section 2). A test-date run also refuses uncommitted changes to tracked
-files, so each scoring is tied to a commit.
+coverage, run and tune read only the snapshot, and compare only two run
+folders, applying Phase 3's keep-or-drop rule (evaluation/decision.py). run
+scores the validation dates unless given --window test with a reason: the
+test dates are reported, never used to choose, and every scoring of them is
+counted (docs/evaluation.md, section 2). A test-date run also refuses
+uncommitted changes to tracked files, so each scoring is tied to a commit.
 
 It lives in pipelines because it wires the models into the harness, and
 evaluation never imports models.
@@ -36,8 +36,9 @@ from quantflow.config import TICKERS
 from quantflow.db.prices import classify_bars, daily_bars
 from quantflow.db.readonly import is_local_database, masked, read_only_connection
 from quantflow.db.snapshot import read_snapshot_tables
-from quantflow.evaluation import decision, report
+from quantflow.evaluation import decision, metrics, report
 from quantflow.evaluation.rolling_origin import (
+    MAX_FAILURE_SHARE,
     MAX_WORKERS,
     Forecaster,
     calendar_mismatched,
@@ -341,26 +342,36 @@ def tuning_candidates(models: list[str]) -> dict[str, tuple[str, dict, Forecaste
 
 
 def tuning_table(cells: pd.DataFrame, candidates: dict) -> pd.DataFrame:
-    """Per candidate, MAPE over the cells every candidate of its family
-    forecast, and its failed cells; the lowest MAPE per family is chosen."""
+    """Per candidate, its failed cells and its MAPE over the cells every
+    eligible candidate of its family forecast. A candidate that failed more
+    than the harness's limit (MAX_FAILURE_SHARE) is not eligible, as a model
+    over it fails a run: scored only on the cells it managed it could look
+    best. The eligible candidate with the lowest MAPE per family is chosen."""
     rows = []
     for family in sorted({fam for fam, _, _ in candidates.values()}):
         names = [n for n, (fam, _, _) in candidates.items() if fam == family]
-        shared = report.comparable(cells, names)
+        failed = {
+            n: cells.loc[cells["model"] == n, "status"].eq("failed") for n in names
+        }
+        eligible = [n for n in names if failed[n].mean() <= MAX_FAILURE_SHARE]
+        shared = report.comparable(cells, eligible) if eligible else cells.iloc[:0]
         for name in names:
             group = shared[shared["model"] == name]
             rows.append(
                 {"family": family, "candidate": name, **candidates[name][1],
-                 "cells": len(group),
-                 "failed": int(cells.loc[cells["model"] == name, "status"]
-                               .eq("failed").sum()),
-                 "mape": float(np.mean(np.abs(group["actual"] - group["yhat"])
-                                       / group["actual"]) * 100)}
+                 "cells": len(group), "failed": int(failed[name].sum()),
+                 "eligible": name in eligible,
+                 "mape": metrics.mape(group["actual"], group["yhat"])
+                 if len(group) else np.nan}
             )  # fmt: skip
     table = pd.DataFrame(rows)
-    best = table.groupby("family")["mape"].transform("min")
+    best = table[table["eligible"]].groupby("family")["mape"].min()
     # The first of equal MAPEs: the current settings, listed first, win a tie.
-    table["chosen"] = (table["mape"] == best) & ~table.duplicated(["family", "mape"])
+    table["chosen"] = (
+        table["eligible"]
+        & (table["mape"] == table["family"].map(best))
+        & ~table.duplicated(["family", "eligible", "mape"])
+    )
     return table
 
 
@@ -437,6 +448,8 @@ def tune_boosters(args) -> int:
             mlflow.end_run(status="FAILED")
         raise
     chosen = table[table["chosen"]]
+    for family in sorted(set(table["family"]) - set(chosen["family"])):
+        print(f"No eligible candidate for {family}: none chosen.", file=sys.stderr)
     shown = [c for c in ("family", "candidate", *TUNED_KEYS, "mape") if c in chosen]
     print(chosen[shown].to_string(index=False))
     print(f"Report: {out / 'report.md'}")
@@ -496,6 +509,14 @@ def compare_runs(args) -> int:
             file=sys.stderr,
         )
         return 2
+    # A decision must rest on code that is in a commit.
+    dirty = [s for s, h in heads.items() if "uncommitted" in h.get("commit", "")]
+    if dirty:
+        print(
+            f"Refusing: the {' and '.join(dirty)} run had uncommitted changes.",
+            file=sys.stderr,
+        )
+        return 2
     old = pd.read_csv(incumbent / "cells.csv")
     new = pd.read_csv(candidate / "cells.csv")
     results = [decision.compare(old, new, model) for model in args.models]
@@ -546,6 +567,7 @@ def compare_runs(args) -> int:
         mlflow.end_run(status="FINISHED")
     except Exception as e:
         print(f"MLflow logging failed, so this is not logged: {e}", file=sys.stderr)
+        mlflow.end_run(status="FAILED")
         return 1
     return 0
 
@@ -555,6 +577,10 @@ def compare_runs(args) -> int:
 
 def _tickers(value: str) -> list[str]:
     return [t.strip().upper() for t in value.split(",") if t.strip()]
+
+
+def _models(value: str) -> list[str]:
+    return [m.strip().lower() for m in value.split(",") if m.strip()]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -581,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--tickers", type=_tickers, default=None)
     run.add_argument(
         "--models",
-        type=lambda v: [m.strip().lower() for m in v.split(",") if m.strip()],
+        type=_models,
         default=[*FORECASTERS, *COMBINERS],
     )
     run.add_argument("--label", default="", help="the run's folder and MLflow name")
@@ -600,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
     tune.add_argument("--snapshot", type=Path, required=True)
     tune.add_argument(
         "--models",
-        type=lambda v: [m.strip().lower() for m in v.split(",") if m.strip()],
+        type=_models,
         default=sorted(MODEL_PARAMS),
     )
     tune.add_argument("--tickers", type=_tickers, default=None)
@@ -617,7 +643,7 @@ def main(argv: list[str] | None = None) -> int:
     compare.add_argument("--candidate", type=Path, required=True, help="a run folder")
     compare.add_argument(
         "--models",
-        type=lambda v: [m.strip().lower() for m in v.split(",") if m.strip()],
+        type=_models,
         required=True,
     )
 
