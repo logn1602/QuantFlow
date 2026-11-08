@@ -37,12 +37,24 @@ def stored_bars(price_bars):
     )
 
 
-def _article(ts, sentiment, compound):
-    return {
+def _article(ts, sentiment, compound, **overrides):
+    """A stored article row, as load_articles returns it, stored when
+    published."""
+    scores = {"positive": (0.8, 0.1, 0.1), "negative": (0.1, 0.8, 0.1)}
+    pos, neg, neu = scores.get(sentiment, (0.1, 0.1, 0.8))
+    row = {
+        "ticker": "AAPL",
+        "source": "rss",
+        "url_domain": "finance.yahoo.com",
         "published_at": pd.Timestamp(ts, tz="UTC"),
+        "inserted_at": pd.Timestamp(ts, tz="UTC"),
         "sentiment": sentiment,
+        "score_pos": pos,
+        "score_neg": neg,
+        "score_neu": neu,
         "compound": compound,
     }
+    return row | overrides
 
 
 ARTICLES = pd.DataFrame(
@@ -117,6 +129,27 @@ def test_built_features_match_the_rows_the_stages_store(
     )
 
     pd.testing.assert_frame_equal(built, stored, check_dtype=False)
+
+
+BAD_ROWS = pd.DataFrame(
+    [
+        # Written while FinBERT could not load (removed in 29d1957).
+        _article("2026-03-02 16:00", "neutral", 0.0, score_pos=0.33, score_neg=0.33,
+                 score_neu=0.34),
+        # MarketWatch's general-market feed, once credited to AAPL.
+        _article("2026-03-04 16:00", "negative", -0.9,
+                 url_domain="feeds.marketwatch.com"),
+    ]
+)  # fmt: skip
+
+
+def test_bad_sentiment_rows_change_no_feature(stored_bars):
+    bars = daily_bars(stored_bars, "AAPL")
+    clean = engineering.build_features(bars, ARTICLES, "AAPL")
+    with_bad = engineering.build_features(
+        bars, pd.concat([ARTICLES, BAD_ROWS], ignore_index=True), "AAPL"
+    )
+    pd.testing.assert_frame_equal(with_bad, clean)
 
 
 def test_sentiment_is_averaged_by_utc_publish_date():

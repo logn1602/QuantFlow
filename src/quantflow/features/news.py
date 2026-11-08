@@ -2,7 +2,7 @@
 
 The rules of docs/evaluation.md, section 4 (decisions D6 and D7). They live
 here so one definition serves both the evaluation's news coverage report
-and, once the live changes ship (feat/evaluation-live), the features.
+and the features (features.engineering.build_features).
 
 Articles are news_sentiment rows: ticker, source, url_domain, published_at,
 inserted_at, sentiment, score_pos, score_neg, score_neu, compound.

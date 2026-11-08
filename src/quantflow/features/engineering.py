@@ -21,6 +21,7 @@ from quantflow.db.features import load_articles
 from quantflow.db.prices import PRICE_COLUMNS, indexed_by_date, load_daily_bars
 from quantflow.features.anomalies import STORED_DECIMALS, detect_anomalies
 from quantflow.features.indicators import compute_indicators, rounded_for_storage
+from quantflow.features.news import bad_rows
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -60,10 +61,12 @@ def build_features(
     the evaluation.
 
     prices are daily bars (load_daily_bars' shape) and articles the stored
-    sentiment rows (published_at, sentiment, compound). Indicators and
-    anomaly scores are computed from the prices exactly as their stages do,
-    at the precision the tables keep, and sentiment is averaged by UTC
-    publish date. It depends only on its arguments: given the history up to
+    sentiment rows (load_articles' columns). Indicators and anomaly scores
+    are computed from the prices exactly as their stages do, at the
+    precision the tables keep, and sentiment is averaged by UTC publish
+    date, leaving out the rows no feature should use (FinBERT placeholders,
+    the general feed credited to AAPL: features.news.bad_rows). It depends
+    only on its arguments: given the history up to
     a date, it gives what the live run would have built on that date. The
     stored anomaly rows cannot do that, because the IQR fences behind them
     are fitted on the whole history.
@@ -85,6 +88,8 @@ def build_features(
     else:
         anomalies = _dated(flags[["zscore"]].astype(float).round(STORED_DECIMALS))
 
+    if not articles.empty:
+        articles = articles[~bad_rows(articles)]
     return merge_feature_inputs(
         prices, indicators, anomalies, daily_sentiment(articles)
     )
