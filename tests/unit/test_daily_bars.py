@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from quantflow.db import prices
-from quantflow.features import engineering
+from quantflow.features import engineering, news
 
 # Two trading dates: one seeded with a daily bar, one with only a full
 # 15-min session whose closes climb from 100.0 to 102.5.
@@ -64,10 +64,7 @@ def test_daily_close_prefers_the_daily_bar_when_a_date_has_one(read_tables, pric
 
 def test_feature_prices_get_a_full_day_bar_built_from_15min_bars(read_tables, two_days):
     read_tables["raw_prices"] = two_days
-    read_tables["news_sentiment"] = pd.DataFrame(
-        columns=["ticker", "source", "url_domain", "published_at", "inserted_at",
-                 "sentiment", "score_pos", "score_neg", "score_neu", "compound"]
-    )  # fmt: skip
+    read_tables["news_sentiment"] = pd.DataFrame(columns=news.NEWS_DAY_COLUMNS)
 
     day = _row(engineering.load_features("AAPL"), "date", INTRADAY_DAY)
 

@@ -375,6 +375,23 @@ Limits that stay:
   can also hold what arrived between the run and midnight. A run long before the
   cutoff (the laptop scheduler during the day) sees a smaller part of the window.
 
+### How the live run reads the news (`perf/news-egress`, 2026-11-08)
+
+The features need only each window's counts and compound sum, and every window is a
+run of whole news days (from one cutoff to the next). So the live run reads the news
+summed per ticker and news day, in one query for every ticker
+(`db.features.load_news_days`), once in the model run and once in the backtest. It
+used to read every article once per ticker in each of three stages: 18.7 MB a run on
+the 2026-11-06 snapshot, growing with every article; the sums are 89 KB a read. The
+evaluation sums the snapshot's article rows the same way (`features.news.news_days`),
+and a test on Postgres checks the query's sums equal those, at every edge of the rules.
+
+The daily mean is the exact sum of the stored compounds (they are decimals), rounded
+once, over their count. pandas' mean of the rows as floats, used before, differs from
+it in the last bit in 370 of the snapshot's 1,056 news windows (at most 1.1e-16). No
+forecast changed with it: not the live boosters' on the snapshot, nor the boosters'
+or the ensemble's holdout stack at any validation origin, so R7 still stands.
+
 ### News coverage comes before any news decision (decision D15)
 
 Every harness run reports news coverage per window: the share of (ticker, date) rows

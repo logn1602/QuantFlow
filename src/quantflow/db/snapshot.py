@@ -19,7 +19,8 @@ _RAW_BARS = text("""
     ORDER BY ticker, ts
 """)
 
-# The live run's article columns (URL host only, no headlines or links).
+# The article rows, the evaluation sums them per news day itself
+# (features.news.news_days); URL host only, no headlines or links.
 _ARTICLES = text(
     ARTICLE_SELECT
     + "WHERE ticker = ANY(:tickers) AND inserted_at <= :stored_by "

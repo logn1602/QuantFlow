@@ -7,6 +7,10 @@ Two contracts: load_features builds the frame in process and never reads the
 indicator or anomaly tables (decision D4); and what it builds equals the
 rows the real indicator and anomaly stages store for the dashboard, so the
 features and the dashboard describe the same numbers.
+
+load_features reads the news summed per news day, where the evaluation sums
+the article rows itself: the frame is the same, bit for bit (and on
+Postgres, tests/integration checks the query's sums equal news_days').
 """
 
 import numpy as np
@@ -14,7 +18,7 @@ import pandas as pd
 import pytest
 
 from quantflow.db.prices import daily_bars
-from quantflow.features import anomalies, engineering, indicators
+from quantflow.features import anomalies, engineering, indicators, news
 
 N_DAYS = 90
 DAYS = pd.bdate_range("2026-01-02", periods=N_DAYS)
@@ -94,9 +98,9 @@ def test_load_features_builds_in_process_from_the_bars_and_the_articles(
     read_tables, stored_bars
 ):
     """No canned frame for technical_indicators or anomalies: reading either
-    would fail the test."""
+    would fail the test. The news is served as the database sums it."""
     read_tables["raw_prices"] = stored_bars
-    read_tables["news_sentiment"] = ARTICLES
+    read_tables["news_sentiment"] = news.news_days(ARTICLES)
 
     live = engineering.load_features("AAPL")
     built = engineering.build_features(
@@ -403,3 +407,30 @@ def test_an_article_with_no_compound_is_counted_but_not_averaged():
     daily = engineering.daily_sentiment(rows, DAYS).iloc[0]
     assert daily["article_count"] == 3
     assert daily["sentiment_compound"] == pytest.approx(0.2)
+
+
+# ── The live run's read: every ticker's news, summed per day, read once ──────
+
+
+def test_a_tickers_features_take_its_own_news_and_every_tickers_fetches(
+    read_tables, stored_bars
+):
+    """One read serves every ticker: the sentiment is the ticker's own, and
+    a day only another ticker's fetch stored on still counts as looked at
+    (decision D6), as when each ticker read its own articles and every fetch
+    time."""
+    msft_only = _article("2026-03-05 14:00", "negative", -0.7, ticker="MSFT")
+    rows = pd.concat([ARTICLES, pd.DataFrame([msft_only])], ignore_index=True)
+    read_tables["raw_prices"] = stored_bars
+
+    live = engineering.load_features("AAPL", news.news_days(rows))
+    built = engineering.build_features(
+        daily_bars(stored_bars, "AAPL"),
+        ARTICLES,
+        "AAPL",
+        fetched_at=rows["inserted_at"],
+    )
+
+    pd.testing.assert_frame_equal(live, built)
+    day = live.set_index("date").loc["2026-03-05"]
+    assert day["article_count"] == 0  # fetched (for MSFT), nothing for AAPL

@@ -98,7 +98,8 @@ def _run(raw, monkeypatch):
         monkeypatch.setitem(sys.modules, name, module)
 
     saved = {}
-    monkeypatch.setattr(boosting, "load_features", lambda ticker: raw.copy())
+    monkeypatch.setattr(boosting, "load_news", lambda: None)
+    monkeypatch.setattr(boosting, "load_features", lambda ticker, news: raw.copy())
     monkeypatch.setattr(
         boosting,
         "save_forecasts",

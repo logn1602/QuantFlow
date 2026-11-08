@@ -36,6 +36,7 @@ from quantflow.features.engineering import (
     engineer_features,
     get_feature_cols,
     load_features,
+    load_news,
 )
 from quantflow.models import FORECAST_DAYS
 from quantflow.utils.logger import get_logger
@@ -382,14 +383,19 @@ def compare_all_models(ticker: str):
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 
-def run(tickers: list[str] | None = None) -> dict:
+def run(tickers: list[str] | None = None, news: pd.DataFrame | None = None) -> dict:
+    """news is features.engineering.load_news' frame, read here once for
+    every ticker unless the caller has read it (run_models reads it once
+    for the boosters and the ensemble)."""
     tickers = tickers or TICKERS
     results = {}
+    if news is None:
+        news = load_news()
 
     for ticker in tickers:
         logger.info(f"Training XGBoost + LightGBM for {ticker}...")
 
-        raw = load_features(ticker)
+        raw = load_features(ticker, news)
         if raw.empty:
             results[ticker] = {"xgboost": 0, "lightgbm": 0}
             continue

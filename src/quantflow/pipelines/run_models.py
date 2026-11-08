@@ -78,6 +78,17 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
         logger.exception(f"ARIMA/Prophet failed: {type(e).__name__}: {e}")
         failed.append("arima_prophet")
 
+    # The stored news, summed per day: one read for the boosters and the
+    # ensemble, every ticker (each used to read every article once per
+    # ticker). If it fails, each step tries again and fails on its own.
+    news = None
+    try:
+        from quantflow.features.engineering import load_news
+
+        news = load_news()
+    except Exception as e:
+        logger.exception(f"Reading the news failed: {type(e).__name__}: {e}")
+
     # ── Step 2: XGBoost + LightGBM ───────────────────────────────────────────
     logger.info("=" * 50)
     logger.info("Step 2 — XGBoost + LightGBM")
@@ -85,7 +96,7 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     try:
         from quantflow.models.boosting import run as xgb_run
 
-        xgb_results = xgb_run(tickers=tickers)
+        xgb_results = xgb_run(tickers=tickers, news=news)
         for ticker, model_results in xgb_results.items():
             for model, n in model_results.items():
                 logger.info(f"  {ticker} [{model}]: {n} rows saved")
@@ -101,7 +112,7 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     try:
         from quantflow.models.ensemble import run as ensemble_run
 
-        ensemble_results = ensemble_run(tickers=tickers)
+        ensemble_results = ensemble_run(tickers=tickers, news=news)
         for ticker, n in ensemble_results.items():
             logger.info(f"  {ticker} [ensemble_stack]: {n} rows saved")
         results["ensemble"] = ensemble_results

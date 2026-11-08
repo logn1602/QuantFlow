@@ -58,7 +58,7 @@ from quantflow.evaluation.out_of_fold import (
     expanding_window_predictions,
 )
 from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
-from quantflow.features.engineering import load_features
+from quantflow.features.engineering import load_features, load_news
 from quantflow.models import FORECAST_DAYS
 from quantflow.models.statistical import arima_holdout, prophet_holdout
 from quantflow.utils.logger import get_logger
@@ -107,9 +107,13 @@ def _xgb_lgb_holdout(raw_features: pd.DataFrame, ticker: str) -> dict:
 # ── Holdout stacking ──────────────────────────────────────────────────────────
 
 
-def collect_holdout_stacks(ticker: str) -> pd.DataFrame:
-    """The holdout stack for a ticker, from the stored prices and features."""
-    return build_holdout_stack(load_prices(ticker), load_features(ticker), ticker)
+def collect_holdout_stacks(
+    ticker: str, news: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """The holdout stack for a ticker, from the stored prices and features.
+    news is load_news' frame, read once by the caller for every ticker (read
+    here if not given)."""
+    return build_holdout_stack(load_prices(ticker), load_features(ticker, news), ticker)
 
 
 def build_holdout_stack(
@@ -532,10 +536,14 @@ def show_results(ticker: str):
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 
-def run(tickers: list | None = None) -> dict:
+def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
+    """news is load_news' frame, read here once for every ticker unless the
+    caller has read it."""
     tickers = tickers or TICKERS
     results = {}
     misaligned: list[str] = []
+    if news is None:
+        news = load_news()
 
     for ticker in tickers:
         logger.info(f"{'=' * 50}")
@@ -543,7 +551,7 @@ def run(tickers: list | None = None) -> dict:
         logger.info(f"{'=' * 50}")
 
         logger.info("Collecting out-of-fold holdout predictions...")
-        stacked_df = collect_holdout_stacks(ticker)
+        stacked_df = collect_holdout_stacks(ticker, news)
         if stacked_df.empty:
             logger.error(f"{ticker}: stacking skipped")
             results[ticker] = 0

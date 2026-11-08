@@ -157,7 +157,7 @@ def test_the_ensembles_stack_fits_the_configured_arima_order(
     monkeypatch.setattr(statistical, "ARIMA_ORDER", (2, 1, 0))
     monkeypatch.setattr(ensemble, "load_prices", lambda ticker: HOLIDAY_IN_HOLDOUT)
     monkeypatch.setattr(
-        ensemble, "load_features", lambda ticker: pd.DataFrame(), raising=False
+        ensemble, "load_features", lambda ticker, news=None: pd.DataFrame()
     )
     ensemble.collect_holdout_stacks("AAPL")
     assert fake_arima.orders == [(2, 1, 0)]

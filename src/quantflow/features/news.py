@@ -184,6 +184,20 @@ def news_days(articles: pd.DataFrame) -> pd.DataFrame:
     return sums.reset_index()[NEWS_DAY_COLUMNS]
 
 
+def query_rules() -> dict:
+    """The rules above, as db.features.load_news_days applies them in the
+    database: one definition for the rows summed here and the sums read."""
+    return {
+        "source_delays": SOURCE_DELAY,
+        "placeholder_sentiment": PLACEHOLDER_SENTIMENT,
+        "placeholder_scores": PLACEHOLDER_SCORES,
+        "rtol": CLOSE_RTOL,
+        "atol": CLOSE_ATOL,
+        "general_feed": GENERAL_FEED,
+        "cutoff_after": NEWS_CUTOFF_AFTER_DATE,
+    }
+
+
 def dates_with_news(articles: pd.DataFrame, trading_dates) -> pd.DataFrame:
     """The (ticker, date) pairs whose window holds at least one article that
     counts: not a bad row, and available by that date's cutoff."""

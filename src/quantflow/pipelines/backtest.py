@@ -20,6 +20,8 @@ import json
 import sys
 from datetime import datetime
 
+import pandas as pd
+
 from quantflow.config import TICKERS
 from quantflow.db.backtest import load_backtest_results, replace_backtest_result
 from quantflow.db.prices import load_daily_close as load_prices
@@ -28,6 +30,7 @@ from quantflow.evaluation.backtest import (
     backtest_out_of_fold,
     log_to_mlflow,
 )
+from quantflow.features.engineering import load_news
 from quantflow.models import ensemble
 from quantflow.utils.logger import get_logger
 
@@ -56,7 +59,7 @@ def _result_row(ticker: str, metrics: dict, sim: dict, eval_days: int) -> dict:
     }
 
 
-def run_backtest(ticker: str) -> dict:
+def run_backtest(ticker: str, news: pd.DataFrame | None = None) -> dict:
     """
     End-to-end backtest for one ticker:
       1. Collect 30-day holdout predictions from all 4 base models
@@ -73,7 +76,7 @@ def run_backtest(ticker: str) -> dict:
     logger.info(f"{'=' * 50}")
 
     logger.info("Collecting holdout predictions from 4 base models...")
-    stacked_df = ensemble.collect_holdout_stacks(ticker)
+    stacked_df = ensemble.collect_holdout_stacks(ticker, news)
     if stacked_df.empty:
         logger.error(f"{ticker}: backtest skipped: insufficient data")
         return {}
@@ -108,12 +111,20 @@ def run_backtest(ticker: str) -> dict:
     return metrics
 
 
-def run(tickers: list | None = None) -> dict:
+def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
+    """news is load_news' frame; read here once for every ticker. If it
+    cannot be read, every ticker fails, as it did when each read its own."""
     tickers = tickers or TICKERS
     all_results = {}
+    if news is None:
+        try:
+            news = load_news()
+        except Exception as e:
+            logger.exception(f"Reading the news failed: {type(e).__name__}: {e}")
+            return {ticker: {} for ticker in tickers}
     for ticker in tickers:
         try:
-            all_results[ticker] = run_backtest(ticker)
+            all_results[ticker] = run_backtest(ticker, news)
         except Exception as e:
             logger.exception(f"{ticker}: backtest failed: {type(e).__name__}: {e}")
             all_results[ticker] = {}

@@ -21,7 +21,7 @@ window saw no fetch for any ticker, every news feature is missing.
 import numpy as np
 import pandas as pd
 
-from quantflow.db.features import load_articles, load_fetch_times
+from quantflow.db.features import load_news_days
 from quantflow.db.prices import PRICE_COLUMNS, indexed_by_date, load_daily_bars
 from quantflow.features.anomalies import (
     STORED_DECIMALS,
@@ -29,7 +29,13 @@ from quantflow.features.anomalies import (
     point_in_time_scores,
 )
 from quantflow.features.indicators import compute_indicators, rounded_for_storage
-from quantflow.features.news import day_window_dates, news_day, news_days, total
+from quantflow.features.news import (
+    day_window_dates,
+    news_day,
+    news_days,
+    query_rules,
+    total,
+)
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -47,21 +53,34 @@ SENTIMENT_COLUMNS = ["sentiment_compound", "pos_count", "neg_count", "article_co
 COUNT_COLUMNS = ["pos_count", "neg_count", "article_count"]
 
 
-def load_features(ticker: str) -> pd.DataFrame:
+def load_news() -> pd.DataFrame:
+    """Every ticker's stored news summed per news day (features.news
+    .news_days' frame): one read serves a whole run, every ticker."""
+    return load_news_days(**query_rules())
+
+
+def load_features(ticker: str, news: pd.DataFrame | None = None) -> pd.DataFrame:
     """The live run's feature frame for a ticker: build_features on the
-    stored daily bars and articles.
+    stored daily bars and news.
 
     Prices come from load_daily_bars, the same one-row-per-trading-date
     series the statistical models read, so every model sees the same close.
-    Nothing is read from the technical_indicators or anomalies tables, which
-    are written for the dashboard only.
+    news is load_news' frame, read once by the caller for every ticker; it
+    is read here if not given. The ticker's own days give its sentiment, and
+    every ticker's the days a fetch ran (decision D6). Nothing is read from
+    the technical_indicators or anomalies tables, which are written for the
+    dashboard only.
     """
     prices = load_daily_bars(ticker)
     if prices.empty:
         logger.warning(f"No price data for {ticker}")
         return pd.DataFrame()
-    return build_features(
-        prices, load_articles(ticker), ticker, fetched_at=load_fetch_times()
+    if news is None:
+        news = load_news()
+    return features_from_news(
+        prices,
+        news[news["ticker"] == ticker],
+        news["stored_day"].drop_duplicates(),
     )
 
 
@@ -75,7 +94,7 @@ def build_features(
     the evaluation.
 
     prices are daily bars (load_daily_bars' shape) and articles the stored
-    sentiment rows (load_articles' columns). Indicators are computed from
+    sentiment rows (db.features.ARTICLE_SELECT's columns). Indicators are computed from
     the prices exactly as their stage does, at the precision its table
     keeps; anomaly scores are point-in-time (anomalies.point_in_time_scores,
     decision D14): each date's from the prices up to it, where the stage

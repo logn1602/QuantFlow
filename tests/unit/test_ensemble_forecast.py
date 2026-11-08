@@ -91,7 +91,10 @@ def test_one_misaligned_ticker_fails_the_run_after_the_others_finish(
     truth = 100 + np.cumsum(rng.normal(0, 1, 30))
     stack = pd.DataFrame({"actual": truth} | dict.fromkeys(ensemble.BASE_MODELS, truth))
     saved = []
-    monkeypatch.setattr(ensemble, "collect_holdout_stacks", lambda t: stack.copy())
+    monkeypatch.setattr(ensemble, "load_news", lambda: None)
+    monkeypatch.setattr(
+        ensemble, "collect_holdout_stacks", lambda t, news=None: stack.copy()
+    )
     monkeypatch.setattr(ensemble, "save_model_metrics", lambda *a, **k: None)
     monkeypatch.setattr(ensemble, "log_to_mlflow", lambda *a, **k: None)
     monkeypatch.setattr(
