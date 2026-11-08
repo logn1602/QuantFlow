@@ -210,3 +210,29 @@ def test_each_booster_fits_on_one_thread(family):
     the same on any machine. LightGBM does not depend on it; pinned too, so
     the evaluation's worker processes run one thread per model."""
     assert boosting._new_regressor(family).get_params()["n_jobs"] == 1
+
+
+class SpyRegressor(FakeRegressor):
+    """Records everything fit was given."""
+
+    def fit(self, X, y, **kwargs):
+        self.fit_kwargs = kwargs
+        self.y = y.copy()
+        return super().fit(X, y)
+
+
+@pytest.mark.parametrize("family", ["xgboost", "lightgbm"])
+def test_the_scored_fit_never_sees_the_holdout(raw, monkeypatch, family):
+    """XGBoost's scored fit was handed the holdout as eval_set. Without
+    early stopping that changes no prediction, but the holdout it is scored
+    on must not reach the fit at all: early stopping or tuning reading it
+    would quietly pick the model on the very rows that score it."""
+    spy = SpyRegressor()
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name: spy)
+    labelled = _labelled(raw)
+    boosting._train_scored(family, labelled, "AAPL")
+    assert spy.fit_kwargs == {}
+    assert len(spy.X) == len(labelled) - HOLDOUT_DAYS
+    pd.testing.assert_series_equal(
+        spy.y, labelled["target_price"].iloc[:-HOLDOUT_DAYS], check_names=False
+    )

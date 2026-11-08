@@ -130,10 +130,10 @@ def _train_scored(model_name: str, df: pd.DataFrame, ticker: str) -> dict:
     X_hold = holdout[available]
     y_hold = holdout["target_price"]
 
-    if model_name == "xgboost":
-        model.fit(X_train, y_train, eval_set=[(X_hold, y_hold)], verbose=False)
-    else:
-        model.fit(X_train, y_train)
+    # The holdout scores this model, so it never reaches the fit (it used to
+    # go in as XGBoost's eval_set: harmless without early stopping, a leak
+    # the moment early stopping or tuning read it).
+    model.fit(X_train, y_train)
 
     # Evaluate on holdout
     preds = model.predict(X_hold)

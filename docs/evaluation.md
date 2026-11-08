@@ -170,7 +170,8 @@ The same code as the live run, called with the history cut at `o`:
   track the price level, so every horizon's forecast is anchored near day `o`'s price;
   a booster scoring close to naive may be partly built that way rather than learned,
   which is why section 3 reports how far each model's forecasts move. This is the live
-  model, not the train-split model that passes the holdout as `eval_set`.
+  model, not the train-split model (which was handed the holdout as `eval_set` until
+  Phase 3's F3, section 16).
 - **Ensemble**: section 5.
 
 A dense 1-step-ahead task (every model given the true history each day) is not
