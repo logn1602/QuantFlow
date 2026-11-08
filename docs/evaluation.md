@@ -877,3 +877,117 @@ Decided by the owner; the body above applies them.
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
 origin's close) as a fifth stack column, so the ensemble can lean on it; not freezing
 open, high and low during the boosters' rollout.
+
+---
+
+## 16. Phase 3: accuracy experiments
+
+Approved by the owner on 2026-11-08, with changes: the correctness fixes are separated
+from the experiments and kept whatever they score; tickers run in parallel, at most 3
+workers; Prophet tuning (E5) is skipped. Written before any Phase 3 run. Everything
+runs on `feat/accuracy`, one change per commit, each run from a git worktree at its
+commit on snapshot `f0c3957b`, on the validation dates, logged to MLflow.
+
+### Order of work
+
+1. **Setup, no forecast changes.**
+   - **S1**: the interval score (below) beside band coverage and width, per horizon;
+     the keep-or-drop rule as code (`evaluation/decision.py`, the `compare` command),
+     so every decision is computed the same way, from two runs' cells.
+   - **S2**: tickers in parallel worker processes, at most 3 (8 GB of RAM), each model
+     on one thread inside its worker. A test checks that parallel cells equal
+     sequential cells exactly, and a full parallel run is checked against the
+     sequential run of the commit before it.
+2. **Fixes, kept whatever they score**, like the 2d corrections (section 2): each its
+   own commit with a test shown failing first, measured on the validation dates and
+   reported, not used to keep or drop anything.
+   - **F1, one thread per booster.** XGBoost's row subsampling (`subsample` 0.8) draws
+     different rows for different thread counts, so the same data gives a different
+     forecast on this laptop (8 threads, where R7 ran) than on GitHub's runner: up to
+     about $3 apart at one origin of the snapshot. With one thread the published
+     forecast is the evaluated one on any machine. LightGBM's forecasts do not depend
+     on the thread count; it is pinned too, so each worker runs one thread per model.
+   - **F2, the rollout's Bollinger features as training builds them.** Training gets
+     the bands from `ta`, with the population standard deviation, rounded as stored;
+     the rollout used the sample standard deviation (its `bb_width` about 2.6% wider)
+     and clipped `bb_position` to [0, 1], which training never does. Both now come
+     from one definition, and a feature is missing where the band has no width, as in
+     training.
+   - **F3, no holdout in the scored fit.** The scored XGBoost fit received the holdout
+     as `eval_set`. Without early stopping that changes no prediction, but it would
+     leak the holdout the moment early stopping or tuning read it.
+
+   The run after F3, **B0**, is every model's incumbent.
+3. **Experiments**, in this order, each one hypothesis against the incumbent and naive:
+
+| # | Hypothesis | Decided on |
+|---|---|---|
+| E1 | The boosters predict the next day's log return, turned back into a price, instead of the price itself: a tree cannot predict above the highest target it was trained on. | each booster |
+| E2 | The rollout stops freezing open, high and low: each step's open is the previous close, and high and low keep the last day's ratios to the close. | each booster |
+| E3 | Booster hyperparameters tuned on training data only (below). | each booster |
+| E4 | ARIMA's order chosen by AIC on each fit's own data, p 0 to 5, q 0 to 2, d 1, instead of a fixed (5, 1, 0). | ARIMA |
+| | Base set: every model and both ensembles, after E1 to E4: the ensembles' incumbent. | |
+| E6 | Naive as a fifth stack column, in the live 30-day stack and the rolling weights. | each ensemble |
+| E7 | Separate rolling-ensemble weights per horizon. | the rolling ensemble |
+| I1 | The boosters' bands (below). | the band rule |
+
+   Not run: Prophet tuning (E5, skipped by the owner), and the news variants (D15).
+4. **T3**: the test dates scored once, with the final model set (ledger entry 3),
+   reported, never used to choose. Phase 4 reuses T3 if the code has not changed.
+
+### The keep-or-drop rule (E1 to E7)
+
+- **Cells**: one model's cells at the 42 validation origins x 8 tickers x horizons 1
+  to 7, in the candidate's run and the incumbent's, both on snapshot `f0c3957b`.
+  Compared on the cells both versions forecast.
+- **Incumbent**: the model as of the last kept change (B0 to start).
+- **Keep only if both**: (1) the candidate's MAPE over all those cells is strictly lower
+  than the incumbent's; (2) its MAPE is lower on at least 5 of the 8 tickers.
+  Otherwise drop it; a tie drops (the incumbent is simpler or already there).
+- **Dropped regardless** if it fails more cells than the incumbent, or more than the
+  harness's 10% limit.
+- A change to both boosters is decided per booster; ARIMA's on ARIMA's cells; E6 per
+  ensemble, E7 on the rolling ensemble. Other models' numbers are reported, not
+  deciding.
+- **Reported, not deciding**: MAPE by horizon, MAE, skill against naive, directional
+  accuracy, interval score and band coverage, a paired test against the incumbent
+  (per-origin difference in absolute percentage error, Newey-West lag 1), and the D8
+  primary test against naive, still the only basis for "beats naive".
+
+### Tuning on training data only (E3)
+
+Tuning origins sit on the grid's 5-day step before the validation warmup, each one's
+day-7 target before the first warmup origin (2025-04-02): 24 origins, 2024-10-01 to
+2025-03-19 on the snapshot (the last target 2025-03-28), each training on 121 to 236
+rows. No tuning target is a
+validation or test date. For each booster the candidates are the current settings and a
+grid of 12 (max depth 3, 4 or 6; learning rate 0.03 or 0.1; 200 or 600 trees; the
+sampling settings unchanged), each scored by its 7-day recursive MAPE over every
+tuning cell; the lowest is E3's candidate, then judged on the validation dates by the
+rule above. If the current settings score lowest, E3 has no candidate and does not
+run. Settings chosen on 121 to 236 training rows may suit the validation origins' 306
+to 511 less well; that is the cost of tuning on training data only. No early stopping.
+
+### The band rule (I1)
+
+The boosters publish a fixed plus or minus 2% band, which covered 44% (XGBoost) and 42%
+(LightGBM) of actual closes on the validation dates (R7). Two candidates, after E1 to E3 so they describe
+the final boosters:
+
+- (a) a random-walk band: forecast x exp(plus or minus 1.96 sigma sqrt(h)), with sigma
+  the standard deviation of the last 60 daily log returns up to the origin;
+- (b) per-horizon 2.5% and 97.5% quantiles of the booster's own log errors at the 12
+  grid origins before this one whose targets are known by it (the rolling weights'
+  pattern; the live run would replay those 12 forecasts, about 1 to 2 minutes).
+
+A candidate is kept only if its 95% band covers 92.5% to 97.5% of each booster's
+validation cells and its mean interval score is below the plus or minus 2% band's; of
+two that pass, the lower interval score. If neither passes, the boosters' bands stop
+being presented as 95% bands, and the ensemble stops combining them as if they were.
+The dashboard labels the bands "XGBOOST band" and so on, with no level, and the README
+claims none; Phase 4 adds the measured coverage to the label.
+
+The **interval score** of a 95% band [l, u] for an actual y is (u - l) + 40 (l - y) if
+y < l, + 40 (y - u) if y > u (Gneiting and Raftery, 2007, alpha 0.05), reported as a
+percentage of y so tickers can be pooled. Narrow bands that miss are penalised as
+well as wide ones; lower is better.
