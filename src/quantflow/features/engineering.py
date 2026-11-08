@@ -21,7 +21,7 @@ from quantflow.db.features import load_articles
 from quantflow.db.prices import PRICE_COLUMNS, indexed_by_date, load_daily_bars
 from quantflow.features.anomalies import STORED_DECIMALS, detect_anomalies
 from quantflow.features.indicators import compute_indicators, rounded_for_storage
-from quantflow.features.news import bad_rows
+from quantflow.features.news import available_at, bad_rows, window_dates
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -63,10 +63,11 @@ def build_features(
     prices are daily bars (load_daily_bars' shape) and articles the stored
     sentiment rows (load_articles' columns). Indicators and anomaly scores
     are computed from the prices exactly as their stages do, at the
-    precision the tables keep, and sentiment is averaged by UTC publish
-    date, leaving out the rows no feature should use (FinBERT placeholders,
-    the general feed credited to AAPL: features.news.bad_rows). It depends
-    only on its arguments: given the history up to
+    precision the tables keep, and sentiment is averaged over each trading
+    date's news window (daily_sentiment), leaving out the rows no feature
+    should use (FinBERT placeholders, the general feed credited to AAPL:
+    features.news.bad_rows). It depends only on its arguments: given the
+    history up to
     a date, it gives what the live run would have built on that date. The
     stored anomaly rows cannot do that, because the IQR fences behind them
     are fitted on the whole history.
@@ -91,7 +92,7 @@ def build_features(
     if not articles.empty:
         articles = articles[~bad_rows(articles)]
     return merge_feature_inputs(
-        prices, indicators, anomalies, daily_sentiment(articles)
+        prices, indicators, anomalies, daily_sentiment(articles, prices["date"])
     )
 
 
@@ -111,17 +112,29 @@ def _dated(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.reset_index(drop=True).assign(date=dates.normalize())
 
 
-def daily_sentiment(articles: pd.DataFrame) -> pd.DataFrame:
-    """Articles averaged by UTC publish date: mean compound, positive and
-    negative counts, and every article counted."""
+def daily_sentiment(articles: pd.DataFrame, trading_dates) -> pd.DataFrame:
+    """Articles averaged over each trading date's news window: mean
+    compound, positive and negative counts, and every article counted.
+
+    An article counts on the trading date whose window holds the moment it
+    became available to a run (decision D7, features.news): the later of
+    its publish time plus its source's delay and its arrival in the
+    database, with each window closing at 12:00 UTC the next day. So weekend
+    news lands on Monday, NewsAPI's a day after publication, and an article
+    fetched late from when it arrived, in training exactly as live. One that
+    became available after the last date's cutoff counts nowhere yet.
+    """
     if articles.empty:
         return _empty(SENTIMENT_COLUMNS)
-    published = pd.to_datetime(articles["published_at"], utc=True)
-    by_date = articles.assign(
-        date=published.dt.tz_localize(None).dt.normalize(),
-        compound=pd.to_numeric(articles["compound"]),
-        positive=articles["sentiment"].eq("positive"),
-        negative=articles["sentiment"].eq("negative"),
+    dated = articles.assign(
+        date=window_dates(available_at(articles), trading_dates)
+    ).dropna(subset=["date"])
+    if dated.empty:
+        return _empty(SENTIMENT_COLUMNS)
+    by_date = dated.assign(
+        compound=pd.to_numeric(dated["compound"]),
+        positive=dated["sentiment"].eq("positive"),
+        negative=dated["sentiment"].eq("negative"),
     ).groupby("date", sort=True)
     return pd.DataFrame(
         {

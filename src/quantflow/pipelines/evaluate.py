@@ -108,7 +108,7 @@ def stored_feature_check(snapshot: Snapshot) -> pd.DataFrame:
             prices,
             stored_rows(snapshot.stored_indicators),
             stored_rows(snapshot.stored_anomalies),
-            daily_sentiment(articles),
+            daily_sentiment(articles, prices["date"]),
         )
         for column in [*INDICATOR_COLUMNS, "zscore"]:
             a = pd.to_numeric(rebuilt[column], errors="coerce").to_numpy(dtype=float)

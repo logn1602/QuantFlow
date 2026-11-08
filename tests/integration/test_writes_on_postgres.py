@@ -270,9 +270,9 @@ def test_daily_bars_on_the_types_the_driver_returns(pg):
 
 def test_features_line_up_with_prices_in_a_new_york_session(pg, install_engine):
     """The features are built in process (decision D4): article times come
-    back from the driver in the session's TimeZone and must still be dated
-    in UTC, and the indicator and anomaly tables, written for the dashboard,
-    must not reach the features."""
+    back from the driver in the session's TimeZone and must still be cut in
+    UTC (decision D7), and the indicator and anomaly tables, written for the
+    dashboard, must not reach the features."""
     days = ["2026-04-09", "2026-04-10", "2026-04-13"]
     prices.insert_bars(_bars(days))
     columns = ("macd", "macd_signal", "macd_hist", "bb_upper", "bb_middle", "bb_lower")
@@ -294,9 +294,12 @@ def test_features_line_up_with_prices_in_a_new_york_session(pg, install_engine):
         insert_rows(
             conn,
             "news_sentiment",
-            [{"ticker": "AAPL", "source": "rss", "headline": "late news",
-              # 22:30 New York on the 9th: the 10th in UTC.
-              "published_at": pd.Timestamp("2026-04-10 02:30", tz="UTC"),
+            [{"ticker": "AAPL", "source": "rss", "headline": "morning news",
+              "published_at": pd.Timestamp("2026-04-10 13:50", tz="UTC"),
+              # 10:00 New York on the 10th: after the 9th's cutoff (12:00
+              # UTC), so it counts on the 10th. Read as a naive New York
+              # time it would land on the 9th.
+              "inserted_at": pd.Timestamp("2026-04-10 14:00", tz="UTC"),
               "sentiment": "positive", "compound": 0.5}],
         )  # fmt: skip
 

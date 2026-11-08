@@ -61,21 +61,21 @@ ARTICLES = pd.DataFrame(
     [
         _article("2026-03-02 14:00", "positive", 0.5),
         _article("2026-03-02 15:30", "positive", 0.3),
-        # Late evening, still 2 March in UTC: the stored query groups by UTC date.
         _article("2026-03-02 23:30", "negative", -0.4),
-        # Just after midnight UTC: 3 March.
+        # After midnight UTC, before the 2nd's cutoff at noon on the 3rd.
         _article("2026-03-03 00:30", "neutral", 0.0),
     ]
 )
 
-# The daily averages for ARTICLES, worked out by hand.
+# The daily averages for ARTICLES, worked out by hand: Monday 2 March's news
+# window runs to 12:00 UTC on Tuesday, so all four count on the 2nd.
 STORED_SENTIMENT = pd.DataFrame(
     {
-        "date": [pd.Timestamp("2026-03-02").date(), pd.Timestamp("2026-03-03").date()],
-        "sentiment_compound": [(0.5 + 0.3 - 0.4) / 3, 0.0],
-        "pos_count": [2, 0],
-        "neg_count": [1, 0],
-        "article_count": [3, 1],
+        "date": [pd.Timestamp("2026-03-02").date()],
+        "sentiment_compound": [(0.5 + 0.3 - 0.4 + 0.0) / 4],
+        "pos_count": [2],
+        "neg_count": [1],
+        "article_count": [4],
     }
 )
 
@@ -105,7 +105,7 @@ def test_load_features_builds_in_process_from_the_bars_and_the_articles(
 
     pd.testing.assert_frame_equal(live, built)
     assert built["zscore"].notna().any() and built["rsi_14"].notna().any()
-    assert built["article_count"].notna().sum() == 2
+    assert built["article_count"].notna().sum() == 1
 
 
 def test_built_features_match_the_rows_the_stages_store(
@@ -122,7 +122,7 @@ def test_built_features_match_the_rows_the_stages_store(
             fake_db.tables["technical_indicators"], engineering.INDICATOR_COLUMNS
         ),
         _as_selected(fake_db.tables["anomalies"], ["zscore"]),
-        engineering.daily_sentiment(ARTICLES),
+        engineering.daily_sentiment(ARTICLES, DAYS),
     )
     built = engineering.build_features(
         daily_bars(stored_bars, "AAPL"), ARTICLES, "AAPL"
@@ -152,8 +152,43 @@ def test_bad_sentiment_rows_change_no_feature(stored_bars):
     pd.testing.assert_frame_equal(with_bad, clean)
 
 
-def test_sentiment_is_averaged_by_utc_publish_date():
-    daily = engineering.daily_sentiment(ARTICLES)
+# ── Which trading date an article counts on (decision D7) ────────────────────
+
+
+def _counts(stored_bars, *articles):
+    built = engineering.build_features(
+        daily_bars(stored_bars, "AAPL"), pd.DataFrame(articles), "AAPL"
+    )
+    counts = built.set_index("date")["article_count"]
+    return {d.date().isoformat(): int(n) for d, n in counts[counts > 0].items()}
+
+
+def test_a_weekend_article_counts_on_monday(stored_bars):
+    saturday = _article("2026-03-07 15:00", "positive", 0.6)
+    assert _counts(stored_bars, saturday) == {"2026-03-09": 1}
+
+
+def test_a_newsapi_article_counts_from_a_day_after_it_was_published(stored_bars):
+    newsapi = _article("2026-03-03 15:00", "positive", 0.6, source="newsapi",
+                       inserted_at=pd.Timestamp("2026-03-03 15:05", tz="UTC"))  # fmt: skip
+    assert _counts(stored_bars, newsapi) == {"2026-03-04": 1}
+
+
+def test_an_article_stored_late_counts_from_when_it_arrived(stored_bars):
+    late = _article("2026-03-03 15:00", "positive", 0.6,
+                    inserted_at=pd.Timestamp("2026-03-06 23:00", tz="UTC"))  # fmt: skip
+    assert _counts(stored_bars, late) == {"2026-03-06": 1}
+
+
+def test_a_late_scheduled_run_stores_for_the_day_it_forecasts_from(stored_bars):
+    """GitHub started the 22:30 UTC run as late as 06:45 UTC the next day."""
+    fetched = _article("2026-03-03 21:00", "positive", 0.6,
+                       inserted_at=pd.Timestamp("2026-03-04 06:50", tz="UTC"))  # fmt: skip
+    assert _counts(stored_bars, fetched) == {"2026-03-03": 1}
+
+
+def test_sentiment_is_averaged_over_each_dates_news_window():
+    daily = engineering.daily_sentiment(ARTICLES, DAYS)
     expected = STORED_SENTIMENT.assign(date=pd.to_datetime(STORED_SENTIMENT["date"]))
     pd.testing.assert_frame_equal(daily, expected, check_dtype=False)
 
@@ -215,3 +250,8 @@ def test_a_later_price_can_move_an_earlier_anomaly_score(price_bars):
     before, after = _built(closes, price_bars), _built(calmer, price_bars)
     earlier = slice(0, 79)
     assert not before.loc[earlier, "zscore"].equals(after.loc[earlier, "zscore"])
+
+
+def test_news_not_yet_available_on_any_date_gives_missing_sentiment(stored_bars):
+    after_the_last_cutoff = _article("2026-06-01 15:00", "positive", 0.6)
+    assert _counts(stored_bars, after_the_last_cutoff) == {}
