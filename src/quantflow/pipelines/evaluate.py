@@ -48,8 +48,9 @@ from quantflow.features.engineering import (
     build_features,
     daily_sentiment,
     merge_feature_inputs,
+    stage_anomaly_scores,
 )
-from quantflow.models.forecasters import COMBINERS, FORECASTERS
+from quantflow.models.forecasters import COMBINERS, FORECASTERS, VARIANTS
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("evaluate")
@@ -92,14 +93,21 @@ def export_snapshot(as_of, tickers: list[str], root: Path = SNAPSHOT_ROOT) -> Pa
 
 def stored_feature_check(snapshot: Snapshot) -> pd.DataFrame:
     """Rebuilt against stored: the largest difference per ticker and column
-    between build_features on the whole snapshot and the frame merged from
-    the stored indicator and anomaly rows, which is what the live run reads.
-    Expected to be zero, or rounding-sized (docs/evaluation.md, section 2)."""
+    between what the stages would store for the whole snapshot and the rows
+    they did store: the indicators build_features computes, and the anomaly
+    stage's scores (engineering.stage_anomaly_scores; the features use
+    point-in-time scores instead, decision D14). Expected to be zero, or
+    rounding-sized (docs/evaluation.md, section 2)."""
     rows = []
     for ticker in snapshot.tickers:
         articles = snapshot.articles[snapshot.articles["ticker"] == ticker]
         prices = snapshot.prices[ticker]
-        rebuilt = build_features(prices, articles, ticker)
+        rebuilt = merge_feature_inputs(
+            prices,
+            build_features(prices, articles, ticker)[["date", *INDICATOR_COLUMNS]],
+            stage_anomaly_scores(prices, ticker),
+            daily_sentiment(articles, prices["date"]),
+        )
 
         def stored_rows(table: pd.DataFrame, t: str = ticker) -> pd.DataFrame:
             return table[table["ticker"] == t].drop(columns="ticker")
@@ -108,7 +116,7 @@ def stored_feature_check(snapshot: Snapshot) -> pd.DataFrame:
             prices,
             stored_rows(snapshot.stored_indicators),
             stored_rows(snapshot.stored_anomalies),
-            daily_sentiment(articles),
+            daily_sentiment(articles, prices["date"]),
         )
         for column in [*INDICATOR_COLUMNS, "zscore"]:
             a = pd.to_numeric(rebuilt[column], errors="coerce").to_numpy(dtype=float)
@@ -166,6 +174,10 @@ def _start_mlflow(label: str, tags: dict):
 
 
 def run_evaluation(args) -> int:
+    unknown = sorted(set(args.models) - {*FORECASTERS, *VARIANTS, *COMBINERS})
+    if unknown:
+        print(f"Refusing: no model named {', '.join(unknown)}.", file=sys.stderr)
+        return 2
     if args.window == "test" and not args.reason:
         print(
             "Refusing: a test-date run needs --reason (it is counted).", file=sys.stderr
@@ -184,7 +196,8 @@ def run_evaluation(args) -> int:
     dates = snapshot.trading_dates
     scored, warmup = origin_grid(len(dates)).window(args.window)
     tickers = args.tickers or snapshot.tickers
-    forecasters = {m: f for m, f in FORECASTERS.items() if m in args.models}
+    known = {**FORECASTERS, **VARIANTS}
+    forecasters = {m: f for m, f in known.items() if m in args.models}
     combiners = {m: c for m, c in COMBINERS.items() if m in args.models}
     needs_history = any(getattr(c, "needs_history", False) for c in combiners.values())
     origins = [(p, "scored") for p in scored]

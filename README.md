@@ -16,7 +16,7 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 
 - **Ingests** OHLCV bars for 8 tickers from yFinance and Alpha Vantage into PostgreSQL, on a 15-minute APScheduler interval.
 - **Computes** RSI(14), MACD(12/26/9), Bollinger Bands(20), rolling Z-score and IQR anomaly flags, and FinBERT sentiment over NewsAPI and Yahoo Finance RSS headlines.
-- **Forecasts** 7 days ahead with five models — ARIMA, Prophet, XGBoost, LightGBM, and an NNLS stacking ensemble over the four — from a 33-column feature matrix.
+- **Forecasts** 7 days ahead with five models: ARIMA, Prophet, XGBoost, LightGBM, and an NNLS stacking ensemble over the four, from a 34-column feature matrix.
 - **Evaluates** every model on a time-ordered holdout, scores the ensemble out-of-fold, and simulates a long/flat trading strategy against buy-and-hold.
 
 ---
@@ -32,7 +32,7 @@ flowchart TD
     DB --> IND[Technical indicators<br/>RSI - MACD - Bollinger]
     DB --> ANOM[Anomaly detection<br/>Z-score - IQR]
 
-    IND --> FEAT[Feature matrix<br/>33 columns]
+    IND --> FEAT[Feature matrix<br/>34 columns]
     ANOM --> FEAT
     FB --> FEAT
     DB --> FEAT

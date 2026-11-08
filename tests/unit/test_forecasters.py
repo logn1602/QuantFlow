@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from quantflow.evaluation.rolling_origin import OriginData
-from quantflow.features.engineering import build_features
+from quantflow.features.engineering import build_features, get_feature_cols
 from quantflow.models import boosting, ensemble, forecasters
 from quantflow.utils.trading_calendar import TRADING_DAY, next_trading_days
 
@@ -81,6 +81,20 @@ def test_the_booster_adapter_forecasts_what_the_live_run_saves(
         assert np.allclose(adapted["yhat"], live["predicted_close"])
         assert np.allclose(adapted["yhat_lower"], live["lower_bound"])
         assert [pd.Timestamp(d) for d in live["ds"]] == list(_data(prices).dates)
+
+
+class RecordingRegressor(FakeRegressor):
+    def predict(self, X):
+        self.last = X.copy()
+        return super().predict(X)
+
+
+def test_the_booster_adapter_passes_missing_values_on(monkeypatch):
+    model = RecordingRegressor()
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name: model)
+    forecasters.booster("xgboost")(_data(_prices()))
+    # No articles: every news feature is missing, not 0.
+    assert model.last[["has_news", "sentiment_compound"]].isna().all().all()
 
 
 def test_the_booster_adapter_reads_only_the_history_it_is_given(fake_regressors):
@@ -179,4 +193,14 @@ def test_the_ensemble_adapter_refuses_a_missing_base_forecast():
 
 def test_every_model_and_baseline_is_registered():
     assert set(forecasters.FORECASTERS) == {"naive", "drift", *ensemble.BASE_MODELS}
-    assert set(forecasters.COMBINERS) == {"ensemble_stack"}
+    assert set(forecasters.COMBINERS) == {"ensemble_stack", "ensemble_rolling"}
+    assert set(forecasters.VARIANTS) == {"xgboost_no_news", "lightgbm_no_news"}
+
+
+def test_the_ablation_boosters_fit_without_the_news_features(monkeypatch):
+    model = RecordingRegressor()
+    monkeypatch.setattr(boosting, "_new_regressor", lambda name: model)
+    forecasters.VARIANTS["xgboost_no_news"](_data(_prices()))
+    assert not set(forecasters.NEWS_FEATURES) & set(model.last.columns)
+    assert "close_lag_1" in model.last.columns
+    assert set(forecasters.NEWS_FEATURES) <= set(get_feature_cols())

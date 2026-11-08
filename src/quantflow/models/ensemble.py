@@ -200,12 +200,14 @@ class NNLSMeta:
         return X @ self.coef_
 
 
-def _fit_nnls(X, y) -> NNLSMeta:
+def _fit_nnls(X, y, strict: bool = False) -> NNLSMeta:
     """
     Solve min ||Xw - y||^2 s.t. w >= 0, then normalise to a convex combination.
 
     Shared by the out-of-fold loop and the final production fit so both use
-    one implementation of the meta-learner.
+    one implementation of the meta-learner. An all-zero solution falls back
+    to equal weights, unless strict, when it is an error (the rolling-origin
+    weights, docs/evaluation.md section 5: a guess is not a fit).
     """
     from scipy.optimize import nnls
 
@@ -218,10 +220,18 @@ def _fit_nnls(X, y) -> NNLSMeta:
     raw_weights, _ = nnls(X, y)
 
     weight_sum = raw_weights.sum()
+    if strict and weight_sum <= 0:
+        raise ValueError("the NNLS solution is all zero: no weights to use")
     weights = (
         raw_weights / weight_sum if weight_sum > 0 else np.ones(n_features) / n_features
     )
     return NNLSMeta(weights)
+
+
+def fit_nnls_strict(X, y) -> NNLSMeta:
+    """_fit_nnls with an all-zero solution an error: the rolling-origin
+    weights' fitter."""
+    return _fit_nnls(X, y, strict=True)
 
 
 def out_of_fold_meta_predictions(

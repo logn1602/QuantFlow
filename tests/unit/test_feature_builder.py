@@ -1,13 +1,12 @@
 """tests/unit/test_feature_builder.py
 
 Covers build_features, the feature frame computed from daily bars and
-articles rather than read back from the derived tables.
+articles, which both the live run (load_features) and the evaluation call.
 
-The identity test is the contract: run the real indicator and anomaly stages
-against the in-memory database, read their rows back through load_features,
-and build_features must give the same frame from the same prices and
-articles. The evaluation harness relies on that to rebuild, at any past
-date, what the live run read on that date.
+Two contracts: load_features builds the frame in process and never reads the
+indicator or anomaly tables (decision D4); and what it builds equals the
+rows the real indicator and anomaly stages store for the dashboard, so the
+features and the dashboard describe the same numbers.
 """
 
 import numpy as np
@@ -38,33 +37,45 @@ def stored_bars(price_bars):
     )
 
 
-def _article(ts, sentiment, compound):
-    return {
+def _article(ts, sentiment, compound, **overrides):
+    """A stored article row, as load_articles returns it, stored when
+    published."""
+    scores = {"positive": (0.8, 0.1, 0.1), "negative": (0.1, 0.8, 0.1)}
+    pos, neg, neu = scores.get(sentiment, (0.1, 0.1, 0.8))
+    row = {
+        "ticker": "AAPL",
+        "source": "rss",
+        "url_domain": "finance.yahoo.com",
         "published_at": pd.Timestamp(ts, tz="UTC"),
+        "inserted_at": pd.Timestamp(ts, tz="UTC"),
         "sentiment": sentiment,
+        "score_pos": pos,
+        "score_neg": neg,
+        "score_neu": neu,
         "compound": compound,
     }
+    return row | overrides
 
 
 ARTICLES = pd.DataFrame(
     [
         _article("2026-03-02 14:00", "positive", 0.5),
         _article("2026-03-02 15:30", "positive", 0.3),
-        # Late evening, still 2 March in UTC: the stored query groups by UTC date.
         _article("2026-03-02 23:30", "negative", -0.4),
-        # Just after midnight UTC: 3 March.
+        # After midnight UTC, before the 2nd's cutoff at noon on the 3rd.
         _article("2026-03-03 00:30", "neutral", 0.0),
     ]
 )
 
-# What the stored query returns for ARTICLES, worked out by hand.
+# The daily averages for ARTICLES, worked out by hand: Monday 2 March's news
+# window runs to 12:00 UTC on Tuesday, so all four count on the 2nd.
 STORED_SENTIMENT = pd.DataFrame(
     {
-        "date": [pd.Timestamp("2026-03-02").date(), pd.Timestamp("2026-03-03").date()],
-        "sentiment_compound": [(0.5 + 0.3 - 0.4) / 3, 0.0],
-        "pos_count": [2, 0],
-        "neg_count": [1, 0],
-        "article_count": [3, 1],
+        "date": [pd.Timestamp("2026-03-02").date()],
+        "sentiment_compound": [(0.5 + 0.3 - 0.4 + 0.0) / 4],
+        "pos_count": [2],
+        "neg_count": [1],
+        "article_count": [4],
     }
 )
 
@@ -79,7 +90,25 @@ def _as_selected(rows, columns):
     return out
 
 
-def test_built_features_match_what_the_live_run_reads_back(
+def test_load_features_builds_in_process_from_the_bars_and_the_articles(
+    read_tables, stored_bars
+):
+    """No canned frame for technical_indicators or anomalies: reading either
+    would fail the test."""
+    read_tables["raw_prices"] = stored_bars
+    read_tables["news_sentiment"] = ARTICLES
+
+    live = engineering.load_features("AAPL")
+    built = engineering.build_features(
+        daily_bars(stored_bars, "AAPL"), ARTICLES, "AAPL"
+    )
+
+    pd.testing.assert_frame_equal(live, built)
+    assert built["zscore"].notna().any() and built["rsi_14"].notna().any()
+    assert built["article_count"].notna().sum() == 1
+
+
+def test_built_features_match_the_rows_the_stages_store(
     fake_db, read_tables, stored_bars
 ):
     read_tables["raw_prices"] = stored_bars
@@ -87,24 +116,85 @@ def test_built_features_match_what_the_live_run_reads_back(
     anomalies.run(["AAPL"])
     assert fake_db.tables["technical_indicators"] and fake_db.tables["anomalies"]
 
-    read_tables["technical_indicators"] = _as_selected(
-        fake_db.tables["technical_indicators"], engineering.INDICATOR_COLUMNS
+    bars = daily_bars(stored_bars, "AAPL")
+    stored = engineering.merge_feature_inputs(
+        bars,
+        _as_selected(
+            fake_db.tables["technical_indicators"], engineering.INDICATOR_COLUMNS
+        ),
+        _as_selected(fake_db.tables["anomalies"], ["zscore"]),
+        engineering.daily_sentiment(ARTICLES, DAYS),
     )
-    read_tables["anomalies"] = _as_selected(fake_db.tables["anomalies"], ["zscore"])
-    read_tables["news_sentiment"] = STORED_SENTIMENT
+    built = engineering.build_features(bars, ARTICLES, "AAPL")
+    stage = engineering.stage_anomaly_scores(bars, "AAPL")
 
-    live = engineering.load_features("AAPL")
+    columns = ["date", *engineering.INDICATOR_COLUMNS]
+    pd.testing.assert_frame_equal(built[columns], stored[columns], check_dtype=False)
+    # The dashboard's flags are the stage's, fitted on the whole history.
+    stage_scores = bars[["date"]].merge(stage, on="date", how="left")["zscore"]
+    pd.testing.assert_series_equal(
+        stage_scores, stored["zscore"], check_dtype=False, check_names=False
+    )
+
+
+BAD_ROWS = pd.DataFrame(
+    [
+        # Written while FinBERT could not load (removed in 29d1957).
+        _article("2026-03-02 16:00", "neutral", 0.0, score_pos=0.33, score_neg=0.33,
+                 score_neu=0.34),
+        # MarketWatch's general-market feed, once credited to AAPL.
+        _article("2026-03-04 16:00", "negative", -0.9,
+                 url_domain="feeds.marketwatch.com"),
+    ]
+)  # fmt: skip
+
+
+def test_bad_sentiment_rows_change_no_feature(stored_bars):
+    bars = daily_bars(stored_bars, "AAPL")
+    clean = engineering.build_features(bars, ARTICLES, "AAPL")
+    with_bad = engineering.build_features(
+        bars, pd.concat([ARTICLES, BAD_ROWS], ignore_index=True), "AAPL"
+    )
+    pd.testing.assert_frame_equal(with_bad, clean)
+
+
+# ── Which trading date an article counts on (decision D7) ────────────────────
+
+
+def _counts(stored_bars, *articles):
     built = engineering.build_features(
-        daily_bars(stored_bars, "AAPL"), ARTICLES, "AAPL"
+        daily_bars(stored_bars, "AAPL"), pd.DataFrame(articles), "AAPL"
     )
-
-    pd.testing.assert_frame_equal(built, live, check_dtype=False)
-    assert built["zscore"].notna().any() and built["rsi_14"].notna().any()
-    assert built["article_count"].notna().sum() == 2
+    counts = built.set_index("date")["article_count"]
+    return {d.date().isoformat(): int(n) for d, n in counts[counts > 0].items()}
 
 
-def test_sentiment_is_averaged_by_utc_publish_date():
-    daily = engineering.daily_sentiment(ARTICLES)
+def test_a_weekend_article_counts_on_monday(stored_bars):
+    saturday = _article("2026-03-07 15:00", "positive", 0.6)
+    assert _counts(stored_bars, saturday) == {"2026-03-09": 1}
+
+
+def test_a_newsapi_article_counts_from_a_day_after_it_was_published(stored_bars):
+    newsapi = _article("2026-03-03 15:00", "positive", 0.6, source="newsapi",
+                       inserted_at=pd.Timestamp("2026-03-03 15:05", tz="UTC"))  # fmt: skip
+    assert _counts(stored_bars, newsapi) == {"2026-03-04": 1}
+
+
+def test_an_article_stored_late_counts_from_when_it_arrived(stored_bars):
+    late = _article("2026-03-03 15:00", "positive", 0.6,
+                    inserted_at=pd.Timestamp("2026-03-06 23:00", tz="UTC"))  # fmt: skip
+    assert _counts(stored_bars, late) == {"2026-03-06": 1}
+
+
+def test_a_late_scheduled_run_stores_for_the_day_it_forecasts_from(stored_bars):
+    """GitHub started the 22:30 UTC run as late as 06:45 UTC the next day."""
+    fetched = _article("2026-03-03 21:00", "positive", 0.6,
+                       inserted_at=pd.Timestamp("2026-03-04 06:50", tz="UTC"))  # fmt: skip
+    assert _counts(stored_bars, fetched) == {"2026-03-03": 1}
+
+
+def test_sentiment_is_averaged_over_each_dates_news_window():
+    daily = engineering.daily_sentiment(ARTICLES, DAYS)
     expected = STORED_SENTIMENT.assign(date=pd.to_datetime(STORED_SENTIMENT["date"]))
     pd.testing.assert_frame_equal(daily, expected, check_dtype=False)
 
@@ -131,13 +221,13 @@ def test_no_prices_gives_an_empty_frame():
     assert engineering.build_features(pd.DataFrame(), ARTICLES, "AAPL").empty
 
 
-# ── What depends on later data ────────────────────────────────────────────────
+# ── Nothing depends on later data ─────────────────────────────────────────────
 #
 # Indicators are trailing, so a later price cannot move an earlier one. The
-# anomaly scores are not: the IQR fences and the z-score stored on an
-# IQR-flagged date are fitted on the whole history. That is why the
-# evaluation rebuilds features from the history up to each date instead of
-# reading the stored rows, and why this test pins the behaviour.
+# anomaly stage's scores are not: its IQR fences, and the z-score it stores
+# on an IQR-flagged date, are fitted on the whole history. The features use
+# point-in-time scores instead (decision D14), so a training row is built the
+# way the newest row is.
 
 
 def _built(closes, price_bars):
@@ -159,10 +249,115 @@ def test_a_later_price_never_moves_an_earlier_indicator(price_bars):
     pd.testing.assert_frame_equal(before.loc[:79, columns], after.loc[:79, columns])
 
 
-def test_a_later_price_can_move_an_earlier_anomaly_score(price_bars):
+def test_a_later_price_never_moves_an_earlier_anomaly_score(price_bars):
     closes = _closes()
     calmer = closes.copy()
-    calmer[80:] = closes[79]  # flat after day 80: narrower IQR fences
+    calmer[80:] = closes[79]  # flat after day 80: narrower full-history fences
     before, after = _built(closes, price_bars), _built(calmer, price_bars)
     earlier = slice(0, 79)
-    assert not before.loc[earlier, "zscore"].equals(after.loc[earlier, "zscore"])
+    pd.testing.assert_series_equal(
+        before.loc[earlier, "zscore"], after.loc[earlier, "zscore"]
+    )
+
+
+def test_each_anomaly_score_is_the_stages_rule_on_the_history_up_to_its_date(
+    price_bars,
+):
+    """The stage's two detectors, run on the prices up to a date, either
+    flag that date (the score is their z-score) or not (the score is 0)."""
+    closes = _closes()
+    built = _built(closes, price_bars).set_index("date")["zscore"]
+    bars = daily_bars(
+        price_bars.frame(
+            [
+                price_bars.daily(d.date(), float(c))
+                for d, c in zip(DAYS, closes, strict=True)
+            ]
+        ),
+        "AAPL",
+    )
+    indexed = bars.set_index(pd.DatetimeIndex(bars["date"]).tz_localize("UTC"))
+    for i in range(anomalies.ZSCORE_WINDOW, N_DAYS):
+        flags = anomalies.detect_anomalies(indexed.iloc[: i + 1], "AAPL")
+        day = indexed.index[i]
+        expected = float(flags.loc[day, "zscore"]) if day in flags.index else 0.0
+        assert built.iloc[i] == pytest.approx(expected), DAYS[i].date()
+    assert built.iloc[: anomalies.ZSCORE_WINDOW].isna().all()  # the warmup
+    assert (built.iloc[anomalies.ZSCORE_WINDOW :] != 0).any()
+
+
+def test_news_not_yet_available_on_any_date_gives_missing_sentiment(stored_bars):
+    after_the_last_cutoff = _article("2026-06-01 15:00", "positive", 0.6)
+    assert _counts(stored_bars, after_the_last_cutoff) == {}
+
+
+# ── Missing news is not neutral (decision D6, finding F6) ─────────────────────
+
+# One fetch a day, at 23:00 UTC, as the daily workflow stores its articles.
+FETCHES = pd.DatetimeIndex(DAYS + pd.Timedelta(hours=23)).tz_localize("UTC")
+NEWS_COLUMNS = [
+    "sentiment_compound", "sentiment_3d", "sentiment_change", "pos_count",
+    "neg_count", "article_count", "has_news",
+]  # fmt: skip
+
+
+def _news(stored_bars, articles, fetched_at=FETCHES):
+    raw = engineering.build_features(
+        daily_bars(stored_bars, "AAPL"), pd.DataFrame(articles), "AAPL",
+        fetched_at=fetched_at,
+    )  # fmt: skip
+    out = engineering.engineer_features(raw, drop_unlabeled=False)
+    return out.set_index("date")[NEWS_COLUMNS]
+
+
+MARCH = [
+    _article("2026-03-02 14:00", "positive", 0.5),
+    _article("2026-03-02 15:30", "positive", 0.3),
+    _article("2026-03-04 14:00", "negative", -0.4),
+]
+
+
+def test_after_the_last_article_a_day_reads_no_news_not_the_last_value(stored_bars):
+    day = _news(stored_bars, MARCH).loc["2026-03-05"]
+    assert day["has_news"] == 0 and day["article_count"] == 0
+    assert day["pos_count"] == 0 and day["neg_count"] == 0
+    assert np.isnan(day["sentiment_compound"])  # not -0.4 carried forward
+
+
+def test_before_the_first_article_every_news_feature_is_missing(stored_bars):
+    """Not collected yet is not "no news"."""
+    before = _news(stored_bars, MARCH).loc[:"2026-02-27"]
+    assert len(before) > 10 and before.isna().all().all()
+
+
+def test_a_window_with_no_fetch_for_any_ticker_has_every_news_feature_missing(
+    stored_bars,
+):
+    no_fetch_on_the_5th = FETCHES[
+        FETCHES.normalize() != pd.Timestamp("2026-03-05", tz="UTC")
+    ]
+    news = _news(stored_bars, MARCH, fetched_at=no_fetch_on_the_5th)
+    assert news.loc["2026-03-05"].isna().all()
+    assert news.loc["2026-03-06", "article_count"] == 0  # fetched, nothing found
+
+
+def test_the_three_day_sentiment_averages_every_article_in_the_three_windows(
+    stored_bars,
+):
+    news = _news(stored_bars, MARCH)["sentiment_3d"]
+    assert news["2026-03-02"] == pytest.approx((0.5 + 0.3) / 2)
+    assert news["2026-03-03"] == pytest.approx((0.5 + 0.3) / 2)
+    assert news["2026-03-04"] == pytest.approx((0.5 + 0.3 - 0.4) / 3)
+    assert news["2026-03-06"] == pytest.approx(-0.4)
+    assert np.isnan(news["2026-03-09"])  # the 5th, 6th and 9th had none
+
+
+def test_the_sentiment_change_needs_news_on_both_days(stored_bars):
+    two_days = [*MARCH, _article("2026-03-05 14:00", "positive", 0.2)]
+    change = _news(stored_bars, two_days)["sentiment_change"]
+    assert np.isnan(change["2026-03-03"]) and np.isnan(change["2026-03-04"])
+    assert change["2026-03-05"] == pytest.approx(0.2 - (-0.4))
+
+
+def test_has_news_is_a_feature():
+    assert "has_news" in engineering.get_feature_cols()

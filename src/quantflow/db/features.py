@@ -1,9 +1,10 @@
-"""Reads of the derived rows the feature matrix merges onto prices.
+"""Reads of the stored news the feature matrix is built from.
 
-Every date here is the UTC calendar date, the same one load_daily_bars gives
-each price row. A bare ts::date uses the session's TimeZone instead: UTC on
-Supabase, but on a server set to New York it moved every indicator, anomaly
-score and sentiment average to the previous day's price row.
+The live run builds its features in process (features.engineering
+.build_features) from the daily bars and these article rows, the same
+function the evaluation calls at every origin (decision D4,
+docs/evaluation.md). The technical_indicators and anomalies tables are
+still written, for the dashboard, but no feature reads them.
 """
 
 import pandas as pd
@@ -11,46 +12,32 @@ from sqlalchemy import text
 
 from quantflow.db.connection import get_engine
 
-_INDICATORS = text("""
-    SELECT (ts AT TIME ZONE 'UTC')::date AS date,
-           rsi_14, macd, macd_signal, macd_hist,
-           bb_upper, bb_middle, bb_lower
-    FROM technical_indicators
-    WHERE ticker = :t
-    ORDER BY ts ASC
-""")
-
-_ANOMALIES = text("""
-    SELECT (ts AT TIME ZONE 'UTC')::date AS date, zscore
-    FROM anomalies
-    WHERE ticker = :t
-    ORDER BY ts ASC
-""")
-
-# The daily average by UTC publish date. Which articles a trading date may
-# use is decided in Phase 2 (docs/evaluation.md, section 4); until then this
-# is the rule the live run uses.
-_DAILY_SENTIMENT = text("""
-    SELECT
-        (published_at AT TIME ZONE 'UTC')::date AS date,
-        AVG(compound)                       AS sentiment_compound,
-        COUNT(*) FILTER (WHERE sentiment='positive') AS pos_count,
-        COUNT(*) FILTER (WHERE sentiment='negative') AS neg_count,
-        COUNT(*)                            AS article_count
+# The columns every article read returns, shared with the evaluation's
+# snapshot export: the URL's host only, enough to tell the general feed's rows
+# apart, without copying headlines or links out of the database.
+ARTICLE_SELECT = """
+    SELECT ticker, source,
+           substring(url from '^[A-Za-z][A-Za-z0-9+.-]*://([^/:?#]+)') AS url_domain,
+           published_at, inserted_at, sentiment,
+           score_pos, score_neg, score_neu, compound
     FROM news_sentiment
-    WHERE ticker = :t
-    GROUP BY (published_at AT TIME ZONE 'UTC')::date
-    ORDER BY date ASC
-""")
+"""
+
+_ARTICLES = text(ARTICLE_SELECT + "WHERE ticker = :t ORDER BY inserted_at")
 
 
-def load_stored_feature_inputs(ticker: str) -> dict[str, pd.DataFrame]:
-    """The ticker's stored indicator rows, anomaly scores and daily sentiment,
-    read on one connection: {"indicators", "anomalies", "sentiment"}."""
-    params = {"t": ticker}
+def load_articles(ticker: str) -> pd.DataFrame:
+    """Every stored article for the ticker, in the order they arrived."""
     with get_engine().connect() as conn:
-        return {
-            "indicators": pd.read_sql(_INDICATORS, conn, params=params),
-            "anomalies": pd.read_sql(_ANOMALIES, conn, params=params),
-            "sentiment": pd.read_sql(_DAILY_SENTIMENT, conn, params=params),
-        }
+        return pd.read_sql(_ARTICLES, conn, params={"t": ticker})
+
+
+_FETCH_TIMES = text("SELECT DISTINCT inserted_at FROM news_sentiment")
+
+
+def load_fetch_times() -> pd.Series:
+    """Every moment a fetch stored articles, for any ticker: a date whose
+    news window holds none was not looked at (decision D6)."""
+    with get_engine().connect() as conn:
+        stored = pd.read_sql(_FETCH_TIMES, conn)
+    return pd.to_datetime(stored["inserted_at"], utc=True)

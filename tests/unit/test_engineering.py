@@ -55,10 +55,11 @@ def raw():
 # ── get_feature_cols ──────────────────────────────────────────────────────────
 
 
-def test_feature_count_is_33():
-    """The README advertises 33 features. If this fails, either the code or
-    the README is wrong — fix whichever is lying."""
-    assert len(get_feature_cols()) == 33
+def test_feature_count_is_34():
+    """The README advertises 34 features (33 plus has_news, decision D6). If
+    this fails, either the code or the README is wrong; fix whichever is
+    lying."""
+    assert len(get_feature_cols()) == 34
 
 
 def test_feature_names_are_unique():
@@ -174,7 +175,18 @@ def test_rolling_mean_uses_only_trailing_window(raw):
     assert np.allclose(out["rolling_mean_20"].values, expected.values)
 
 
-def test_engineered_features_contain_no_nan(raw):
+NO_ARTICLE_MISSING = {"sentiment_compound", "sentiment_3d", "sentiment_change"}
+
+
+def test_only_the_news_features_can_be_missing_when_every_input_is_known(raw):
+    """With every input known, the only missing values are the compound
+    scores of days without an article (decision D6), never a fill."""
     out = engineer_features(raw)
-    bad = [c for c in get_feature_cols() if out[c].isna().any()]
+    bad = [
+        c for c in get_feature_cols()
+        if c not in NO_ARTICLE_MISSING and out[c].isna().any()
+    ]  # fmt: skip
     assert bad == [], f"NaN left in features: {bad}"
+    no_article = out["article_count"].eq(0)
+    assert out.loc[no_article, "sentiment_compound"].isna().all()
+    assert out.loc[~no_article, "sentiment_compound"].notna().all()

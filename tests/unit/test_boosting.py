@@ -81,6 +81,10 @@ def raw():
 @pytest.fixture
 def forecasts(raw, monkeypatch):
     """Run boosting.run on raw with fake regressors; return what it saved."""
+    return _run(raw, monkeypatch)
+
+
+def _run(raw, monkeypatch):
     models = []
 
     def regressor(**params):
@@ -133,8 +137,31 @@ def test_the_live_model_has_seen_the_final_labelled_row(forecasts, raw):
     assert live, "no model fitted on every labelled row made a forecast"
     for model in live:
         final = model.X.iloc[-1]
-        expected = labelled[model.X.columns].fillna(0).iloc[-1]
-        assert np.allclose(final.to_numpy(), expected.to_numpy())
+        expected = labelled[model.X.columns].iloc[-1]
+        assert np.allclose(
+            final.to_numpy(dtype=float), expected.to_numpy(dtype=float), equal_nan=True
+        )
+
+
+# ── Missing is missing (finding F7) ───────────────────────────────────────────
+
+
+def test_a_missing_feature_reaches_the_boosters_as_missing_not_zero(raw, monkeypatch):
+    """XGBoost and LightGBM handle missing values natively. Filled with 0, an
+    unknown RSI or a day without news reads as a real value."""
+    gappy = raw.copy()
+    gappy.loc[60:70, "article_count"] = np.nan  # news not known on those days
+    gappy.loc[gappy.index[-1], "rsi_14"] = np.nan  # the newest row's RSI
+    _, models = _run(gappy, monkeypatch)
+
+    fitted = [m for m in models if m.X is not None]
+    assert len(fitted) == 4  # scored and live, per family
+    for model in fitted:
+        assert model.X.loc[60:70, "has_news"].isna().all()
+    first_steps = [m.predicted_on[-7] for m in models if len(m.predicted_on) >= 7]
+    assert len(first_steps) == 2
+    for X in first_steps:
+        assert np.isnan(X["rsi_14"].iloc[0])
 
 
 # ── Stale start: the forecast starts from the newest row ──────────────────────
