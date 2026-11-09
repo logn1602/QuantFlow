@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 from quantflow.config import TICKERS
+from quantflow.dashboard import accuracy
 from quantflow.db.prices import classify_bars, daily_bars
 from quantflow.db.readonly import is_local_database, masked, read_only_connection
 from quantflow.db.snapshot import read_snapshot_tables
@@ -577,14 +578,20 @@ def compare_runs(args) -> int:
 
 # ── publish ───────────────────────────────────────────────────────────────────
 
-PUBLISHED_TABLE = Path("src/quantflow/dashboard/published_accuracy.csv")
-PUBLISHED_CHART = Path("docs/images/mape_by_days_ahead.png")
+# The table is written where the dashboard reads it, next to accuracy.py, and
+# the chart under the same checkout's docs/, wherever the command runs from.
+PUBLISHED_TABLE = accuracy.PUBLISHED
+PUBLISHED_CHART = (
+    PUBLISHED_TABLE.parents[3] / "docs" / "images" / "mape_by_days_ahead.png"
+)
 
 
 def publish_results(args) -> int:
     """The dashboard's accuracy table and the README's chart, from a
-    validation run and a test-date run of the same snapshot, both run on
-    committed code."""
+    validation run and a test-date run of the same snapshot, tickers and
+    models, both run on committed code. Different tickers or models would put
+    two incomparable "all tickers" figures side by side, and drop the chart
+    panel of any model one run lacks."""
     runs = []
     for window, directory in (("validation", args.validation), ("test", args.test)):
         header = run_header(directory)
@@ -601,17 +608,20 @@ def publish_results(args) -> int:
             )
             return 2
         runs.append(publish.read_run(directory, header))
-    digests = {run.header.get("snapshot digest") for run in runs}
-    if len(digests) != 1 or None in digests:
-        print(
-            f"Refusing: the runs used different snapshots ({sorted(map(str, digests))}).",
-            file=sys.stderr,
-        )
-        return 2
+    for key in ("snapshot digest", "tickers", "models"):
+        values = {run.header.get(key) for run in runs}
+        if len(values) != 1 or None in values:
+            print(
+                f"Refusing: the runs differ in {key} ({sorted(map(str, values))}).",
+                file=sys.stderr,
+            )
+            return 2
     table = publish.accuracy_table(runs)
+    # The chart first: if it fails, the table is left as it was, so the
+    # dashboard and the README never describe different runs.
+    publish.horizon_chart(runs, args.chart)
     args.table.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(args.table, index=False, lineterminator="\n")
-    publish.horizon_chart(runs, args.chart)
     print(f"Table: {args.table} ({len(table)} rows)")
     print(f"Chart: {args.chart}")
     return 0

@@ -127,6 +127,19 @@ def test_a_validation_run_writes_its_report_and_logs_to_mlflow(tmp_path, harness
     assert "window: validation" in report and "News coverage" in report
 
 
+def test_the_report_states_its_origins_the_way_publish_reads_them(tmp_path, harness):
+    """publish reads the origin count and dates back out of the report's
+    "scored origins" line, so a rewording here would break publishing."""
+    from quantflow.evaluation import publish
+
+    _snapshot(tmp_path)
+    assert _run(tmp_path) == 0
+    out = tmp_path / "runs" / "r"
+    run = publish.read_run(out, evaluate.run_header(out))
+    scored = pd.read_csv(out / "cells.csv").query("role == 'scored'")["origin"]
+    assert run.origins == (scored.nunique(), scored.min(), scored.max())
+
+
 def test_a_variant_runs_only_when_named(tmp_path, harness):
     _snapshot(tmp_path)
     assert _run(tmp_path) == 0

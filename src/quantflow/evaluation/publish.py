@@ -15,6 +15,7 @@ and a test-date run.
 """
 
 import re
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,9 +23,9 @@ import numpy as np
 import pandas as pd
 
 from quantflow.evaluation.report import BASELINE
+from quantflow.evaluation.splits import HORIZON
 
 ALL_TICKERS = "ALL"
-WINDOWS = ("validation", "test")
 
 # Display names, in the order the chart's panels and the tables use when
 # MAPE does not decide it.
@@ -131,11 +132,11 @@ def accuracy_table(runs: list[RunTables]) -> pd.DataFrame:
         )
         frames.append(pd.concat([everything, tickers]).assign(**provenance))
     table = pd.concat(frames, ignore_index=True)
+    # Full precision: rounding here and again where the figures are shown
+    # would print 2.40% for a MAPE of 2.39497%, where the docs say 2.39.
     for column in ("mape", "skill", "band_coverage", "p_holm"):
-        table[column] = table[column].astype(float).round(4)
-    table["beats_naive"] = table["beats_naive"].map(
-        lambda value: "" if pd.isna(value) else str(bool(value)).lower()
-    )
+        table[column] = table[column].astype(float)
+    table["beats_naive"] = table["beats_naive"].map(_flag)
     order = {name: i for i, name in enumerate(LABELS)}
     table = table.sort_values(
         ["window", "ticker", "model"],
@@ -144,12 +145,24 @@ def accuracy_table(runs: list[RunTables]) -> pd.DataFrame:
     return table[COLUMNS].reset_index(drop=True)
 
 
+def _flag(value) -> str:
+    """The headline's beats_naive as "true", "false" or "" (no test, as for
+    naive itself). Spelled out rather than bool(value), which reads the
+    string "False" as true."""
+    if pd.isna(value):
+        return ""
+    text = str(value).strip().lower()
+    if text not in {"true", "false"}:
+        raise ValueError(f"unreadable beats_naive value {value!r}")
+    return text
+
+
 def beats_naive_note(runs: list[RunTables]) -> str:
     """One sentence on which models beat naive by the primary test, per run."""
     winners = []
     for run in runs:
         headline = run.headline
-        flagged = headline[headline["beats_naive"].astype(str).str.lower() == "true"]
+        flagged = headline[headline["beats_naive"].map(_flag) == "true"]
         winners += [
             f"{LABELS.get(m, m)} ({run.window} dates)" for m in flagged["model"]
         ]
@@ -169,6 +182,8 @@ BASELINE_COLOR = "#52514e"
 # The test dates dashed: an offset and an on/off pattern, in line widths.
 TEST_DASH: tuple[float, tuple[float, float]] = (0.0, (3.0, 2.0))
 LINE_STYLES: dict[str, object] = {"validation": "-", "test": TEST_DASH}
+# One panel per model; the last cell holds the key.
+ROWS, COLUMNS_OF_PANELS = 2, 4
 
 
 def horizon_chart(runs: list[RunTables], path: Path) -> None:
@@ -187,12 +202,14 @@ def horizon_chart(runs: list[RunTables], path: Path) -> None:
         for m in validation.headline.sort_values("mean_mape")["model"]
         if m != BASELINE and all(m in set(run.per_horizon["model"]) for run in runs)
     ]
-    if len(models) > 7:
-        raise ValueError(f"{len(models)} models; the chart has room for 7")
+    room = ROWS * COLUMNS_OF_PANELS - 1
+    if len(models) > room:
+        raise ValueError(f"{len(models)} models; the chart has room for {room}")
 
     fig, axes = plt.subplots(
-        2, 4, figsize=(8.8, 5.6), sharex=True, sharey=True, facecolor=SURFACE
-    )
+        ROWS, COLUMNS_OF_PANELS, figsize=(8.8, 5.6), sharex=True, sharey=True,
+        facecolor=SURFACE,
+    )  # fmt: skip
     top = max(float(run.per_horizon["mape"].max()) for run in runs)
     for ax, model in zip(axes.flat, models, strict=False):
         ax.set_facecolor(SURFACE)
@@ -213,7 +230,7 @@ def horizon_chart(runs: list[RunTables], path: Path) -> None:
         ax.spines["bottom"].set_color(GRID)
         ax.tick_params(colors=TEXT_SECONDARY, labelsize=8, length=0)
     axes[0, 0].set_ylim(0, np.ceil(top))
-    axes[0, 0].set_xticks(range(1, 8))
+    axes[0, 0].set_xticks(range(1, HORIZON + 1))
     for ax in axes[1, :]:
         ax.set_xlabel("Days ahead", fontsize=8.5, color=TEXT_SECONDARY)
     for ax in axes[:, 0]:
@@ -234,14 +251,16 @@ def horizon_chart(runs: list[RunTables], path: Path) -> None:
     legend = key.legend(handles=handles, loc="upper left", frameon=False,
                         fontsize=8, labelcolor=TEXT, handlelength=2.6)  # fmt: skip
     legend.set_in_layout(False)
-    key.text(0.0, 0.32, "Lower is better.\n" + _wrap(beats_naive_note(runs), 30),
+    note = textwrap.fill(beats_naive_note(runs), 30, break_long_words=False)
+    key.text(0.0, 0.32, "Lower is better.\n" + note,
              transform=key.transAxes, fontsize=8, color=TEXT_SECONDARY,
              va="top", linespacing=1.4)  # fmt: skip
 
     count, first, last = validation.origins
     lines = [
-        '7-day forecasts: error by days ahead, each model against "no change"',
-        f"MAPE over 8 tickers, data to {validation.header.get('as of', '?')}. "
+        f'{HORIZON}-day forecasts: error by days ahead, each model against "no change"',
+        f"MAPE over {validation.per_ticker['ticker'].nunique()} tickers, "
+        f"data to {validation.header.get('as of', '?')}. "
         f"Validation: {count} start dates, {first} to {last}.",
     ]
     if "test" in by_window:
@@ -257,14 +276,3 @@ def horizon_chart(runs: list[RunTables], path: Path) -> None:
         pil_kwargs={"optimize": True},
     )  # fmt: skip
     plt.close(fig)
-
-
-def _wrap(text: str, width: int) -> str:
-    words, lines, line = text.split(), [], ""
-    for word in words:
-        if line and len(line) + 1 + len(word) > width:
-            lines.append(line)
-            line = word
-        else:
-            line = f"{line} {word}".strip()
-    return "\n".join([*lines, line])
