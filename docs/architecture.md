@@ -307,26 +307,27 @@ news forward test's end). The fetch and sentiment steps, backups (one `pg_dump`,
 the database's size) and the laptop scheduler (unused) add little. Supabase's usage
 page holds the measured monthly total; the owner checks it there.
 
-**The dashboard.** A first render for one ticker read 0.33 MB (329,727 bytes) and a
-repeat render a minute later 0.31 MB (306,574 bytes): the other loaders cache for 5
-minutes, but the price loader, the largest read, is not cached (decision E), so every
-rerun reads the ticker's prices again: a visit, a ticker or lookback change. The public
-"Refresh Data" button also clears the cache for every visitor. Beside the daily run's
-0.7 to 1.6 GB a month, the free 5 GB leaves room for about 11,000 to 14,000 reruns a
-month, a few hundred a day, which a burst of traffic could use up.
+**The dashboard.** Measured before Phase 4's caching: a first render for one ticker
+read 0.33 MB (329,727 bytes) and a repeat render a minute later 0.31 MB (306,574 bytes),
+because the price loader, the largest read, was not cached and so every rerun read the
+ticker's prices again; a public "Refresh Data" button also cleared the cache for every
+visitor.
 
-**Caching (decision E), Phase 4's recommendation: move it earlier.** Caching the price
-loader like the others (one decorator) would make repeat views inside 5 minutes read
-nothing, and the Refresh button could go, since the data changes once a day. The
-daily run's whole-history price reads are the other line, and the one the trending
-tier would multiply, so the Phase 5 design states the reads it adds.
+**Caching (decision E), done in Phase 4.** Every loader, prices included, now keeps
+what it read for an hour (`CACHE_SECONDS` in `dashboard/app.py`), and the Refresh
+button is gone: the data changes once a day, and the page shows each refresh within
+the hour. Repeat views inside the hour read nothing, so the page reads at most once an
+hour for each loader, ticker and lookback setting, whatever the traffic. A visitor on
+the default lookback costs about 0.33 MB an hour per ticker at most, under 8 MB a
+ticker a day. The daily run's whole-history price reads are the larger line, and the
+one the trending tier would multiply, so the Phase 5 design states the reads it adds.
 
 ---
 
 ## Known problems
 
 Ordered by how much they would change the reported results. Updated 2026-11-09
-(Phase 4): items 1, 2 and 6 are fixed, 8 to 13 are new.
+(Phase 4): items 1, 2, 6 and 8 are fixed; 8 to 13 were found in Phase 4.
 
 ### 1. The base-model comparison was not like-for-like (fixed in Phase 2)
 
@@ -393,14 +394,14 @@ which adds the constraint, has not been run against the live database. The repla
 leaves dead rows behind: 6.1 MB on disk for those 765 rows (see "Running on free
 tiers"). Fresh installs are unaffected.
 
-### 8. The dashboard is styled for a dark theme it does not set
+### 8. The dashboard did not set the dark theme it is styled for (fixed in Phase 4)
 
 Found taking the README screenshot (2026-11-09). With no `.streamlit/config.toml`, the
-dashboard follows each viewer's light or dark setting, but its charts use Plotly's dark
-template and its metric cards a dark background. In the light theme the forecast
-chart's white "Actual" line disappears against the white page and the cards' labels
-are dark on dark. Setting `[theme] base = "dark"` in `.streamlit/config.toml` would make
-every viewer see it as designed; not done, pending the owner's decision.
+dashboard followed each viewer's light or dark setting, but its charts use Plotly's dark
+template and its metric cards a dark background: in the light theme the forecast
+chart's white "Actual" line vanished against the white page and the cards' labels were
+dark on dark. `.streamlit/config.toml` now sets `[theme] base = "dark"`, so every viewer
+sees it as designed (`tests/unit/test_dashboard_settings.py`).
 
 ### 9. The live ensemble's weights are fitted on a different task
 
