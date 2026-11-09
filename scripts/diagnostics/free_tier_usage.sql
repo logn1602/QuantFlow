@@ -36,14 +36,18 @@ SELECT 'backtest_results', count(*)
 FROM backtest_results WHERE run_at >= now() - interval '30 days';
 
 -- @query raw_prices rows per ticker
--- Daily bars sit at 00:00 UTC; anything else is a 15-minute bar.
+-- Egress depends only on the total, since load_daily_bars reads every row.
+-- The split is a rough one: rows at 00:00 UTC are where the daily bars sit,
+-- the rest are mostly 15-minute bars (db/prices.classify_bars has the full
+-- rule the loaders apply, which also sets aside rows off the session grid).
 SELECT ticker,
        source,
        count(*) AS total_rows,
-       count(*) FILTER (WHERE (ts AT TIME ZONE 'UTC')::time = time '00:00') AS daily_bars,
-       count(*) FILTER (WHERE (ts AT TIME ZONE 'UTC')::time <> time '00:00') AS intraday_bars,
-       min(ts)::date AS first_date,
-       max(ts)::date AS last_date
+       count(*) FILTER (WHERE (ts AT TIME ZONE 'UTC')::time = time '00:00') AS rows_at_midnight_utc,
+       count(*) FILTER (WHERE (ts AT TIME ZONE 'UTC')::time <> time '00:00') AS other_rows,
+       -- UTC dates, as the bars are dated, whatever the session's time zone.
+       min(ts AT TIME ZONE 'UTC')::date AS first_date,
+       max(ts AT TIME ZONE 'UTC')::date AS last_date
 FROM raw_prices
 GROUP BY ticker, source
 ORDER BY ticker, source;

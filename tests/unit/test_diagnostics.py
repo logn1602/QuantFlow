@@ -64,6 +64,95 @@ def test_sql_picks_the_query_file_and_a_remote_database_still_needs_live(
     assert ran == [FREE_TIER_SQL, diagnostics.SQL_FILE]
 
 
+BACKSLASH = chr(92)
+ESCAPES = {
+    "a commit, then a write": "COMMIT; DELETE FROM raw_prices; SELECT 1",
+    "a second statement": "SELECT 1; DELETE FROM raw_prices",
+    "a write": "DELETE FROM raw_prices",
+    "read-write mode": "SET TRANSACTION READ WRITE",
+    "a data-modifying CTE": "WITH d AS (DELETE FROM raw_prices RETURNING *) SELECT * FROM d",
+    "a select that locks": "SELECT * FROM raw_prices FOR UPDATE",
+    # Each hides "; COMMIT; DELETE" inside what a naive scan reads as a string.
+    "dollar quoting": "SELECT $$'$$; COMMIT; DELETE FROM raw_prices; SELECT $$'$$",
+    "an escape string": f"SELECT E'{BACKSLASH}''; COMMIT; DELETE FROM raw_prices; SELECT ''",
+    "a statement after a comment": "SELECT 1 /* ; */ ; COMMIT",
+    "an unterminated string": "SELECT 'x; COMMIT",
+    # Postgres nests block comments: each of these ends the comment later
+    # than a scan that stops at the first "*/", and hides the commit behind
+    # a "--" or a quote that Postgres reads as part of the comment.
+    "a nested comment hiding a line comment": (
+        "SELECT 1 /* /* */ -- */ ; COMMIT ; DELETE FROM raw_prices ; SELECT 1 AS x"
+    ),
+    "a nested comment hiding a quote": (
+        "SELECT 1 /* /* */ ' */ ; COMMIT ; DELETE FROM raw_prices -- '"
+    ),
+    # A quoted name would hide a function from the check below.
+    "a quoted function name": 'SELECT "pg_terminate_backend"(1)',
+    # Calls whose effects outlast the read-only transaction.
+    "ending another session": "SELECT pg_terminate_backend(pid) FROM pg_stat_activity",
+    "lifting the statement timeout": "SELECT set_config('statement_timeout', '0', true)",
+    "an advisory lock": "SELECT pg_advisory_lock(1)",
+    "a schema-qualified call": "SELECT pg_catalog.pg_cancel_backend (1)",
+    "a long sleep": "SELECT pg_sleep(600)",
+}
+
+
+@pytest.mark.parametrize("section", ESCAPES.values(), ids=ESCAPES)
+def test_a_query_file_is_refused_unless_each_query_is_one_select(
+    diagnostics, monkeypatch, tmp_path, section
+):
+    """Each query reaches Postgres exactly as written, and Postgres runs every
+    statement in it: "COMMIT; DELETE ..." would end the read-only
+    transaction and commit the delete. So any file given with --sql is
+    checked before connecting, not only the two committed ones."""
+    ran = []
+    monkeypatch.setattr(diagnostics, "run", lambda out, sql_file: ran.append(sql_file))
+    monkeypatch.setattr(diagnostics.config, "DB_HOST", "db.example.supabase.co")
+    sql = tmp_path / "escape.sql"
+    sql.write_text(f"-- @query escape\n{section}\n", encoding="utf-8")
+    out = tmp_path / "out.md"
+    assert diagnostics.main(["--sql", str(sql), "--live", "--out", str(out)]) == 2
+    assert ran == []
+    assert not out.exists()
+
+
+def test_a_carriage_return_ends_a_line_comment_as_it_does_in_postgres(diagnostics):
+    """Postgres ends a "--" comment at a carriage return as well as a line
+    feed; a scan that waits for the line feed would read the commit after it
+    as comment."""
+    sql = f"SELECT 1 -- x{chr(13)}; COMMIT; DELETE FROM raw_prices"
+    with pytest.raises(ValueError, match="more than one statement"):
+        diagnostics.check_read_only("q", sql)
+
+
+def test_names_inside_comments_and_strings_are_not_refused(diagnostics):
+    """Only code counts: the committed files mention "close" in comments."""
+    diagnostics.check_read_only(
+        "q", "SELECT 'COMMIT; pg_sleep(1)' AS x -- the \"close\" ; DELETE\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, "SELECT 1\n", "-- @querry size\nSELECT 1\n"],
+    ids=["missing file", "no marker", "misspelled marker"],
+)
+def test_a_query_file_with_no_queries_is_refused_before_connecting(
+    diagnostics, monkeypatch, tmp_path, content
+):
+    """Without a marker the file once parsed to no queries, and the run
+    connected and wrote an empty results file."""
+    ran = []
+    monkeypatch.setattr(diagnostics, "run", lambda out, sql_file: ran.append(sql_file))
+    sql = tmp_path / "usage.sql"
+    if content is not None:
+        sql.write_text(content, encoding="utf-8")
+    out = tmp_path / "out.md"
+    assert diagnostics.main(["--sql", str(sql), "--live", "--out", str(out)]) == 2
+    assert ran == []
+    assert not out.exists()
+
+
 def test_a_remote_database_is_refused_without_live(diagnostics, monkeypatch, tmp_path):
     """It must stop before connecting: this suite refuses any real connection,
     so reaching get_engine would fail the run (exit 1), not refuse it (exit 2)."""
