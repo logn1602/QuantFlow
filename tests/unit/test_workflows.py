@@ -190,18 +190,34 @@ def test_the_finbert_model_is_cached_by_the_revision_the_code_pins():
     assert names.index("Cache the FinBERT model") < names.index(SENTIMENT)
 
 
-AUDIT = "Audit dependencies"
+AUDIT_WORKFLOW = WORKFLOWS / "dependency_audit.yml"
 
 
-def test_the_audit_runs_last_and_an_advisory_fails_the_run():
-    """The audit ran before the fetches with continue-on-error, so an advisory
-    never turned the run red: on 2026-09-04 (run 33821129953) pip-audit exited
-    1, yet GitHub recorded the step and the run as successes. Last in the job,
-    it fails the run only after the data is refreshed, and it runs after a
-    failed data step too, so no day goes unaudited."""
-    names = list(STEPS)
-    assert names[-1] == AUDIT
-    assert "uvx pip-audit" in STEPS[AUDIT]
-    assert not any("uvx pip-audit" in STEPS[name] for name in names[:-1])
-    assert "continue-on-error" not in STEPS[AUDIT]
-    assert _condition(AUDIT) == "${{ !cancelled() }}"
+def test_the_daily_refresh_does_not_audit_dependencies():
+    """A red daily refresh means a data problem, nothing else: the audit runs
+    in its own workflow. In the refresh, a failed audit also failed the job,
+    and actions/cache saves the FinBERT model only when the whole job
+    succeeds."""
+    assert "pip-audit" not in DAILY_REFRESH
+
+
+def test_the_audit_workflow_audits_uv_lock_weekly_and_on_lock_changes():
+    """A red audit means a dependency needs a security update. It runs weekly,
+    for advisories published against versions already locked, and on every
+    pull request that changes uv.lock, before the change merges."""
+    audit = AUDIT_WORKFLOW.read_text(encoding="utf-8")
+    cron = re.search(r"^  schedule:\n    - cron: '([^']+)'", audit, re.MULTILINE)
+    assert cron, "no schedule"
+    assert re.fullmatch(r"\d+ \d+ \* \* [0-6]", cron.group(1)), "not weekly"
+    paths = re.search(
+        r"^  pull_request:\n    paths:\n((?:      - .+\n)+)", audit, re.MULTILINE
+    )
+    assert paths, "no pull_request paths"
+    assert "      - uv.lock\n" in paths.group(1)
+    # The exact versions in uv.lock, nothing installed or resolved for it.
+    assert "uv export --quiet --locked --extra dev" in audit
+    assert "uvx pip-audit --requirement" in audit
+    # pip-audit exits 1 on an advisory, which must fail the run.
+    assert "continue-on-error" not in audit
+    assert "secrets." not in audit
+    assert re.search(r"^permissions:\n  contents: read$", audit, re.MULTILINE)

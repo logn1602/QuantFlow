@@ -1,0 +1,47 @@
+name: Dependency Audit
+
+# Audits the exact versions in uv.lock against known advisories, on its own:
+# a red daily refresh always means a data problem, and a red audit always
+# means a dependency needs a security update. Nothing here reads a secret,
+# touches the database or writes anything.
+on:
+  # Weekly, for advisories published against versions already locked.
+  schedule:
+    - cron: '0 12 * * 1'   # Mondays 12:00 UTC
+
+  # Before a change to the lock merges. The workflow itself is listed so a
+  # change to the audit runs on its own pull request.
+  pull_request:
+    paths:
+      - uv.lock
+      - .github/workflows/dependency_audit.yml
+
+  # To re-check by hand, for example after a fix lands on main.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      # Reads the versions from uv.lock; nothing is installed or resolved for
+      # the audit. --locked stops here if uv.lock no longer matches
+      # pyproject.toml, and --quiet keeps the exported list out of the log.
+      # pip-audit exits 1 on any known advisory, which fails the run.
+      - name: Audit dependencies
+        run: |
+          uv export --quiet --locked --extra dev --no-hashes --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/locked-requirements.txt"
+          uvx pip-audit --requirement "$RUNNER_TEMP/locked-requirements.txt" --no-deps --disable-pip

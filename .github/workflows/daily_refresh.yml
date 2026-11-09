@@ -57,7 +57,9 @@ jobs:
       # --locked stops here if uv.lock no longer matches pyproject.toml.
       # Installs the quantflow package itself too (editable), which the src/
       # layout needs. Every command below runs through `uv run`, in this
-      # environment, not the runner's own Python.
+      # environment, not the runner's own Python. These versions are audited
+      # for advisories in dependency_audit.yml, apart from this job, so a red
+      # refresh always means a data problem.
       - name: Install dependencies
         run: uv sync --locked --extra dev
 
@@ -132,17 +134,3 @@ jobs:
         run: |
           echo "QuantFlow daily refresh complete!"
           echo "Live dashboard: https://quantflow-analytics.streamlit.app"
-
-      # Audits the exact versions installed above, read from uv.lock; nothing
-      # is installed or resolved for the audit. This is the only place the
-      # dependency set gets audited at all.
-      #
-      # Last, so a new upstream advisory fails the run (pip-audit exits 1)
-      # only after the data is refreshed, never blocking it. It runs after a
-      # failed data step too, so no day goes unaudited. A pip-audit outage
-      # also fails it, with the data already refreshed.
-      - name: Audit dependencies
-        if: ${{ !cancelled() }}
-        run: |
-          uv export --locked --extra dev --no-hashes --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/locked-requirements.txt"
-          uvx pip-audit --requirement "$RUNNER_TEMP/locked-requirements.txt" --no-deps --disable-pip
