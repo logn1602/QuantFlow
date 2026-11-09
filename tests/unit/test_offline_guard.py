@@ -67,3 +67,13 @@ def test_a_yfinance_request_from_any_other_entry_point_is_refused(
     monkeypatch.setattr(yfinance.cache, "get_tz_cache", lambda: _KnownZone())
     _error_from(lambda: Ticker("AAPL").splits)
     assert network_calls == []
+
+
+def test_an_engine_for_another_role_is_refused_too():
+    """db.readonly reads the live database through a second engine, logged in
+    as the read-only role; the unit suite must refuse that one as well."""
+    from quantflow.db import connection, readonly
+
+    for module in (connection, readonly):
+        with pytest.raises(RuntimeError, match="offline"):
+            module.engine_as("quantflow_readonly", "pw")

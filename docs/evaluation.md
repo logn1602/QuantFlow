@@ -769,7 +769,9 @@ failing on the code before it, as in Phase 1:
 - The snapshot: a round trip; a file whose hash does not match the manifest is refused;
   the export refuses a non-local database without `--live` before connecting, and checks
   `transaction_read_only` (the diagnostics tests, reused); plus an integration test on a
-  throwaway local Postgres.
+  throwaway local Postgres. From 2026-11-09 `--live` also needs the SELECT-only role
+  (`DB_READONLY_USER`, `DB_READONLY_PASSWORD`; `sql/schema_roles.sql`) and logs in as
+  it.
 - The CLI: params and metrics reach a faked MLflow; an exception ends the run as FAILED;
   an MLflow failure exits non-zero with the files written; the window defaults to
   validation; `--window test` without a reason is refused before any data is read; the
@@ -1353,8 +1355,10 @@ Every command runs from the repo root with `uv run`; outputs land in
 `eval_runs/<label>/` and the MLflow experiment `rolling_origin_evaluation` in
 `mlflow.db`, both git-ignored.
 
-1. The snapshot, read once from the database, read-only (section 6). The 2026-11-06
-   snapshot is git-ignored and backed up outside the repo; its digest identifies it:
+1. The snapshot, read once from the database, read-only (section 6), as the
+   SELECT-only role (`DB_READONLY_USER` and `DB_READONLY_PASSWORD` in `.env`;
+   `sql/schema_roles.sql`). The 2026-11-06 snapshot is git-ignored and backed up
+   outside the repo; its digest identifies it:
 
    ```bash
    uv run python -m quantflow.pipelines.evaluate export --as-of 2026-11-06 --live

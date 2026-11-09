@@ -1,49 +1,73 @@
 -- ============================================================
 -- schema_roles.sql
 --
--- A read-only role for the public Streamlit dashboard.
+-- quantflow_readonly: a role that can only read, for every reader of the live
+-- database outside the pipeline.
 --
--- Why: dashboard.py calls the same get_engine() as the ingestion and model
--- jobs, so the deployed app holds a read-write credential it only ever reads
--- with. No injection path reaches it today — the ticker comes from a
--- server-side selectbox over config.TICKERS and is parameter-bound, and the
--- lookback is a bounded st.slider int, also parameter-bound — so this is
--- blast-radius reduction, not a fix for an exploitable defect.
+--   - The diagnostics (scripts/diagnostics/run_1a_diagnostics.py --live) and
+--     the evaluation's snapshot export (pipelines/evaluate.py export --live)
+--     log in as it, from DB_READONLY_USER and DB_READONLY_PASSWORD in .env,
+--     and refuse to run without them (db/readonly.py). Their query checks
+--     are scans of the SQL; this role is the guarantee that does not depend
+--     on them.
+--   - The public Streamlit dashboard, which only reads, logs in as it through
+--     its DB_USER and DB_PASSWORD secrets, so the deployed app holds no
+--     credential that can write.
 --
--- EVERY STATEMENT BELOW IS COMMENTED OUT ON PURPOSE.
+-- Run by hand in Supabase's SQL editor, which runs as postgres. `make setup`
+-- does not run this file. Roles are cluster-wide; Supabase's pooler takes the
+-- user as quantflow_readonly.<project-ref>, the same suffix the postgres user
+-- has in the connection string.
 --
--- Role DDL is the repo owner's operation, not something a script should run:
--- getting it wrong locks the live dashboard out of the database, and the
--- password below must be replaced with a real secret first. Read it, adapt
--- it, run it by hand against Supabase, then point the Streamlit deployment's
--- DB_USER / DB_PASSWORD at the new role.
---
--- Note for Supabase: roles are cluster-wide, and the connection pooler expects
--- the username in the form <role>.<project-ref>. Check the pooler's connection
--- string in Project Settings > Database after creating the role.
+-- Run steps 1 to 4 as they are: the role gets no password here, so it cannot
+-- log in until step 5. Then run step 5 on its own with a real secret.
+-- Validated on a local Postgres 17 cluster (2026-11-09): the role reads every
+-- table, including one created afterwards; INSERT fails; DELETE fails on
+-- privileges even with the read-only default switched off; it cannot create
+-- a table, a replication slot, or end another session.
 -- ============================================================
 
--- -- 1. Create the role. Replace the password before running.
--- CREATE ROLE quantflow_readonly LOGIN PASSWORD 'replace_me_with_a_real_secret';
+-- 1. A role that can log in and do nothing else. Ten connections: the
+--    dashboard's sessions and a --live run share it.
+CREATE ROLE quantflow_readonly
+    LOGIN
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+    CONNECTION LIMIT 10;
+
+-- 2. Its sessions start read-only and time-limited. These are defaults a
+--    session could change; the privileges in step 3 are what stop writes.
+ALTER ROLE quantflow_readonly SET default_transaction_read_only = on;
+ALTER ROLE quantflow_readonly SET statement_timeout = '120s';
+ALTER ROLE quantflow_readonly SET idle_in_transaction_session_timeout = '60s';
+
+-- 3. Reach the database and the public schema, and read its tables: SELECT
+--    only. Where postgres does not own the database or the schema, the first
+--    two print "no privileges were granted"; every role has both through
+--    PUBLIC by default, and step 6 checks it.
+GRANT CONNECT ON DATABASE postgres TO quantflow_readonly;
+GRANT USAGE ON SCHEMA public TO quantflow_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO quantflow_readonly;
+
+-- 4. Tables postgres creates later (the trending tables, say) are readable
+--    too.
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    GRANT SELECT ON TABLES TO quantflow_readonly;
+
+-- 5. Its password, run on its own. Use letters and digits only (for example
+--    the output of `openssl rand -hex 32`): the dashboard builds its
+--    connection URL from DB_PASSWORD unescaped, so a character such as @, /
+--    or : would break it.
 --
--- -- 2. Let it reach the database and the public schema, nothing more.
--- GRANT CONNECT ON DATABASE postgres TO quantflow_readonly;
--- GRANT USAGE   ON SCHEMA public     TO quantflow_readonly;
+-- ALTER ROLE quantflow_readonly PASSWORD 'replace-with-the-secret';
+
+-- 6. Check: it can connect and use the schema (both true), and holds only
+--    SELECT, on every table.
 --
--- -- 3. Read-only on everything that exists now.
--- GRANT SELECT ON ALL TABLES IN SCHEMA public TO quantflow_readonly;
+-- SELECT has_database_privilege('quantflow_readonly', 'postgres', 'CONNECT'),
+--        has_schema_privilege('quantflow_readonly', 'public', 'USAGE');
 --
--- -- 4. And on anything added later, so a new table does not silently
--- --    break the dashboard. Must be run as the role that creates tables.
--- ALTER DEFAULT PRIVILEGES IN SCHEMA public
---     GRANT SELECT ON TABLES TO quantflow_readonly;
---
--- -- 5. Belt and braces: make sure no write path was inherited.
--- REVOKE INSERT, UPDATE, DELETE, TRUNCATE
---     ON ALL TABLES IN SCHEMA public FROM quantflow_readonly;
---
--- -- 6. Verify. Expect only SELECT for this role.
--- SELECT table_name, privilege_type
+-- SELECT table_name, string_agg(privilege_type, ', ') AS privileges
 -- FROM information_schema.role_table_grants
 -- WHERE grantee = 'quantflow_readonly'
--- ORDER BY table_name, privilege_type;
+-- GROUP BY table_name
+-- ORDER BY table_name;

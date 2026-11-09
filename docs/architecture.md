@@ -265,7 +265,8 @@ pages on 2026-11-09.
 ### Database size (measured 2026-11-09)
 
 Measured with `scripts/diagnostics/free_tier_usage.sql`, one read-only transaction
-through the diagnostics runner (`run_1a_diagnostics.py --sql ... --live`):
+through the diagnostics runner (`run_1a_diagnostics.py --sql ... --live`, which now
+logs in as the SELECT-only role of `sql/schema_roles.sql`):
 
 | | Size | Rows (Postgres's estimate) |
 |---|---|---|

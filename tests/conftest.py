@@ -272,12 +272,20 @@ def install_engine(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_database(monkeypatch):
-    def refuse():
+    def refuse(*args, **kwargs):
         raise RuntimeError(
             "unit tests are offline: use the fake_db fixture, never a real database"
         )
 
     _replace_get_engine(monkeypatch, refuse)
+    # The second way to an engine: db.readonly's, for the read-only role.
+    # Never installed by install_engine either, so no test reaches it.
+    import quantflow.db.connection as connection
+
+    monkeypatch.setattr(connection, "engine_as", refuse)
+    for name, module in list(sys.modules.items()):
+        if name.startswith("quantflow.") and getattr(module, "engine_as", None):
+            monkeypatch.setattr(module, "engine_as", refuse)
 
 
 @pytest.fixture(autouse=True)

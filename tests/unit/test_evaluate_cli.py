@@ -230,6 +230,27 @@ def test_export_refuses_a_remote_database_without_live(monkeypatch, tmp_path):
     assert not any(tmp_path.iterdir())
 
 
+def test_export_live_is_refused_without_the_read_only_role(
+    monkeypatch, tmp_path, capsys
+):
+    """The export reads the live database as the SELECT-only role
+    (sql/schema_roles.sql) and refuses before connecting without it."""
+    import quantflow.config as config
+
+    exported = []
+    monkeypatch.setattr(config, "DB_HOST", "aws-0.pooler.supabase.com")
+    monkeypatch.setattr(config, "DB_READONLY_USER", "")
+    monkeypatch.setattr(config, "DB_READONLY_PASSWORD", "")
+    monkeypatch.setattr(evaluate, "export_snapshot", lambda *a, **k: exported.append(a))
+    code = evaluate.main(
+        ["export", "--as-of", "2026-11-06", "--out", str(tmp_path), "--live"]
+    )
+
+    assert code == 2
+    assert exported == []
+    assert "DB_READONLY_USER" in capsys.readouterr().err
+
+
 def _compare(tmp_path, incumbent="a", candidate="b", models="drift"):
     return evaluate.main(
         ["compare", "--incumbent", str(tmp_path / "runs" / incumbent),

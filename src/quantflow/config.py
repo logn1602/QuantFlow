@@ -40,6 +40,14 @@ DB_SSLROOTCERT = os.getenv("DB_SSLROOTCERT", "")
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
+# A role that can only read (sql/schema_roles.sql), on the same database. The
+# reads of the live database outside the pipeline, the diagnostics' and the
+# evaluation's snapshot export with --live, log in as it and refuse to run
+# without it (db.readonly): the pipeline's own credentials can write. On
+# Supabase's pooler the user is quantflow_readonly.<project-ref>.
+DB_READONLY_USER = os.getenv("DB_READONLY_USER", "")
+DB_READONLY_PASSWORD = os.getenv("DB_READONLY_PASSWORD", "")
+
 # ── API Keys ──────────────────────────────────────────────────────────────────
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")

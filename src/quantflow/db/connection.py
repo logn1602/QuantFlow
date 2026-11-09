@@ -7,9 +7,10 @@ Use get_conn() for raw psycopg2 (custom SQL).
 """
 
 import psycopg2
-from sqlalchemy import create_engine, text
+from sqlalchemy import URL, create_engine, text
 from sqlalchemy.exc import OperationalError
 
+from quantflow import config
 from quantflow.config import DATABASE_URL, DB_SSLMODE, DB_SSLROOTCERT
 from quantflow.utils.logger import get_logger
 
@@ -36,6 +37,21 @@ def get_engine():
             connect_args=_ssl_args(),
         )
     return _engine
+
+
+def engine_as(user: str, password: str):
+    """A new engine for the configured database, logged in as another role:
+    db.readonly's read-only one. Not the shared engine; the caller disposes
+    of it. The URL is built escaped, so any password works."""
+    url = URL.create(
+        "postgresql",
+        username=user,
+        password=password,
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        database=config.DB_NAME,
+    )
+    return create_engine(url, pool_pre_ping=True, connect_args=_ssl_args())
 
 
 def get_conn():
