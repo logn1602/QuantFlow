@@ -52,6 +52,8 @@ dependencies = [
     # Dashboard
     "streamlit>=1.61.0",       # the dashboard uses st.divider(), added in 1.23
     "plotly>=6.9.0",
+    # Evaluation
+    "matplotlib>=3.11.1",      # evaluate publish draws the README chart; Prophet already installs it
 ]
 
 [project.optional-dependencies]

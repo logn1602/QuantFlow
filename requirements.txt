@@ -52,6 +52,9 @@ newsapi-python>=0.2.7
 streamlit>=1.61.0         # dashboard.py uses st.divider(), added in 1.23
 plotly>=6.9.0
 
+# Evaluation
+matplotlib>=3.11.1        # evaluate publish draws the README chart; Prophet already installs it
+
 # ML ensemble
 scipy>=1.17.1             # direct import: ensemble.py uses scipy.optimize.nnls
 xgboost>=3.2.0
