@@ -1,12 +1,13 @@
 """
 dashboard.py
 ------------
-QuantFlow — Real-Time Stock Analytics Dashboard
+QuantFlow: stock analytics dashboard
 
 Streamlit app visualizing the full pipeline:
   - Live price charts with Bollinger Bands + anomaly flags
   - RSI and MACD indicator charts with signal interpretation
-  - 7-day forecast comparison: ARIMA, Prophet, XGBoost, LightGBM
+  - 7-day forecasts: ARIMA, Prophet, XGBoost, LightGBM, the ensemble and
+    "no change", with their measured accuracy (dashboard/accuracy.py)
   - FinBERT news sentiment analysis per ticker
   - Market-wide overview with anomaly summary
 
@@ -21,8 +22,8 @@ from plotly.subplots import make_subplots
 from sqlalchemy import text
 
 from quantflow.config import TICKERS
+from quantflow.dashboard import accuracy
 from quantflow.db.connection import get_engine
-from quantflow.db.metrics import load_latest_metrics
 from quantflow.db.prices import load_recent_ohlcv as load_prices
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -111,12 +112,6 @@ def load_forecasts(ticker: str) -> pd.DataFrame:
         df = pd.read_sql(query, conn, params={"ticker": ticker})
     df["forecast_date"] = pd.to_datetime(df["forecast_date"])
     return df
-
-
-@st.cache_data(ttl=300)
-def load_metrics(ticker: str) -> dict:
-    """Latest holdout metrics per model, straight from model_metrics."""
-    return load_latest_metrics(ticker)
 
 
 @st.cache_data(ttl=300)
@@ -409,8 +404,22 @@ def forecast_chart(prices, forecasts, ticker):
                 mode="lines+markers",
             )
         )
+    # The yardstick every model is measured against: the latest close, held
+    # for all 7 days (dashboard/accuracy.py has how they compare).
+    future = sorted(forecasts["forecast_date"].unique())
+    if future and not recent.empty:
+        last_date, last_close = recent["date"].iloc[-1], recent["close"].iloc[-1]
+        fig.add_trace(
+            go.Scatter(
+                x=[last_date, *future],
+                y=[last_close] * (len(future) + 1),
+                name="No change (latest close)",
+                line={"color": "#bdbdbd", "width": 2, "dash": "dot"},
+                mode="lines",
+            )
+        )
     fig.update_layout(
-        title=f"{ticker} — 7-Day Forecast: 4 Base Models + Stacking Ensemble",
+        title=f"{ticker}: 7-day forecast, 4 base models, the ensemble and no change",
         xaxis_title="Date",
         yaxis_title="Price (USD)",
         template="plotly_dark",
@@ -492,7 +501,10 @@ with st.sidebar:
     st.success("✅ Level 2 — XGBoost/LightGBM")
     st.success("✅ Level 3 — Stacking Ensemble")
     st.divider()
-    st.caption("Data refreshes every 5 min")
+    st.caption(
+        "Data refreshes once a day, after the US close; this page caches it "
+        "for 5 minutes"
+    )
     if st.button("🔄 Refresh Data"):
         st.cache_data.clear()
         st.rerun()
@@ -509,7 +521,7 @@ forecasts = load_forecasts(ticker)
 sentiment = load_sentiment(ticker, days=7)
 
 if prices.empty:
-    st.error(f"No data found for {ticker}. Run seed_db.py first.")
+    st.error(f"No data found for {ticker}. Run: make seed")
     st.stop()
 
 # ── Top metrics ───────────────────────────────────────────────────────────────
@@ -581,7 +593,7 @@ with tab1:
 
 with tab2:
     if indicators.empty:
-        st.warning("No indicators found. Run: python indicators.py")
+        st.warning("No indicators found. Run: make indicators")
     else:
         st.plotly_chart(rsi_macd_chart(indicators, ticker), use_container_width=True)
         latest_ind = indicators.iloc[-1]
@@ -602,89 +614,74 @@ with tab2:
                 st.error(f"🔴 MACD {hist:.4f} — Bearish momentum.")
 
 with tab3:
+    # The 7-day error as the rolling-origin evaluation measured it, from the
+    # published table (dashboard/accuracy.py). The daily run cannot measure
+    # it: it keeps no forecast history.
+    published = accuracy.load_published()
+    if published is not None:
+        st.info(accuracy.baseline_note(published))
     if forecasts.empty:
-        st.warning(
-            "No forecasts found. Run: python forecasting.py && python xgboost_model.py"
-        )
+        st.warning("No forecasts found. Run: make models")
     else:
         st.plotly_chart(
             forecast_chart(prices, forecasts, ticker), use_container_width=True
         )
+        if published is not None:
+            st.caption(accuracy.band_caption(published))
 
-        st.subheader("7-Day Numbers — All Models")
-        c1, c2, c3, c4, c5 = st.columns(5)
+        st.subheader("7-day numbers, all models")
         model_labels = {
+            "naive": "No change",
             "arima": "ARIMA",
             "prophet": "Prophet",
             "xgboost": "XGBoost",
             "lightgbm": "LightGBM",
             "ensemble_stack": "⭐ Ensemble",
         }
-        for col, model in zip(
-            [c1, c2, c3, c4, c5],
-            ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"],
-            strict=False,
+        future = sorted(forecasts["forecast_date"].unique())
+        for col, (model, label) in zip(
+            st.columns(len(model_labels)), model_labels.items(), strict=True
         ):
-            mdf = forecasts[forecasts["model"] == model][
-                ["forecast_date", "predicted_close", "lower_bound", "upper_bound"]
-            ].copy()
+            if model == "naive":
+                mdf = pd.DataFrame(
+                    {
+                        "Date": future,
+                        "Forecast": round(float(prices["close"].iloc[-1]), 2),
+                    }
+                )
+            else:
+                mdf = forecasts[forecasts["model"] == model][
+                    ["forecast_date", "predicted_close", "lower_bound", "upper_bound"]
+                ].copy()
+                mdf.columns = ["Date", "Forecast", "Lower", "Upper"]
+                mdf[["Forecast", "Lower", "Upper"]] = mdf[
+                    ["Forecast", "Lower", "Upper"]
+                ].round(2)
             with col:
-                st.markdown(f"**{model_labels[model]}**")
+                st.markdown(f"**{label}**")
                 if mdf.empty:
                     st.caption("No data")
                 else:
-                    mdf.columns = ["Date", "Forecast", "Lower", "Upper"]
-                    mdf[["Forecast", "Lower", "Upper"]] = mdf[
-                        ["Forecast", "Lower", "Upper"]
-                    ].round(2)
                     st.dataframe(mdf, use_container_width=True, hide_index=True)
 
-        st.divider()
-        metrics = load_metrics(ticker)
-
-        if not metrics:
-            st.info("No metrics recorded yet. Run: python run_models.py")
-        else:
-            # One caption if every model shares an evaluation window, otherwise
-            # each column states its own (Phase 3 shortens the ensemble's).
-            windows = {
-                m["holdout_days"]
-                for m in metrics.values()
-                if m["holdout_days"] is not None
-            }
-            if len(windows) == 1:
-                st.caption(
-                    f"{windows.pop()}-day holdout MAPE — {ticker} (lower = better)"
-                )
-            else:
-                st.caption(f"Holdout MAPE — {ticker} (lower = better)")
-
-            b1, b2, b3, b4, b5 = st.columns(5)
-            for col, model in zip(
-                [b1, b2, b3, b4, b5],
-                ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"],
-                strict=False,
-            ):
-                label = model_labels[model]
-                m = metrics.get(model)
-                with col:
-                    if not m or m["mape"] is None:
-                        st.info(f"{label}: —")
-                        st.caption("not yet measured")
-                    else:
-                        text_ = f"{label}: {m['mape']:.2f}%"
-                        if m["mape"] < 2.0:
-                            st.success(text_)
-                        else:
-                            st.info(text_)
-                        st.caption(
-                            f"{m['holdout_days']}d · measured "
-                            f"{pd.Timestamp(m['run_at']).date()}"
-                        )
+    st.divider()
+    st.subheader(f"Measured 7-day accuracy, {ticker}")
+    if published is None:
+        st.info(
+            "No published evaluation found. Run: python -m "
+            "quantflow.pipelines.evaluate publish --validation <run> --test <run>"
+        )
+    else:
+        st.dataframe(
+            accuracy.accuracy_rows(published, ticker),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(accuracy.provenance(published))
 
 with tab4:
     if sentiment.empty:
-        st.warning("No sentiment data. Run: python sentiment.py")
+        st.warning("No sentiment data. Run: make sentiment")
     else:
         avg_compound = float(sentiment["compound"].mean())
         c1, c2 = st.columns([1, 2])
@@ -808,13 +805,16 @@ with tab6:
 
     st.caption(
         "Long/flat strategy: BUY when ensemble predicts price rise, hold cash otherwise. "
-        "1-day holding period · 0.1% transaction cost · compared to buy-and-hold benchmark."
+        "1-day holding period · 0.1% transaction cost · compared to buy-and-hold benchmark. "
+        "It demonstrates the evaluation harness, not a trading edge: the window "
+        "is short and holds only a handful of trades."
     )
 
     if bt_summary.empty:
-        st.warning("No backtest results found. Run: `python backtest.py`")
+        st.warning("No backtest results found. Run: `make backtest`")
         st.code(
-            "python backtest.py          # all tickers\npython backtest.py --ticker AAPL  # single ticker"
+            "make backtest  # all tickers\n"
+            "python -m quantflow.pipelines.backtest --ticker AAPL  # one ticker"
         )
     else:
         # ── Cumulative return chart for selected ticker ────────────────────────

@@ -79,6 +79,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The dashboard's published accuracy table (dashboard/accuracy.py). Streamlit
+# Cloud installs the package from requirements.txt rather than running from
+# the checkout, so a data file reaches it only if it ships in the package.
+[tool.setuptools.package-data]
+"quantflow.dashboard" = ["published_accuracy.csv"]
+
 
 # ── Ruff ──────────────────────────────────────────────────────────────────────
 
