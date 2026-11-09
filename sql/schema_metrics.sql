@@ -1,9 +1,10 @@
 -- ============================================================
 -- schema_metrics.sql
--- Per-run model evaluation metrics.
--- MLflow writes to a local sqlite file that Streamlit Cloud cannot
--- read, so anything the dashboard must display lives here instead.
--- Command: psql -U postgres -d stock_pipeline -f db/schema_metrics.sql
+-- Per-run model evaluation metrics: each daily run's 30-day holdout
+-- figures, kept in Postgres because MLflow's local sqlite file never
+-- leaves the machine that ran it. Nothing displays them now; the
+-- dashboard shows the rolling-origin evaluation's published 7-day error.
+-- Command: psql -U postgres -d stock_pipeline -f sql/schema_metrics.sql
 -- ============================================================
 
 -- Holdout metrics, one row per model run
@@ -20,6 +21,6 @@ CREATE TABLE IF NOT EXISTS model_metrics (
     UNIQUE (ticker, model, run_at)
 );
 
--- Index for "latest metrics per model" lookups from the dashboard
+-- Index for "latest metrics per model" lookups
 CREATE INDEX IF NOT EXISTS idx_model_metrics_ticker_model_run
     ON model_metrics (ticker, model, run_at DESC);

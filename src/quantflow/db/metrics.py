@@ -3,9 +3,11 @@ db/metrics.py
 -------------
 Persistence for per-run model evaluation metrics.
 
-MLflow stores metrics in a local sqlite file, which Streamlit Cloud
-cannot read. The dashboard therefore reads its MAPE figures from the
-model_metrics table in Postgres, written here.
+Each daily run records its 30-day holdout figures in the model_metrics
+table, a record kept in Postgres because MLflow's local sqlite file never
+leaves the machine that ran it. Nothing displays them now: the dashboard
+shows the 7-day error the rolling-origin evaluation measured
+(dashboard/accuracy.py; docs/architecture.md, Known problems 1 and 2).
 
 Metric persistence is best-effort by design: a failure to save a metric
 must never take down a model run.
@@ -17,8 +19,6 @@ from quantflow.db.connection import get_engine
 from quantflow.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-MODELS = ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"]
 
 
 def _as_float(value):
@@ -70,36 +70,3 @@ def save_model_metrics(
         logger.warning(
             f"Metric persistence failed for {ticker} [{model}] (non-critical): {e}"
         )
-
-
-def load_latest_metrics(ticker: str) -> dict:
-    """
-    Return the most recent metrics row per model for a ticker:
-        {model: {"rmse", "mae", "mape", "holdout_days", "run_at"}}
-    Returns {} if nothing is stored or the query fails.
-    """
-    try:
-        engine = get_engine()
-        query = text("""
-            SELECT DISTINCT ON (model)
-                   model, holdout_days, rmse, mae, mape, run_at
-            FROM model_metrics
-            WHERE ticker = :ticker
-            ORDER BY model, run_at DESC
-        """)
-        with engine.connect() as conn:
-            rows = conn.execute(query, {"ticker": ticker}).mappings().all()
-    except Exception as e:
-        logger.warning(f"Could not load metrics for {ticker}: {e}")
-        return {}
-
-    return {
-        row["model"]: {
-            "rmse": _as_float(row["rmse"]),
-            "mae": _as_float(row["mae"]),
-            "mape": _as_float(row["mape"]),
-            "holdout_days": row["holdout_days"],
-            "run_at": row["run_at"],
-        }
-        for row in rows
-    }
