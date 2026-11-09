@@ -37,45 +37,48 @@ jobs:
       LOG_LEVEL: INFO
 
     steps:
-      # NOTE: actions/checkout and actions/setup-python are intentionally left
-      # on major-version tags rather than SHA-pinned. Both are GitHub
-      # first-party actions; pinning them adds churn without meaningful risk
-      # reduction here.
+      # NOTE: actions/checkout is intentionally left on a major-version tag
+      # rather than SHA-pinned, as are the actions in ci.yml. Pinning adds
+      # churn without meaningful risk reduction here.
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          enable-cache: true
 
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      # The exact versions in uv.lock, as CI installs them: the evaluation ran
+      # on these, and a different library version can give a different
+      # forecast from the same data. requirements.txt only sets floors.
+      # --locked stops here if uv.lock no longer matches pyproject.toml.
+      # Installs the quantflow package itself too (editable), which the src/
+      # layout needs. Every command below runs through `uv run`, in this
+      # environment, not the runner's own Python.
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # The src/ layout means quantflow is a real package. Without an
-          # editable install, `python -m quantflow.*` below cannot resolve it.
-          pip install -e . --no-deps
+        run: uv sync --locked --extra dev
 
       # Runs before any data step so a logic regression fails fast, before
       # touching the database. The suite is offline by design: no secrets,
       # no DB, no network. Same selection as CI, which leaves the eval and
       # integration suites out.
       - name: Run tests
-        run: pytest -m "not eval and not integration"
+        run: uv run pytest -m "not eval and not integration"
 
-      # pip-audit cannot run on the maintainer's Windows box (pandas 2.2.2 has
-      # no wheel there and its sdist needs a Visual Studio toolchain), so this
-      # is the only place the dependency set gets audited at all.
+      # Audits the exact versions installed above, read from uv.lock; nothing
+      # is installed or resolved for the audit. This is the only place the
+      # dependency set gets audited at all.
       #
       # continue-on-error while the baseline is unknown: a fresh upstream
       # advisory should surface in the log, not silently block the daily data
       # refresh. Tighten to a hard failure once the baseline is clean.
       - name: Audit dependencies
         run: |
-          pip install pip-audit
-          pip-audit --requirement requirements.txt
+          uv export --locked --extra dev --no-hashes --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/locked-requirements.txt"
+          uvx pip-audit --requirement "$RUNNER_TEMP/locked-requirements.txt" --no-deps --disable-pip
         continue-on-error: true
 
       - name: Fetch latest 15-min bars
@@ -84,14 +87,14 @@ jobs:
           # this is the ingestion step that would consume it if the Alpha
           # Vantage fetcher were enabled; no step reads it today.
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
-        run: python -m quantflow.ingestion.yfinance_fetcher --intraday
+        run: uv run python -m quantflow.ingestion.yfinance_fetcher --intraday
 
       # The daily bar carries Yahoo's official close and full-day volume; the
       # loaders only build a day from 15-min bars where no daily bar exists.
       # 22:30 UTC is after 17:00 New York in both EST and EDT, so today's bar
       # is final by the time this runs. Five days heals any missed run.
       - name: Fetch daily bars
-        run: python -m quantflow.ingestion.yfinance_fetcher --daily
+        run: uv run python -m quantflow.ingestion.yfinance_fetcher --daily
 
       # Fails the refresh before any stage reads prices if stored closes no
       # longer match Yahoo's, which is what a stock split after the rows were
@@ -100,13 +103,13 @@ jobs:
       # confirmed by Yahoo), or if any ticker could not be checked. Threshold:
       # SPLIT_GUARD_THRESHOLD, default 0.15.
       - name: Check stored prices against Yahoo (split guard)
-        run: python -m quantflow.ingestion.split_guard
+        run: uv run python -m quantflow.ingestion.split_guard
 
       - name: Compute technical indicators
-        run: python -m quantflow.features.indicators
+        run: uv run python -m quantflow.features.indicators
 
       - name: Detect anomalies
-        run: python -m quantflow.features.anomalies
+        run: uv run python -m quantflow.features.anomalies
 
       # FinBERT, about 440 MB, downloads from Hugging Face on first use. The key
       # is the revision the code pins (FINBERT_REVISION in
@@ -123,7 +126,7 @@ jobs:
         id: sentiment
         env:
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
-        run: python -m quantflow.features.sentiment
+        run: uv run python -m quantflow.features.sentiment
 
       # Runs after a failed sentiment step too, on the sentiment already
       # stored; the run still shows as failed. It requires that the sentiment
@@ -132,11 +135,11 @@ jobs:
       - name: Run all 5 forecasting models
         id: models
         if: ${{ !cancelled() && steps.sentiment.outcome != 'skipped' }}
-        run: python -m quantflow.pipelines.run_models
+        run: uv run python -m quantflow.pipelines.run_models
 
       - name: Run strategy backtest
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
-        run: python -m quantflow.pipelines.backtest
+        run: uv run python -m quantflow.pipelines.backtest
 
       - name: Summary
         run: |
