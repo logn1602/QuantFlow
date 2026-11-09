@@ -24,7 +24,7 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 ## What it does
 
 - **Ingests** daily and 15-minute OHLCV bars for 8 tickers from yFinance into PostgreSQL, once a day after the US close, in a GitHub Actions workflow. An Alpha Vantage fetcher and a 15-minute APScheduler loop exist for local use; the daily workflow uses neither.
-- **Computes** RSI(14), MACD(12/26/9), Bollinger Bands(20), rolling Z-score and IQR anomaly flags, and FinBERT sentiment over NewsAPI and Yahoo Finance RSS headlines.
+- **Computes** RSI(14), MACD(12/26/9), Bollinger Bands(20), rolling Z-score and IQR anomaly flags, and FinBERT sentiment over Yahoo Finance RSS headlines (NewsAPI's, fetched until 2026-11-09, no longer count).
 - **Forecasts** 7 trading days ahead with five models: ARIMA, Prophet, XGBoost, LightGBM, and an NNLS stacking ensemble over the four and "no change", the boosted trees from a 34-column feature matrix.
 - **Evaluates** every model on that 7-day task from 67 rolling start dates against "no change", and runs a long/flat strategy backtest on the ensemble.
 
@@ -35,7 +35,7 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 ```mermaid
 flowchart TD
     YF[yFinance] --> DB[(PostgreSQL<br/>raw_prices)]
-    NEWS[NewsAPI + RSS] --> FB[FinBERT sentiment]
+    NEWS[Yahoo Finance RSS] --> FB[FinBERT sentiment]
 
     DB --> IND[Technical indicators<br/>RSI - MACD - Bollinger]
     DB --> ANOM[Anomaly detection<br/>Z-score - IQR]
@@ -82,7 +82,7 @@ Data flows one way. `quantflow.models` depends on `quantflow.evaluation`, never 
 
 The question: does any model forecast what the dashboard publishes, the closing price 1 to 7 trading days ahead, better than **"no change"**, the forecast that every future close equals today's? On these dates, **no**. ARIMA and drift cannot be told apart from it; the boosted trees, both ensembles and Prophet are measurably worse. Daily prices are close to a random walk, so this is a common result, reported as measured.
 
-Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4 (commit `a3c0c4e`, MLflow `30a6be1e`, 2026-11-09), test-date figures from run T3 (commit `7beb3ff`, MLflow `93bdf518`, 2026-11-08). Where each number comes from: [docs/evaluation.md, section 17](docs/evaluation.md#17-phase-4-the-published-results-2026-11-09).
+Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4 (commit `a3c0c4e`, MLflow `30a6be1e`, 2026-11-09), test-date figures from run T3 (commit `7beb3ff`, MLflow `93bdf518`, 2026-11-08). Both counted NewsAPI's articles as well as RSS's, before the news switched to RSS only ([news](#does-the-news-help-not-enough-data-yet)). Where each number comes from: [docs/evaluation.md, section 17](docs/evaluation.md#17-phase-4-the-published-results-2026-11-09).
 
 ### How it's measured
 
@@ -127,7 +127,9 @@ Only ARIMA's comes close to what it claims. The bands stay as they are, labelled
 
 ### Does the news help? Not enough data yet
 
-The boosted trees can use FinBERT sentiment from news headlines. Whether that helps cannot be measured yet: news is stored from 2026-04-10 and NewsAPI's free plan searches only a month back, so only 4.8% of the validation (ticker, start date) pairs had a real article, against the 50% set in advance as the minimum for the comparison. The news gets a forward test instead: 42 start dates from 2026-11-09, scored once after 2027-09-15, with the keep-or-drop rule written before scoring ([docs/evaluation.md, section 4](docs/evaluation.md#4-does-the-news-help-2d)).
+The boosted trees can use FinBERT sentiment from news headlines. Whether that helps cannot be measured yet: news is stored only from 2026-04-10 and no free archive reaches further back, so only 4.8% of the validation (ticker, start date) pairs had a real article, against the 50% set in advance as the minimum for the comparison. The news gets a forward test instead: 42 start dates from 2026-11-09, scored once after 2027-09-15, with the keep-or-drop rule written on 2026-11-09, before any start date is scored ([docs/evaluation.md, section 4](docs/evaluation.md#4-does-the-news-help-2d)).
+
+From 2026-11-09 the features count Yahoo Finance's RSS articles only, the stored history included, so they mean the same before and after: NewsAPI's free plan is for development and testing only. NewsAPI had supplied 47% of the articles that counted; the coverage above is the same from RSS alone. The published figures were run before the switch, so on the test dates, where every start date has news, they describe boosters that also read NewsAPI's articles; they stay as recorded rather than score the test dates a fourth time.
 
 ### What changed, and what looks worse on the test dates
 
@@ -215,7 +217,7 @@ psql -U postgres -c "CREATE DATABASE stock_pipeline;"
 make setup
 ```
 
-Copy the environment template and set `DB_PASSWORD`. Both API keys are optional — Alpha Vantage is unused by the default ingestion path, and sentiment falls back to the Yahoo Finance RSS feed without a NewsAPI key:
+Copy the environment template and set `DB_PASSWORD`. Neither API key is needed: Alpha Vantage is unused by the default ingestion path, and the features count Yahoo Finance's RSS headlines only:
 
 ```bash
 cp .env.example .env
@@ -299,7 +301,7 @@ docs/images/               The README's chart and screenshot
 | `DB_SSLMODE` | no | Default `require`; see below |
 | `DB_SSLROOTCERT` | no | CA bundle path, needed only for `verify-ca` / `verify-full` |
 | `ALPHA_VANTAGE_API_KEY` | no | Only for the Alpha Vantage fetcher |
-| `NEWS_API_KEY` | no | Without it, sentiment uses the RSS feed only |
+| `NEWS_API_KEY` | no | Leave unset. The features count RSS articles only (from 2026-11-09); with a key, NewsAPI's articles are still fetched and stored but never count |
 | `FETCH_INTERVAL_MINUTES` | no | Scheduler interval, default 15 |
 | `SPLIT_GUARD_THRESHOLD` | no | Fraction, default `0.15`. The daily refresh fails if stored daily closes differ from Yahoo's raw closes by more than this on three or more consecutive dates (a stock split after the rows were stored) |
 | `LOG_LEVEL` | no | Default `INFO` |

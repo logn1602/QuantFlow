@@ -60,6 +60,13 @@ def test_no_public_control_clears_the_cache():
     assert "cache_data.clear" not in SOURCE
 
 
+def test_the_sentiment_shown_is_the_news_the_models_count():
+    """Both sentiment reads keep to the sources the features count
+    (features.news.NEWS_SOURCES): RSS only, from 2026-11-09."""
+    assert SOURCE.count("source = ANY(:sources)") == 2
+    assert "NEWS_SOURCES" in SOURCE
+
+
 def test_no_model_is_crowned():
     """The ensemble had a star and a thicker, solid line; on the measured 7-day
     error it does not earn either."""

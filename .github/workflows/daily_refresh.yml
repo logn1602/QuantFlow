@@ -110,11 +110,11 @@ jobs:
           path: ~/.cache/huggingface
           key: finbert-${{ runner.os }}-4556d13015211d73dccd3fdd39d39232506f3e43
 
-      # Exits 1 when FinBERT cannot be loaded, which fails the run.
+      # Exits 1 when FinBERT cannot be loaded, which fails the run. Reads
+      # Yahoo's RSS feeds only: NewsAPI's free plan is for development and
+      # testing, so no key is passed (docs/evaluation.md, section 4).
       - name: Analyze news sentiment
         id: sentiment
-        env:
-          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
         run: uv run python -m quantflow.features.sentiment
 
       # Runs after a failed sentiment step too, on the sentiment already

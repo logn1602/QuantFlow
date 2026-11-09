@@ -50,6 +50,7 @@ def _news_day(column: str) -> str:
 
 
 def _news_days_query(
+    sources: tuple[str, ...],
     source_delays: dict,
     placeholder_sentiment: str,
     placeholder_scores: dict,
@@ -58,9 +59,15 @@ def _news_days_query(
     general_feed: tuple[str, str],
 ) -> tuple[str, dict]:
     """The summary query and its parameters, from the rules in
-    features.news: availability (source delay), the placeholder test
-    (np.isclose in floats) and the general feed (bad_rows)."""
-    params: dict = {"placeholder_sentiment": placeholder_sentiment}
+    features.news: the sources that count, availability (source delay), the
+    placeholder test (np.isclose in floats) and the general feed
+    (bad_rows)."""
+    # A list binds as a Postgres array.
+    params: dict = {
+        "sources": list(sources),
+        "placeholder_sentiment": placeholder_sentiment,
+    }
+    other_source = "NOT COALESCE(source = ANY(:sources), false)"
 
     whens = []
     for i, (source, delay) in enumerate(source_delays.items()):
@@ -102,7 +109,7 @@ def _news_days_query(
         WITH articles AS (
             SELECT ticker, sentiment, compound, inserted_at,
                    GREATEST(published_at + {delay_sql}, inserted_at) AS available_at,
-                   NOT ({placeholder} OR {general}) AS counts
+                   NOT ({other_source} OR {placeholder} OR {general}) AS counts
             FROM news_sentiment
         )
         SELECT ticker,
@@ -126,6 +133,7 @@ def _decimal(value) -> Decimal:
 
 def load_news_days(
     *,
+    sources: tuple[str, ...],
     source_delays: dict,
     placeholder_sentiment: str,
     placeholder_scores: dict,
@@ -144,6 +152,7 @@ def load_news_days(
     bytes per article.
     """
     query, params = _news_days_query(
+        sources,
         source_delays,
         placeholder_sentiment,
         placeholder_scores,

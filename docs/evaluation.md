@@ -373,8 +373,8 @@ Proposed (decision D6):
 Limits that stay:
 - A fetch that ran but stored nothing for any ticker looks like no fetch; a fetch that
   failed for one ticker only looks like a quiet day for it.
-- Counts depend on how often news was fetched (NewsAPI returns at most 20 articles per
-  call, and the laptop scheduler fetches every 6 hours on top of the workflow), so
+- Counts depend on how often news was fetched (the laptop scheduler fetches every 6
+  hours on top of the workflow, and each fetch sees only a feed's latest headlines), so
   `article_count` partly measures fetch frequency.
 - At serving time the newest row holds what arrived by the run; as a training row it
   can also hold what arrived between the run and midnight. A run long before the
@@ -396,6 +396,24 @@ once, over their count. pandas' mean of the rows as floats, used before, differs
 it in the last bit in 370 of the snapshot's 1,056 news windows (at most 1.1e-16). No
 forecast changed with it: not the live boosters' on the snapshot, nor the boosters'
 or the ensemble's holdout stack at any validation origin, so R7 still stands.
+
+### RSS only, from 2026-11-09 (decision D18)
+
+The features count articles from Yahoo Finance's RSS feeds only, on every date, the
+stored history included (`NEWS_SOURCES` in `features/news.py`; the database query and
+the dashboard's sentiment tab apply the same filter). NewsAPI's free Developer plan is
+for development and testing only, so the daily workflow stopped passing its key on
+2026-11-09; the articles it stored before stay in `news_sentiment` and never count. The
+filter applies to history too so that a feature means the same before the switch and
+after it: counting NewsAPI's articles up to 2026-11-09 and not after would change what
+`article_count` and the compound means measure in the middle of the forward window.
+
+On the 2026-11-06 snapshot NewsAPI supplied 17,689 of the 37,949 stored articles, and
+17,560 of the 37,661 that counted (47%); RSS alone leaves 20,101. Coverage does not
+change: rerun on 2026-11-09 counting RSS only, the `coverage` command gives the same 16
+of 336 validation rows and 200 of 200 test rows as below. What does change is every
+count and mean the boosters see wherever both sources had articles, the test dates
+included; the published figures (section 17) were run before the switch.
 
 ### News coverage comes before any news decision (decision D15)
 
@@ -436,21 +454,52 @@ gets its test on dates still to come, with the plan fixed before any of them exi
   look, since an early look that misses invites another.
 - **Snapshot**: a new one, exported then on the owner's go-ahead (D5). The 2026-11-06
   snapshot and its test dates stay as they are.
-- **Gate**: D15 on the forward origins: at least half the (ticker, origin) rows with a
-  real article, or "not enough data" again. Every test origin had one, so a working
-  daily fetch clears it with room. It depends on the daily workflow fetching every
-  trading day until then: GitHub disables a scheduled workflow after 60 days without
-  repository activity (it did on 2026-11-03), and under D6 a day without a fetch has
-  every sentiment feature missing.
+- **News**: RSS articles only (D18), at every forward origin and in the training
+  history behind it.
+- **Gate**: D15 on the forward origins, counting RSS articles only: at least half the
+  (ticker, origin) rows with a real RSS article, or "not enough data" again. Every test
+  origin had one from RSS alone, so a working daily fetch clears it with room. It
+  depends on the daily workflow fetching every trading day until then: GitHub disables
+  a scheduled workflow after 60 days without repository activity (it did on
+  2026-11-03), and under D6 a day without a fetch has every sentiment feature
+  missing.
 - **Comparison**: the boosters with and without the sentiment features (R6's pair), on
   the code of that day, against each other with the primary test of section 3
   (per-origin APE difference, Newey-West, Holm across the two boosters), and both
   against naive.
-- **Rule**: written down and approved before the forward window is scored, on Phase 3's
-  bar (kept only if it improves the held-out results across tickers).
+- **Rule**: below (decision D19), on Phase 3's bar.
 - **In the same scoring**: the live ensemble's current weights against the new ones,
   with the rule already written (section 5, "Forward test of the ensemble weights",
   decision D17).
+
+**Amended 2026-11-09, before any forward date is scored** (decided by the owner and
+merged that day, before the 22:30 UTC run that first fetches news for the first forward
+origin, so the window still starts 2026-11-09): news from RSS only (D18), the gate
+counting RSS articles, and the rule below, written now rather than at scoring time.
+
+### The news rule for the forward test (decision D19, written 2026-11-09)
+
+- **Cells**: each booster's cells at the 42 forward origins x 8 tickers x horizons 1
+  to 7, with the sentiment features (`xgboost`, `lightgbm`) and without them
+  (`xgboost_no_news`, `lightgbm_no_news`: the six sentiment features and `has_news`
+  removed), on the new snapshot and the code of that day. Compared on the cells both
+  variants forecast.
+- **Gate first**: if fewer than half of the 336 forward (ticker, origin) rows have a
+  real RSS article (D15, D18), the result is "not enough data" and nothing is kept or
+  dropped: the sentiment features stay as they are.
+- **No decision** if either variant of a booster fails more than 10% of its cells (the
+  harness's limit).
+- **Keep the sentiment features in a booster only if both**: (1) its MAPE with them over
+  all those cells is strictly lower than without them; (2) it is lower on at least 5 of
+  the 8 tickers. Otherwise they are dropped from that booster; a tie drops (the booster
+  without them is simpler). They are also dropped if the variant with them fails more
+  cells than the one without. Decided per booster.
+- **Reported, not deciding**: the paired test of each booster with the news against
+  without it (per-origin difference in absolute percentage error, Newey-West lag 1,
+  Holm across the two boosters), both variants against naive with the D8 primary test,
+  MAPE by horizon and by ticker, and the coverage per ticker.
+- **Dropped** means the booster trains without those seven columns, live and in the
+  harness, from the next release. The stored news and the dashboard's sentiment tab stay.
 
 ### Ablation
 
@@ -687,7 +736,8 @@ failing on the code before it, as in Phase 1:
 - F6: after a ticker's last article, rows read `has_news` 0 and a missing compound, not
   the last value.
 - Point-in-time: a Saturday article lands on Monday instead of vanishing; a NewsAPI
-  article lands a day later; an article stored days after it was published counts from
+  article lands a day later (from 2026-11-09 it does not count, D18); an article stored
+  days after it was published counts from
   when it was stored, not on its publish date; an article stored by a run that GitHub
   started late (06:50 UTC) counts that day, one stored at 12:05 UTC the next.
 - Bad rows: a placeholder row and a MarketWatch row under AAPL change no feature.
@@ -877,6 +927,8 @@ Decided by the owner; the body above applies them.
 | D14 | Point-in-time anomaly scores for the features, on `feat/evaluation-live` with D4: the live training rows stop looking ahead (section 2). A correction, measured as R5. The README's "features are backward-looking" claim is corrected in Phase 4. |
 | D15 | News coverage per window is reported before any news run; under half of the validation (ticker, date) rows with a real article means the ablation is "not enough data" and no news feature is kept or dropped on it (section 4). |
 | D16 | The news gets a forward test: 42 origins every 5 trading days from 2026-11-09, scored once after the last target (2027-09-15) on a new snapshot, with the D15 gate and a keep-or-drop rule written before scoring (section 4). Confirmed 2026-11-08. |
+| D18 | Decided 2026-11-09, before any forward date is scored: news from Yahoo Finance's RSS feeds only, on every date, history included, so the features mean the same before and after; NewsAPI's stored articles stay and never count, and the daily workflow no longer passes its key (its free plan is for development and testing only). The D15 gate counts RSS articles (section 4). |
+| D19 | Pre-registered 2026-11-09, before any forward date is scored: the news rule for the forward test. Per booster, the sentiment features are kept only if the booster's MAPE with them over every forward cell is strictly lower than without them and lower on at least 5 of the 8 tickers; a tie drops. "Not enough data" under the gate, or either variant failing more than 10% of its cells, means no decision (section 4). |
 | D17 | Pre-registered 2026-11-08, before any forward date is scored: the forward test (D16) also compares the live ensemble's current weights with the new rolling-origin weights on the same cells. The live ensemble uses the new weights if their MAPE over every forward cell is no higher than the current weights' (a tie goes to the new weights, as in D2); either failing on more than 10% of its cells means no decision (section 5). |
 
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
@@ -1185,6 +1237,13 @@ two grounds: the commits since T3 change no forecast by their content (section 1
 lock upgrade of PR #14 moved no numeric or model library), and on the validation dates
 `main` reproduces the Phase 3 final exactly. The test dates themselves were not rerun
 at `main`.
+
+Both runs counted NewsAPI's articles as well as RSS's. From 2026-11-09 the features
+count RSS articles only (D18, section 4), so the live boosters, and the ensembles that
+combine them, no longer match P4 and T3 exactly. On the validation dates news reaches
+only the last two origins (16 of 336 rows), so P4 barely depends on it; on the test
+dates every origin has news, and T3 stays as recorded: rerunning it would be a fourth
+scoring of the test dates (D13).
 
 `evaluate publish` (below) turns the two runs into what is shown:
 `src/quantflow/dashboard/published_accuracy.csv`, the dashboard's accuracy table (per

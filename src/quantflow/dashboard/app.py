@@ -25,6 +25,7 @@ from quantflow.config import TICKERS
 from quantflow.dashboard import accuracy
 from quantflow.db.connection import get_engine
 from quantflow.db.prices import load_recent_ohlcv
+from quantflow.features.news import NEWS_SOURCES
 
 # How long every loader keeps what it read. The data changes once a day, after
 # the US close, so an hour still shows each refresh within the hour, while it
@@ -164,11 +165,14 @@ def load_sentiment(ticker: str, days: int = 7) -> pd.DataFrame:
             source
         FROM news_sentiment
         WHERE ticker = :ticker
+          AND source = ANY(:sources)
           AND published_at >= NOW() - INTERVAL '1 day' * :days
         ORDER BY published_at DESC
     """)
+    # The news the models count (features.news.NEWS_SOURCES): RSS only.
+    params = {"ticker": ticker, "days": days, "sources": list(NEWS_SOURCES)}
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker, "days": days})
+        df = pd.read_sql(query, conn, params=params)
     df["date"] = pd.to_datetime(df["date"])
     return df
 
@@ -185,12 +189,13 @@ def load_sentiment_summary() -> pd.DataFrame:
             COUNT(*) FILTER (WHERE sentiment='neutral')      AS neutral,
             COUNT(*)                                         AS total
         FROM news_sentiment
-        WHERE published_at >= NOW() - INTERVAL '7 days'
+        WHERE source = ANY(:sources)
+          AND published_at >= NOW() - INTERVAL '7 days'
         GROUP BY ticker
         ORDER BY avg_compound DESC
     """)
     with engine.connect() as conn:
-        return pd.read_sql(query, conn)
+        return pd.read_sql(query, conn, params={"sources": list(NEWS_SOURCES)})
 
 
 @st.cache_data(ttl=CACHE_SECONDS)
