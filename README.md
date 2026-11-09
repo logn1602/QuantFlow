@@ -1,6 +1,6 @@
 # QuantFlow
 
-A stock analytics pipeline that ingests market data, engineers features from price, sentiment and anomaly signals, and compares five forecasting models under a leakage-controlled evaluation harness.
+A stock analytics pipeline that ingests market data, engineers features from price, sentiment and anomaly signals, and forecasts 8 stocks 7 trading days ahead with five models, each measured against a "no change" baseline under a leakage-controlled evaluation harness.
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-quantflow--analytics.streamlit.app-red)](https://quantflow-analytics.streamlit.app)
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
@@ -8,16 +8,25 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 [![MLflow](https://img.shields.io/badge/MLflow-Tracking-orange)](https://mlflow.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-**Live dashboard: [quantflow-analytics.streamlit.app](https://quantflow-analytics.streamlit.app)**
+**Live dashboard: [quantflow-analytics.streamlit.app](https://quantflow-analytics.streamlit.app)** (on the free tier it sleeps after 12 hours without visitors; the first visit wakes it)
+
+> **Findings**
+> - No model beats "no change" (every future close equals today's) on 7-day forecasts, on either the validation or the test dates: [Evaluation](#evaluation).
+> - A data bug that invalidated the earlier published figures was found and fixed: from April 2026 each day's "close" was its 09:30 price ([the earlier figures](#the-2026-08-04-figures-and-why-they-were-replaced)).
+> - Whether the news sentiment helps awaits its forward test, scored once after 2027-09-15 ([news](#does-the-news-help-not-enough-data-yet)).
+
+![The dashboard's Forecasts tab for AAPL: each model's 7-day forecast beside "no change", with the measured coverage of every band](docs/images/dashboard_forecasts.png)
+
+*The dashboard's Forecasts tab (AAPL, data to 2026-11-06).*
 
 ---
 
 ## What it does
 
-- **Ingests** OHLCV bars for 8 tickers from yFinance and Alpha Vantage into PostgreSQL, on a 15-minute APScheduler interval.
+- **Ingests** daily and 15-minute OHLCV bars for 8 tickers from yFinance into PostgreSQL, once a day after the US close, in a GitHub Actions workflow. An Alpha Vantage fetcher and a 15-minute APScheduler loop exist for local use; the daily workflow uses neither.
 - **Computes** RSI(14), MACD(12/26/9), Bollinger Bands(20), rolling Z-score and IQR anomaly flags, and FinBERT sentiment over NewsAPI and Yahoo Finance RSS headlines.
-- **Forecasts** 7 days ahead with five models: ARIMA, Prophet, XGBoost, LightGBM, and an NNLS stacking ensemble over the four, from a 34-column feature matrix.
-- **Evaluates** every model on a time-ordered holdout, scores the ensemble out-of-fold, and simulates a long/flat trading strategy against buy-and-hold.
+- **Forecasts** 7 trading days ahead with five models: ARIMA, Prophet, XGBoost, LightGBM, and an NNLS stacking ensemble over the four and "no change", the boosted trees from a 34-column feature matrix.
+- **Evaluates** every model on that 7-day task from 67 rolling start dates against "no change", and runs a long/flat strategy backtest on the ensemble.
 
 ---
 
@@ -26,7 +35,6 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 ```mermaid
 flowchart TD
     YF[yFinance] --> DB[(PostgreSQL<br/>raw_prices)]
-    AV[Alpha Vantage] --> DB
     NEWS[NewsAPI + RSS] --> FB[FinBERT sentiment]
 
     DB --> IND[Technical indicators<br/>RSI - MACD - Bollinger]
@@ -39,6 +47,7 @@ flowchart TD
 
     DB --> ARIMA[ARIMA]
     DB --> PROPH[Prophet]
+    DB --> NAIVE[No change<br/>latest close]
     FEAT --> XGB[XGBoost]
     FEAT --> LGB[LightGBM]
 
@@ -46,16 +55,22 @@ flowchart TD
     PROPH --> STACK
     XGB --> STACK
     LGB --> STACK
+    NAIVE --> STACK
 
+    STACK --> ENS[NNLS ensemble<br/>weights non-negative, sum to 1]
     STACK --> OOF[Expanding-window<br/>out-of-fold loop]
-    OOF --> ENS[NNLS ensemble<br/>weights non-negative, sum to 1]
+    OOF --> BT[Long/flat backtest]
 
-    ENS --> BT[Long/flat backtest]
     ENS --> FC[(forecasts)]
     BT --> RES[(backtest_results)]
 
+    DB -.-> SNAP[(Snapshot)]
+    SNAP -.-> EVAL[Rolling-origin evaluation<br/>every model against no change]
+    EVAL -.-> PUB[Published accuracy<br/>and README chart]
+
     FC --> UI[Streamlit dashboard]
     RES --> UI
+    PUB --> UI
     ENS --> ML[MLflow tracking]
 ```
 
@@ -65,88 +80,72 @@ Data flows one way. `quantflow.models` depends on `quantflow.evaluation`, never 
 
 ## Evaluation
 
-> **Notice (2026-11-07): the figures in this section were scored against 09:30-bar prices, not daily closes.** From 2026-04-14 the pipeline stored only 15-minute bars and the loaders took each date's first bar, so every "actual" close in the 30-day holdout, and in the last 48 training days, was the 09:30 bar's price. Over the holdout window that price sat 0.7% to 1.9% from the day's close on average, depending on the ticker. Found by the read-only diagnostics in [scripts/diagnostics/](scripts/diagnostics/). The numbers below are left as published and will be re-measured in Phase 4.
+The question: does any model forecast what the dashboard publishes, the closing price 1 to 7 trading days ahead, better than **"no change"**, the forecast that every future close equals today's? On these dates, **no**. ARIMA and drift cannot be told apart from it; the boosted trees, both ensembles and Prophet are measurably worse. Daily prices are close to a random walk, so this is a common result, reported as measured.
 
-**How the evaluation set is built.** Intraday bars are collapsed to one close per trading date, giving **579 daily closes per ticker** spanning 2024-04-10 to 2026-08-04. The final **30 trading days** are held out. The split is positional on a date-sorted series — `train = df.iloc[:-30]`, `holdout = df.iloc[-30:]` — defined once in [evaluation/splits.py](src/quantflow/evaluation/splits.py). There is no random shuffle anywhere in the codebase.
+Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4 (commit `a3c0c4e`, MLflow `30a6be1e`, 2026-11-09), test-date figures from run T3 (commit `7beb3ff`, MLflow `93bdf518`, 2026-11-08). Where each number comes from: [docs/evaluation.md, section 17](docs/evaluation.md#17-phase-4-the-published-results-2026-11-09).
 
-**What counts as success.** MAPE against actual closes, because it is unit-free and therefore comparable across tickers trading at very different prices. A model is better than another only when scored on the same window over the same horizon.
+### How it's measured
 
-### Base models — 30-day holdout
+- **The published task.** At each start date, every model retrains on data before it and forecasts the next 7 trading days the way the live system does (the boosted trees feed each prediction back in as the next day's input). Nothing after the start date reaches a model.
+- **Two sets of dates.** 42 validation start dates (2025-06-30 to 2026-04-23) and 25 test start dates (2026-05-07 to 2026-10-28), every 5 trading days, 8 tickers: 2,352 forecasts per model on the validation dates and 1,400 on the test dates. Every keep-or-drop decision used the validation dates only; the test dates are reported, never used to choose.
+- **Metrics.** MAPE, the mean absolute percentage error. Skill: 1 minus a model's mean absolute error over "no change"'s, averaged over tickers, so above 0 would beat it. "Beats no change" rests on one test set in advance: each start date's difference in error from "no change", with Newey-West standard errors and a Holm correction across the models. Every other figure is descriptive.
+- **Prices** are each trading date's daily close (see [the earlier figures](#the-2026-08-04-figures-and-why-they-were-replaced)). Drift is the latest close grown at the history's average daily return.
 
-| Ticker | ARIMA | Prophet | XGBoost | LightGBM |
+### Results
+
+| Model | MAPE, validation | MAPE, test | Skill, validation | Skill, test | Beats "no change"? (p, validation / test) |
+|---|---|---|---|---|---|
+| **No change** | **2.88%** | **3.15%** | 0 | 0 | the baseline |
+| ARIMA | 2.88% | 3.17% | -0.003 | -0.007 | no, no clear difference (0.79 / 0.41) |
+| Drift | 2.93% | 3.19% | -0.011 | -0.010 | no, no clear difference (0.42 / 0.28) |
+| XGBoost | 3.14% | 3.54% | -0.096 | -0.170 | no, worse (under 0.001 on both) |
+| LightGBM | 3.35% | 3.56% | -0.177 | -0.174 | no, worse (under 0.001 on both) |
+| Ensemble, live weights | 3.37% | 3.71% | -0.185 | -0.228 | no, worse (under 0.001 on both) |
+| Ensemble, rolling weights (evaluation only) | 3.38% | 3.29% | -0.170 | -0.041 | no, worse (under 0.001 / 0.04) |
+| Prophet | 5.51% | 6.58% | -0.906 | -1.096 | no, worse (under 0.001 on both) |
+
+ARIMA and drift cannot be told apart from "no change"; every other model is worse by the test on both sets of dates. Some models come out ahead on individual tickers (ARIMA on 4 of 8 on the validation dates), but none overall.
+
+![MAPE by days ahead: each model in its own panel against "no change", validation dates solid and test dates dashed](docs/images/mape_by_days_ahead.png)
+
+Error grows with every day ahead ("no change" goes from 1.38% at 1 day to 4.16% at 7 on the validation dates), and no model gets clearly below "no change" at any horizon: ARIMA and drift stay within about 0.1 point of it. The chart is drawn by `evaluate publish` from the two runs.
+
+### Forecast bands: measured coverage, not 95%
+
+The shaded bands on the dashboard are not a promised range. On the same forecasts, the share of actual closes that fell inside each:
+
+| Model | How the band is built | Validation | Test | Median width (validation) |
 |---|---|---|---|---|
-| AAPL | 5.68% | 6.92% | **4.23%** | 4.83% |
-| MSFT | 4.52% | 12.81% | 2.89% | **2.64%** |
-| GOOGL | 3.66% | 15.14% | **2.28%** | 2.38% |
-| AMZN | 3.62% | 16.72% | **2.26%** | 2.30% |
-| NVDA | 5.46% | 18.23% | **2.18%** | 2.58% |
-| TSLA | 11.07% | 21.35% | **2.60%** | 2.79% |
-| META | 6.27% | 9.32% | **2.98%** | 3.13% |
-| JPM | 3.56% | **2.40%** | 5.14% | 4.94% |
-| **Mean** | 5.48% | 12.86% | **3.07%** | 3.20% |
+| ARIMA | statsmodels' 95% interval | 92% | 90% | 12.5% of the forecast |
+| Prophet | Prophet's 95% interval (seeded) | 74% | 62% | 12.8% |
+| XGBoost | the forecast plus or minus 2% | 46% | 40% | 4.0% |
+| LightGBM | the forecast plus or minus 2% | 41% | 40% | 4.0% |
+| Ensemble, live weights | its inputs' bounds, weighted like the forecast; "no change" has no band | 57% | 49% | 5.0% |
+| Ensemble, rolling weights | the same | 62% | 47% | 7.0% |
 
-> **These four columns are not measuring the same task, and the gap is mostly the task.**
->
-> ARIMA and Prophet produce a genuine 30-step-ahead forecast: fit on train, then project 30 days with no further access to actuals, so day 30 is predicted 30 days blind ([models/statistical.py](src/quantflow/models/statistical.py)). XGBoost and LightGBM predict on holdout rows that carry the *actual* lagged close, rolling statistics and indicators for each day — 30 independent **one-step-ahead** predictions given a true yesterday ([models/boosting.py](src/quantflow/models/boosting.py)).
->
-> Reading this table as "gradient boosting beats ARIMA by 44%" would be wrong. Making it like-for-like requires either walk-forward refitting for the boosters or a recursive rollout scored against actuals. That work is open — see [docs/architecture.md](docs/architecture.md).
+Only ARIMA's comes close to what it claims. The bands stay as they are, labelled on the dashboard with these figures; a band for "no change" (a random walk's) is a later candidate, to be decided on fresh data.
 
-A second consequence: the 7-day forecast shown on the dashboard is produced by feeding each prediction back in as the next day's lag, so its error compounds. **The holdout MAPE above does not describe the accuracy of the published 7-day forecast.**
+### Does the news help? Not enough data yet
 
-### Stacking ensemble — measured out-of-fold
+The boosted trees can use FinBERT sentiment from news headlines. Whether that helps cannot be measured yet: news is stored from 2026-04-10 and NewsAPI's free plan searches only a month back, so only 4.8% of the validation (ticker, start date) pairs had a real article, against the 50% set in advance as the minimum for the comparison. The news gets a forward test instead: 42 start dates from 2026-11-09, scored once after 2027-09-15, with the keep-or-drop rule written before scoring ([docs/evaluation.md, section 4](docs/evaluation.md#4-does-the-news-help-2d)).
 
-The ensemble is scored with an expanding window: for each day, an NNLS meta-learner is fitted only on days before it ([evaluation/out_of_fold.py](src/quantflow/evaluation/out_of_fold.py)). Fitting the first meta-learner consumes a 10-day warmup, leaving a **20-day** evaluation window, and base models are re-scored on that same 20 days so the comparison is like-for-like.
+### What changed, and what looks worse on the test dates
 
-| Ticker | Best base (same window) | Ensemble (out-of-fold) | vs best base |
-|---|---|---|---|
-| AAPL | Prophet 5.19% | **2.83%** | **+45.5%** |
-| META | XGBoost 2.87% | 3.10% | −8.0% |
-| JPM | Prophet 2.79% | 3.55% | −27.2% |
-| MSFT | LightGBM 3.12% | 6.30% | −101.9% |
-| TSLA | XGBoost 2.58% | 5.37% | −108.1% |
-| GOOGL | LightGBM 2.31% | 5.29% | −129.0% |
-| NVDA | XGBoost 2.10% | 8.59% | −309.1% |
-| AMZN | LightGBM 2.32% | 11.44% | −393.1% |
+- **Phase 2 (2026-11-08)** built this evaluation: the rolling start dates, "no change" and drift as baselines, news dated by when it became available, missing news kept missing rather than read as neutral, and point-in-time anomaly scores in the live training rows.
+- **Phase 3 (2026-11-08)** ran six experiments on the validation dates and kept two: tuned XGBoost settings, and "no change" as a fifth input to the ensembles. Dropped: predicting returns instead of prices, rolling open, high and low forward, tuned LightGBM settings, choosing ARIMA's order by AIC, and per-horizon ensemble weights. No alternative band passed its rule.
+- **The test dates have been scored three times**: twice in Phase 2 (T1, T2) and once in Phase 3 (T3), each entered in a [ledger](docs/evaluation.md#the-rule-for-the-test-dates). These figures reuse T3 rather than score the test dates a fourth time: every change since leaves the forecasts as they were, and on the validation dates `main` reproduces the Phase 3 final exactly.
+- **Kept although worse on the test dates**, because decisions rest on the validation dates only:
+  - the live ensemble's weights, kept over the rolling weights on the validation dates (3.381% against 3.389% when decided), while on the test dates the rolling weights score 3.29% and the live ones 3.71%;
+  - XGBoost's tuned settings: test MAPE from 3.44% to 3.54% between T2 and T3, a change that also includes Phase 3's two fixes to XGBoost;
+  - "no change" as the live ensemble's fifth input: the ensemble's test MAPE went from 3.68% to 3.71% over the same scorings, which also carry XGBoost's changes.
 
-**The ensemble beats the best single base model on 1 of 8 tickers.** Mean out-of-fold ensemble MAPE is 5.81%, against best-base figures clustered at 2–3%.
+### The 2026-08-04 figures, and why they were replaced
 
-An earlier version of this project reported the ensemble as best on all eight. That came from scoring the meta-learner on the same 30 days it was fitted on, which cannot lose by construction. With the leak removed, a convex combination constrained to non-negative weights gets dragged toward whichever base models are noisy on a given ticker, and 20 days is too few for the weights to settle. The ensemble is kept because it genuinely helps on AAPL, and because its learned weights are a readable diagnostic of which model the data favours — not because it is a general improvement.
+The figures this README published on 2026-08-04 (for example XGBoost 3.07% MAPE against ARIMA 5.48%) are withdrawn, for three reasons. A data bug: from 2026-04-14 the pipeline stored only 15-minute bars and took each date's first one, so every "close" in that holdout was the 09:30 price, 0.7% to 1.9% from the real close on average. The read-only diagnostics in [scripts/diagnostics/](scripts/diagnostics/) found it, and it was fixed on 2026-11-07, with the missing daily bars backfilled. The models were also scored on different tasks: ARIMA and Prophet forecast 30 days blind while the boosted trees predicted one day ahead from the true previous day. And nothing was compared with "no change". The figures above replace them and are not comparable with them.
 
-### Strategy backtest — 20-day out-of-fold window
+**Backtest.** The dashboard's Backtest tab shows a long/flat strategy run on the ensemble's out-of-fold predictions; with about two trades a ticker in a 20-day window, it demonstrates the harness, not an edge.
 
-Long when the ensemble predicts a rise, flat otherwise. One-day holding period, 0.1% per-trade cost, no shorting or leverage.
-
-| Ticker | Strategy | Buy and hold | Trades |
-|---|---|---|---|
-| AAPL | +4.76% | −2.64% | 3 |
-| AMZN | +16.38% | +12.48% | 1 |
-| GOOGL | +0.16% | −0.16% | 1 |
-| META | +0.29% | −4.74% | 3 |
-| NVDA | +9.57% | +9.68% | 1 |
-| MSFT | −0.24% | +24.51% | 1 |
-| TSLA | −22.43% | −22.35% | 1 |
-| JPM | 0.00% | +5.34% | 0 |
-| **Mean** | **+1.06%** | **+2.77%** | 1.4 |
-
-**This demonstrates the harness, not an edge.** The strategy beats buy-and-hold on 4 of 8 tickers and underperforms it on average, over **11 total trades across all eight tickers**. No conclusion about profitability is supportable from a sample that size. Annualised return, Sharpe and alpha are computed and logged, but are not reported here: scaling a 20-day window by 252/20 turns MSFT's −0.24% into an alpha of −1485%, which is arithmetic rather than information.
-
-### Reproducing these figures
-
-Every number above was measured on **2026-08-04** and is recorded in `mlflow.db` and `logs/pipeline.log`. Both are gitignored, so a fresh clone must regenerate them — which needs a seeded database and roughly two years of history per ticker:
-
-```bash
-make seed && make indicators && make anomalies && make sentiment && make models && make backtest
-```
-
-These per-stage targets skip the split guard (see Local below); `make all` runs it.
-
-Read them back with `mlflow ui` (http://localhost:5000), or from the `model_metrics` and `backtest_results` tables. Figures shift as new market data arrives; regenerate rather than trusting a stale copy.
-
-The evaluation *contract* — that scoring is out-of-fold, that windows are like-for-like, that degenerate input reports nothing rather than a fabricated number — is asserted on synthetic data and needs no database:
-
-```bash
-make eval
-```
+**More in [docs/evaluation.md](docs/evaluation.md):** the errors [by days ahead](docs/evaluation.md#by-days-ahead) and [by ticker](docs/evaluation.md#by-ticker), [how the live ensemble is fitted](docs/evaluation.md#the-live-ensemble), and [how to reproduce every figure](docs/evaluation.md#reproducing-the-figures). `make eval` checks the scoring contract on synthetic data, without a database.
 
 ---
 
@@ -156,15 +155,17 @@ The controls that keep the numbers above defensible. Each is enforced by a test,
 
 | Control | Where | Test |
 |---|---|---|
-| Train/test split is time-ordered, never shuffled | [evaluation/splits.py](src/quantflow/evaluation/splits.py) | [test_splits.py](tests/unit/test_splits.py) |
-| Features are backward-looking — lags shift positive, rolling windows trail, sentiment forward-fills | [features/engineering.py](src/quantflow/features/engineering.py) | [test_engineering.py](tests/unit/test_engineering.py) |
-| Ensemble scored out-of-fold; no prediction sees its own actual or any later one | [evaluation/out_of_fold.py](src/quantflow/evaluation/out_of_fold.py) | [test_ensemble.py](tests/unit/test_ensemble.py) |
-| Base models re-scored on the ensemble's window, not the full holdout | [models/ensemble.py](src/quantflow/models/ensemble.py) | [test_ensemble_evaluation.py](tests/evals/test_ensemble_evaluation.py) |
-| Backtest runs on out-of-fold predictions only, never in-sample | [evaluation/backtest.py](src/quantflow/evaluation/backtest.py) | [test_backtest.py](tests/unit/test_backtest.py) |
-| One definition each of MAPE, RMSE and MAE | [evaluation/metrics.py](src/quantflow/evaluation/metrics.py) | [test_metrics.py](tests/unit/test_metrics.py) |
+| At each start date a model sees only data before it, and every model is scored on the same forecasts | [evaluation/rolling_origin.py](src/quantflow/evaluation/rolling_origin.py) | [test_rolling_origin.py](tests/unit/test_rolling_origin.py) |
+| Train/test splits are time-ordered, never shuffled, and defined in one module | [evaluation/splits.py](src/quantflow/evaluation/splits.py) | [test_splits.py](tests/unit/test_splits.py) |
+| Features use only what was known on their date: lags shift forward, rolling windows trail, anomaly scores are point-in-time, news counts from when it reached the database | [features/engineering.py](src/quantflow/features/engineering.py) | [test_engineering.py](tests/unit/test_engineering.py), [test_feature_builder.py](tests/unit/test_feature_builder.py) |
+| Every model is compared with "no change", and "beats no change" rests on one test set in advance | [evaluation/report.py](src/quantflow/evaluation/report.py) | [test_report.py](tests/unit/test_report.py) |
+| A test-date scoring needs a stated reason and committed code, and each one is counted | [pipelines/evaluate.py](src/quantflow/pipelines/evaluate.py) | [test_evaluate_cli.py](tests/unit/test_evaluate_cli.py) |
+| Scoring code never imports the models | [evaluation/](src/quantflow/evaluation/) | [test_package_boundaries.py](tests/unit/test_package_boundaries.py) |
+| The ensemble's 30-day scoring and the backtest are out-of-fold: no prediction sees its own actual or any later one | [evaluation/out_of_fold.py](src/quantflow/evaluation/out_of_fold.py) | [test_ensemble.py](tests/unit/test_ensemble.py), [test_backtest.py](tests/unit/test_backtest.py) |
+| One definition each of MAPE, MAE, RMSE, direction, band coverage and skill | [evaluation/metrics.py](src/quantflow/evaluation/metrics.py) | [test_metrics.py](tests/unit/test_metrics.py) |
 | Config fails fast on a missing password or empty ticker list | [config.py](src/quantflow/config.py) | [test_config.py](tests/unit/test_config.py) |
 
-The leakage test is worth reading directly: it perturbs every input column from row *k* onward and asserts that no feature value before *k* moves, plus a second test that plants a deliberate forward-looking column to prove the probe actually fires.
+The leakage test is worth reading directly: it perturbs every input column from row *k* onward and asserts that no feature value before *k* moves, plus a second test that plants a deliberate forward-looking column to prove the probe actually fires. It covers `engineer_features`, not the anomaly scores it is handed, and those looked ahead in the live run's training rows until 2026-11-08: their IQR fences and return statistics were fitted on every return up to the run, so a training row's score used later prices. They are now computed for each date from earlier prices only (decision D14, PR #10), which [test_feature_builder.py](tests/unit/test_feature_builder.py) checks. This README's earlier claim that the features were backward-looking was wrong for those scores until then.
 
 ---
 
@@ -204,7 +205,7 @@ Activate it — `.venv\Scripts\activate` on Windows, `source .venv/bin/activate`
 make install
 ```
 
-Create the database, then apply all four schema files. Skipping `schema_backtest.sql` breaks the Backtest tab; skipping `schema_metrics.sql` leaves the Forecasts tab without MAPE figures:
+Create the database, then apply all four schema files. Skipping `schema_backtest.sql` breaks the Backtest tab; without `schema_metrics.sql` the model runs log a warning instead of recording their holdout metrics:
 
 ```bash
 psql -U postgres -c "CREATE DATABASE stock_pipeline;"
@@ -246,19 +247,19 @@ make test
 
 ## Tech stack
 
-**Data** — PostgreSQL (Supabase), SQLAlchemy, psycopg2, yFinance, Alpha Vantage, feedparser
+**Data**: PostgreSQL (Supabase), SQLAlchemy, psycopg2, yFinance, Alpha Vantage, feedparser
 
-**Modelling** — statsmodels (ARIMA), Prophet, XGBoost, LightGBM, SciPy (NNLS), pandas, NumPy
+**Modelling**: statsmodels (ARIMA), Prophet, XGBoost, LightGBM, SciPy (NNLS), pandas, NumPy
 
-**NLP** — FinBERT (`ProsusAI/finbert`, pinned revision), transformers, PyTorch
+**NLP**: FinBERT (`ProsusAI/finbert`, pinned revision), transformers, PyTorch
 
-**Serving** — Streamlit, Plotly, APScheduler
+**Serving**: Streamlit, Plotly, APScheduler
 
-**Tooling** — MLflow, Ruff, mypy, pytest, pre-commit, gitleaks, Docker
+**Tooling**: MLflow, matplotlib (the README chart), Ruff, mypy, pytest, pre-commit, gitleaks, Docker, GitHub Actions
 
 MLflow is used for experiment tracking only. The Model Registry is not used — there is no `register_model`, `log_model` or `MlflowClient` call in the codebase.
 
-Scheduling is APScheduler in a single process ([pipelines/scheduler.py](src/quantflow/pipelines/scheduler.py)): in-memory job store, no retries, no backfill, and stage ordering implied by wall-clock offsets rather than a dependency graph. It is a scheduler, not an orchestrator.
+Production runs once a day in GitHub Actions ([daily_refresh.yml](.github/workflows/daily_refresh.yml)), each stage after the last; the dependencies are audited weekly in their own workflow. The local alternative is APScheduler in a single process ([pipelines/scheduler.py](src/quantflow/pipelines/scheduler.py)): in-memory job store, no retries, no backfill, and stage ordering implied by wall-clock offsets rather than a dependency graph. It is a scheduler, not an orchestrator.
 
 ---
 
@@ -267,20 +268,23 @@ Scheduling is APScheduler in a single process ([pipelines/scheduler.py](src/quan
 ```
 src/quantflow/
 ├── config.py              Environment loading and startup validation
-├── db/                    All SQL: connection, prices, forecasts, metrics
-├── ingestion/             yFinance and Alpha Vantage fetchers
+├── db/                    Data access: prices, forecasts, metrics, read-only use (most SQL; see docs/architecture.md)
+├── ingestion/             yFinance and Alpha Vantage fetchers, split guard, backfill
 ├── features/              indicators, anomalies, sentiment, engineering
-├── models/                statistical (ARIMA/Prophet), boosting, ensemble
-├── evaluation/            splits, metrics, out_of_fold, backtest
-├── pipelines/             seed, run_models, backtest, scheduler
-└── dashboard/             Streamlit app
+├── models/                statistical (ARIMA/Prophet), boosting, ensemble, forecasters
+├── evaluation/            splits, metrics, rolling_origin, report, publish, out_of_fold, backtest
+├── pipelines/             seed, run_models, backtest, evaluate, scheduler
+└── dashboard/             Streamlit app, and the published accuracy it shows
 
 sql/                       Schema DDL and migrations
+scripts/diagnostics/       Read-only queries against the database
 tests/
 ├── unit/                  Offline: no database, network or training
-├── integration/           Requires a live database (empty)
+├── integration/           A disposable local Postgres (--pg-url)
 └── evals/                 Full scoring path, @pytest.mark.eval
-docs/architecture.md       Design decisions and trade-offs
+docs/architecture.md       Design decisions, free tiers, known problems
+docs/evaluation.md         The evaluation: design, decisions, results
+docs/images/               The README's chart and screenshot
 ```
 
 ---
@@ -299,6 +303,7 @@ docs/architecture.md       Design decisions and trade-offs
 | `FETCH_INTERVAL_MINUTES` | no | Scheduler interval, default 15 |
 | `SPLIT_GUARD_THRESHOLD` | no | Fraction, default `0.15`. The daily refresh fails if stored daily closes differ from Yahoo's raw closes by more than this on three or more consecutive dates (a stock split after the rows were stored) |
 | `LOG_LEVEL` | no | Default `INFO` |
+| `LOG_DIR` | no | Where log files go; default `logs/` in the working directory |
 
 **Acknowledged price moves.** The split guard also fails on any split-sized one-day move: a stored daily close at or below 0.733 times, or at or above 1.35 times, the one before it. That catches a split of any ratio from 3-for-2 up, and a real fall of 26.7% or more, or rise of 35% or more, fails it too. Once a move is confirmed real, list it in [config/split_jump_acknowledged.txt](config/split_jump_acknowledged.txt), one `TICKER:YYYY-MM-DD  # reason` per line. An entry counts only on a run where Yahoo's raw closes agree with the stored ones on that date and the day before, so it cannot excuse a bad stored row, and on a day Yahoo cannot be reached the move fails again. It is a committed file rather than a variable: the daily workflow reads the list of the commit it runs on, a local run the one in its checkout.
 

@@ -364,21 +364,27 @@ def test_saving_anomalies_counts_only_rows_written(pg):
     assert _count(pg, "SELECT count(*) FROM anomalies") == 1
 
 
-def test_the_diagnostics_run_read_only_on_postgres(pg, monkeypatch, tmp_path):
-    """scripts/diagnostics/run_1a_diagnostics.py, end to end: its read-only
-    transaction is the first thing on the connection, all four queries run,
-    and the results file has one table per query."""
+def _diagnostics(monkeypatch):
+    """scripts/diagnostics/run_1a_diagnostics.py, loaded as a module. The pg
+    fixture's install_engine routes db.readonly's get_engine to the test
+    schema."""
     import importlib.util
     import sys
 
     script = ROOT / "scripts" / "diagnostics" / "run_1a_diagnostics.py"
     spec = importlib.util.spec_from_file_location("run_1a_diagnostics", script)
     assert spec and spec.loader
-    diagnostics = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, spec.name, diagnostics)
-    spec.loader.exec_module(diagnostics)
-    # The pg fixture's install_engine routes db.readonly's get_engine here.
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
 
+
+def test_the_diagnostics_run_read_only_on_postgres(pg, monkeypatch, tmp_path):
+    """scripts/diagnostics/run_1a_diagnostics.py, end to end: its read-only
+    transaction is the first thing on the connection, all four queries run,
+    and the results file has one table per query."""
+    diagnostics = _diagnostics(monkeypatch)
     prices.insert_bars(_bars(["2026-04-09", "2026-04-10"]))
     out = tmp_path / "results.md"
     assert diagnostics.main(["--live", "--out", str(out)]) == 0
@@ -388,6 +394,90 @@ def test_the_diagnostics_run_read_only_on_postgres(pg, monkeypatch, tmp_path):
     # Query 1 on this test's two daily bars: two dates, both with a daily bar.
     assert "| AAPL | 2026-04-09 | 2026-04-10 | 2 | 2 | 0 |" in text
     assert _count(pg, "SELECT count(*) FROM raw_prices") == 2  # nothing written
+
+
+def test_the_free_tier_usage_queries_run_read_only_on_postgres(
+    pg, monkeypatch, tmp_path, install_engine
+):
+    """free_tier_usage.sql through the same runner (--sql): all four queries
+    run, daily bars and 15-min bars are counted apart, and nothing is written.
+    The dates are UTC dates whatever the session's time zone: here a New York
+    session, where a naive ts::date put 2026-04-09 00:00 UTC on the 8th. It
+    reads model_metrics and backtest_results too, which the pg fixture leaves
+    out, so they are created here."""
+    diagnostics = _diagnostics(monkeypatch)
+    with pg.begin() as conn:
+        for name in ("schema_metrics.sql", "schema_backtest.sql"):
+            ddl = (ROOT / "sql" / name).read_text(encoding="utf-8")
+            # Their comments hold "%", which the driver reads as a placeholder.
+            conn.exec_driver_sql(ddl.replace("%", "%%"))
+
+    bars = _bars(["2026-04-09", "2026-04-10"])
+    bars.append({**bars[-1], "ts": pd.Timestamp("2026-04-10 13:30", tz="UTC")})
+    prices.insert_bars(bars)
+    out = tmp_path / "usage.md"
+    sql = ROOT / "scripts" / "diagnostics" / "free_tier_usage.sql"
+    with pg.connect() as conn:
+        schema = conn.exec_driver_sql("SELECT current_schema()").scalar_one()
+    new_york = _schema_engine(pg.url, schema, timezone="America/New_York")
+    install_engine(new_york)
+    try:
+        assert diagnostics.main(["--sql", str(sql), "--live", "--out", str(out)]) == 0
+    finally:
+        new_york.dispose()
+
+    text = out.read_text(encoding="utf-8")
+    assert text.count("### ") == 4
+    assert "| AAPL | yfinance | 3 | 2 | 1 | 2026-04-09 | 2026-04-10 |" in text
+    assert "| raw_prices | 3 |" in text
+    assert _count(pg, "SELECT count(*) FROM raw_prices") == 3  # nothing written
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "COMMIT; DELETE FROM raw_prices; SELECT 1 AS x",
+        # Postgres nests block comments, so each of these runs the delete.
+        "SELECT 1 /* /* */ -- */ ; COMMIT ; DELETE FROM raw_prices ; SELECT 1 AS x",
+        "SELECT 1 /* /* */ ' */ ; COMMIT ; DELETE FROM raw_prices -- '",
+    ],
+    ids=["a commit, then a write", "nested comment, dash", "nested comment, quote"],
+)
+def test_a_query_file_cannot_commit_its_way_out_of_read_only(
+    pg, monkeypatch, tmp_path, query
+):
+    """A query that ends the read-only transaction would let Postgres commit
+    the delete after it. The runner refuses the file before connecting, so
+    the rows stay."""
+    diagnostics = _diagnostics(monkeypatch)
+    prices.insert_bars(_bars(["2026-04-09", "2026-04-10"]))
+    sql = tmp_path / "escape.sql"
+    sql.write_text(f"-- @query escape\n{query}\n", encoding="utf-8")
+    out = tmp_path / "out.md"
+    assert diagnostics.main(["--sql", str(sql), "--live", "--out", str(out)]) == 2
+    assert _count(pg, "SELECT count(*) FROM raw_prices") == 2  # nothing deleted
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["COMMIT; SELECT 1 AS x", "COMMIT; DELETE FROM raw_prices"],
+    ids=["ends in a select", "ends in a write"],
+)
+def test_a_query_that_ends_the_read_only_transaction_fails_the_run(
+    pg, monkeypatch, tmp_path, capsys, query
+):
+    """Behind the file check: if a query ever ended the read-only transaction,
+    the runner notices right after that query, before reading its result
+    (a last statement that writes returns none), and fails, instead of
+    reporting a read-only run. It cannot undo what was already committed."""
+    diagnostics = _diagnostics(monkeypatch)
+    monkeypatch.setattr(diagnostics, "check_read_only", lambda name, sql: None)
+    sql = tmp_path / "escape.sql"
+    sql.write_text(f"-- @query escape\n{query}\n", encoding="utf-8")
+    out = tmp_path / "out.md"
+    assert diagnostics.main(["--sql", str(sql), "--live", "--out", str(out)]) == 1
+    assert "no longer read-only" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_the_evaluation_snapshot_is_exported_read_only(pg, tmp_path, capsys):

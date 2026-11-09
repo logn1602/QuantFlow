@@ -1,12 +1,13 @@
 """
 dashboard.py
 ------------
-QuantFlow — Real-Time Stock Analytics Dashboard
+QuantFlow: stock analytics dashboard
 
 Streamlit app visualizing the full pipeline:
   - Live price charts with Bollinger Bands + anomaly flags
   - RSI and MACD indicator charts with signal interpretation
-  - 7-day forecast comparison: ARIMA, Prophet, XGBoost, LightGBM
+  - 7-day forecasts: ARIMA, Prophet, XGBoost, LightGBM, the ensemble and
+    "no change", with their measured accuracy (dashboard/accuracy.py)
   - FinBERT news sentiment analysis per ticker
   - Market-wide overview with anomaly summary
 
@@ -21,9 +22,16 @@ from plotly.subplots import make_subplots
 from sqlalchemy import text
 
 from quantflow.config import TICKERS
+from quantflow.dashboard import accuracy
 from quantflow.db.connection import get_engine
-from quantflow.db.metrics import load_latest_metrics
-from quantflow.db.prices import load_recent_ohlcv as load_prices
+from quantflow.db.prices import load_recent_ohlcv
+
+# How long every loader keeps what it read. The data changes once a day, after
+# the US close, so an hour still shows each refresh within the hour, while it
+# bounds what the page reads from the database: at most one read an hour for
+# each loader, ticker and lookback, whatever the traffic (docs/architecture.md,
+# "Running on free tiers").
+CACHE_SECONDS = 3600
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -48,13 +56,44 @@ st.markdown(
 # ── Data loaders ──────────────────────────────────────────────────────────────
 
 
+@st.cache_data(ttl=CACHE_SECONDS)
+def load_prices(ticker: str, days: int = 180) -> pd.DataFrame:
+    """The ticker's daily bars over the lookback, the largest read on the
+    page: cached like the rest, where it was read again on every rerun."""
+    return load_recent_ohlcv(ticker, days)
+
+
+@st.cache_data(ttl=CACHE_SECONDS)
+def load_latest_closes(tickers: tuple[str, ...]) -> pd.DataFrame:
+    """The newest stored close of each ticker, over one connection. A ticker
+    whose read fails is left out, as before."""
+    query = text("""
+        SELECT close FROM raw_prices
+        WHERE ticker = :t AND source = 'yfinance'
+        ORDER BY ts DESC LIMIT 1
+    """)
+    rows = []
+    with get_engine().connect() as conn:
+        for t in tickers:
+            try:
+                result = conn.execute(query, {"t": t}).fetchone()
+            except Exception:
+                # A failed statement aborts the transaction, which would fail
+                # every ticker after it; start a fresh one.
+                conn.rollback()
+                continue
+            if result:
+                rows.append({"Ticker": t, "Latest Close": round(float(result[0]), 2)})
+    return pd.DataFrame(rows)
+
+
 # Indicator, anomaly and sentiment rows are dated by UTC calendar date, the
 # date the price candles carry (db.prices.daily_bars). A bare ts::date follows
 # the session's TimeZone instead: UTC on Supabase, but on a session west of UTC
 # every indicator and anomaly stored at 00:00 UTC sat one day left of its
 # candle. No regression test yet: this module cannot be imported in tests
 # (Known problem #5 in docs/architecture.md).
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_SECONDS)
 def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -72,7 +111,7 @@ def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_SECONDS)
 def load_anomalies(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -88,7 +127,7 @@ def load_anomalies(ticker: str, days: int = 180) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_SECONDS)
 def load_forecasts(ticker: str) -> pd.DataFrame:
     engine = get_engine()
     # Show only the most recent run per model. Averaging across runs blended
@@ -113,13 +152,7 @@ def load_forecasts(ticker: str) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=300)
-def load_metrics(ticker: str) -> dict:
-    """Latest holdout metrics per model, straight from model_metrics."""
-    return load_latest_metrics(ticker)
-
-
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_SECONDS)
 def load_sentiment(ticker: str, days: int = 7) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -140,7 +173,7 @@ def load_sentiment(ticker: str, days: int = 7) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_SECONDS)
 def load_sentiment_summary() -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -160,7 +193,7 @@ def load_sentiment_summary() -> pd.DataFrame:
         return pd.read_sql(query, conn)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_SECONDS)
 def load_backtest_summary() -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -174,7 +207,7 @@ def load_backtest_summary() -> pd.DataFrame:
         return pd.read_sql(query, conn)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_SECONDS)
 def load_backtest_series(ticker: str) -> dict:
     import json as _json
 
@@ -195,7 +228,7 @@ def load_backtest_series(ticker: str) -> dict:
     }
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_SECONDS)
 def load_anomaly_summary() -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -378,7 +411,7 @@ def forecast_chart(prices, forecasts, ticker):
         "prophet": "rgba(38,198,218,0.12)",
         "xgboost": "rgba(171,71,188,0.12)",
         "lightgbm": "rgba(102,187,106,0.12)",
-        "ensemble_stack": "rgba(255,215,0,0.18)",
+        "ensemble_stack": "rgba(255,215,0,0.12)",
     }
     for model in ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"]:
         mdf = forecasts[forecasts["model"] == model].copy()
@@ -395,22 +428,32 @@ def forecast_chart(prices, forecasts, ticker):
                 showlegend=False,
             )
         )
-        is_ensemble = model == "ensemble_stack"
+        # Every model drawn alike: none is crowned. The measured 7-day error
+        # below marks the lowest per window, often "no change".
         fig.add_trace(
             go.Scatter(
                 x=mdf["forecast_date"],
                 y=mdf["predicted_close"],
-                name="ENSEMBLE ⭐" if is_ensemble else model.upper(),
-                line={
-                    "color": model_colors[model],
-                    "width": 4 if is_ensemble else 2,
-                    "dash": "solid" if is_ensemble else "dash",
-                },
+                name=accuracy.SHOWN[model].upper(),
+                line={"color": model_colors[model], "width": 2, "dash": "dash"},
                 mode="lines+markers",
             )
         )
+    # The yardstick every model is measured against: the latest close, held
+    # for all 7 days (dashboard/accuracy.py has how they compare).
+    no_change = accuracy.no_change_forecast(recent, forecasts)
+    if not no_change.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=no_change["date"],
+                y=no_change["close"],
+                name="No change (latest close)",
+                line={"color": "#bdbdbd", "width": 2, "dash": "dot"},
+                mode="lines",
+            )
+        )
     fig.update_layout(
-        title=f"{ticker} — 7-Day Forecast: 4 Base Models + Stacking Ensemble",
+        title=f"{ticker}: 7-day forecast, 4 base models, the ensemble and no change",
         xaxis_title="Date",
         yaxis_title="Price (USD)",
         template="plotly_dark",
@@ -492,10 +535,12 @@ with st.sidebar:
     st.success("✅ Level 2 — XGBoost/LightGBM")
     st.success("✅ Level 3 — Stacking Ensemble")
     st.divider()
-    st.caption("Data refreshes every 5 min")
-    if st.button("🔄 Refresh Data"):
-        st.cache_data.clear()
-        st.rerun()
+    # No refresh button: it cleared the cache for every visitor, forcing fresh
+    # reads of the shared database. The cache lifetime picks up each refresh.
+    st.caption(
+        "Data refreshes once a day, after the US close; this page shows it "
+        f"within {CACHE_SECONDS // 60} minutes"
+    )
 
 
 # ── Main layout ───────────────────────────────────────────────────────────────
@@ -509,7 +554,7 @@ forecasts = load_forecasts(ticker)
 sentiment = load_sentiment(ticker, days=7)
 
 if prices.empty:
-    st.error(f"No data found for {ticker}. Run seed_db.py first.")
+    st.error(f"No data found for {ticker}. Run: make seed")
     st.stop()
 
 # ── Top metrics ───────────────────────────────────────────────────────────────
@@ -581,7 +626,7 @@ with tab1:
 
 with tab2:
     if indicators.empty:
-        st.warning("No indicators found. Run: python indicators.py")
+        st.warning("No indicators found. Run: make indicators")
     else:
         st.plotly_chart(rsi_macd_chart(indicators, ticker), use_container_width=True)
         latest_ind = indicators.iloc[-1]
@@ -602,89 +647,68 @@ with tab2:
                 st.error(f"🔴 MACD {hist:.4f} — Bearish momentum.")
 
 with tab3:
+    # The 7-day error as the rolling-origin evaluation measured it, from the
+    # published table (dashboard/accuracy.py). The daily run cannot measure
+    # it: it keeps no forecast history.
+    published = accuracy.load_published()
+    if published is not None:
+        st.info(accuracy.baseline_note(published))
     if forecasts.empty:
-        st.warning(
-            "No forecasts found. Run: python forecasting.py && python xgboost_model.py"
-        )
+        st.warning("No forecasts found. Run: make models")
     else:
         st.plotly_chart(
             forecast_chart(prices, forecasts, ticker), use_container_width=True
         )
+        if published is not None:
+            st.caption(accuracy.band_caption(published))
 
-        st.subheader("7-Day Numbers — All Models")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        model_labels = {
-            "arima": "ARIMA",
-            "prophet": "Prophet",
-            "xgboost": "XGBoost",
-            "lightgbm": "LightGBM",
-            "ensemble_stack": "⭐ Ensemble",
-        }
-        for col, model in zip(
-            [c1, c2, c3, c4, c5],
-            ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"],
-            strict=False,
+        st.subheader("7-day numbers, all models")
+        model_labels = accuracy.SHOWN
+        # Its first row is the latest close itself, not a forecast.
+        no_change = accuracy.no_change_forecast(prices, forecasts).iloc[1:]
+        for col, (model, label) in zip(
+            st.columns(len(model_labels)), model_labels.items(), strict=True
         ):
-            mdf = forecasts[forecasts["model"] == model][
-                ["forecast_date", "predicted_close", "lower_bound", "upper_bound"]
-            ].copy()
+            if model == accuracy.BASELINE:
+                mdf = pd.DataFrame(
+                    {"Date": no_change["date"], "Forecast": no_change["close"].round(2)}
+                )
+            else:
+                mdf = forecasts[forecasts["model"] == model][
+                    ["forecast_date", "predicted_close", "lower_bound", "upper_bound"]
+                ].copy()
+                mdf.columns = ["Date", "Forecast", "Lower", "Upper"]
+                mdf[["Forecast", "Lower", "Upper"]] = mdf[
+                    ["Forecast", "Lower", "Upper"]
+                ].round(2)
             with col:
-                st.markdown(f"**{model_labels[model]}**")
+                st.markdown(f"**{label}**")
                 if mdf.empty:
                     st.caption("No data")
                 else:
-                    mdf.columns = ["Date", "Forecast", "Lower", "Upper"]
-                    mdf[["Forecast", "Lower", "Upper"]] = mdf[
-                        ["Forecast", "Lower", "Upper"]
-                    ].round(2)
                     st.dataframe(mdf, use_container_width=True, hide_index=True)
 
-        st.divider()
-        metrics = load_metrics(ticker)
-
-        if not metrics:
-            st.info("No metrics recorded yet. Run: python run_models.py")
-        else:
-            # One caption if every model shares an evaluation window, otherwise
-            # each column states its own (Phase 3 shortens the ensemble's).
-            windows = {
-                m["holdout_days"]
-                for m in metrics.values()
-                if m["holdout_days"] is not None
-            }
-            if len(windows) == 1:
-                st.caption(
-                    f"{windows.pop()}-day holdout MAPE — {ticker} (lower = better)"
-                )
-            else:
-                st.caption(f"Holdout MAPE — {ticker} (lower = better)")
-
-            b1, b2, b3, b4, b5 = st.columns(5)
-            for col, model in zip(
-                [b1, b2, b3, b4, b5],
-                ["arima", "prophet", "xgboost", "lightgbm", "ensemble_stack"],
-                strict=False,
-            ):
-                label = model_labels[model]
-                m = metrics.get(model)
-                with col:
-                    if not m or m["mape"] is None:
-                        st.info(f"{label}: —")
-                        st.caption("not yet measured")
-                    else:
-                        text_ = f"{label}: {m['mape']:.2f}%"
-                        if m["mape"] < 2.0:
-                            st.success(text_)
-                        else:
-                            st.info(text_)
-                        st.caption(
-                            f"{m['holdout_days']}d · measured "
-                            f"{pd.Timestamp(m['run_at']).date()}"
-                        )
+    st.divider()
+    st.subheader(f"Measured 7-day accuracy, {ticker}")
+    if published is None:
+        st.info(
+            "No published evaluation found. Run: python -m "
+            "quantflow.pipelines.evaluate publish --validation <run> --test <run>"
+        )
+    elif not accuracy.covers(published, ticker):
+        st.info(f"The published evaluation did not score {ticker}.")
+        st.caption(accuracy.provenance(published))
+    else:
+        st.dataframe(
+            accuracy.accuracy_rows(published, ticker),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(accuracy.provenance(published))
 
 with tab4:
     if sentiment.empty:
-        st.warning("No sentiment data. Run: python sentiment.py")
+        st.warning("No sentiment data. Run: make sentiment")
     else:
         avg_compound = float(sentiment["compound"].mean())
         c1, c2 = st.columns([1, 2])
@@ -767,27 +791,9 @@ with tab5:
 
     st.divider()
     st.subheader("Latest Prices — All Tickers")
-    rows = []
-    engine = get_engine()
-    for t in TICKERS:
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(
-                    text("""
-                    SELECT close FROM raw_prices
-                    WHERE ticker=:t AND source='yfinance'
-                    ORDER BY ts DESC LIMIT 1
-                """),
-                    {"t": t},
-                ).fetchone()
-                if result:
-                    rows.append(
-                        {"Ticker": t, "Latest Close": round(float(result[0]), 2)}
-                    )
-        except Exception:
-            pass
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    latest_closes = load_latest_closes(tuple(TICKERS))
+    if not latest_closes.empty:
+        st.dataframe(latest_closes, use_container_width=True, hide_index=True)
 
 with tab6:
     bt_summary = load_backtest_summary()
@@ -808,13 +814,16 @@ with tab6:
 
     st.caption(
         "Long/flat strategy: BUY when ensemble predicts price rise, hold cash otherwise. "
-        "1-day holding period · 0.1% transaction cost · compared to buy-and-hold benchmark."
+        "1-day holding period · 0.1% transaction cost · compared to buy-and-hold benchmark. "
+        "It demonstrates the evaluation harness, not a trading edge: the window "
+        "is short and holds only a handful of trades."
     )
 
     if bt_summary.empty:
-        st.warning("No backtest results found. Run: `python backtest.py`")
+        st.warning("No backtest results found. Run: `make backtest`")
         st.code(
-            "python backtest.py          # all tickers\npython backtest.py --ticker AAPL  # single ticker"
+            "make backtest  # all tickers\n"
+            "python -m quantflow.pipelines.backtest --ticker AAPL  # one ticker"
         )
     else:
         # ── Cumulative return chart for selected ticker ────────────────────────

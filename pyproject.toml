@@ -52,6 +52,8 @@ dependencies = [
     # Dashboard
     "streamlit>=1.61.0",       # the dashboard uses st.divider(), added in 1.23
     "plotly>=6.9.0",
+    # Evaluation
+    "matplotlib>=3.11.1",      # evaluate publish draws the README chart; Prophet already installs it
 ]
 
 [project.optional-dependencies]
@@ -76,6 +78,12 @@ build-backend = "setuptools.build_meta"
 # at import time, which is what the previous flat layout required in 15 files.
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The dashboard's published accuracy table (dashboard/accuracy.py). Streamlit
+# Cloud installs the package from requirements.txt rather than running from
+# the checkout, so a data file reaches it only if it ships in the package.
+[tool.setuptools.package-data]
+"quantflow.dashboard" = ["published_accuracy.csv"]
 
 
 # ── Ruff ──────────────────────────────────────────────────────────────────────

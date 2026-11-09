@@ -9,10 +9,13 @@ The rolling-origin evaluation's command line (docs/evaluation.md).
     python -m quantflow.pipelines.evaluate run --snapshot ... --window test --reason "..."
     python -m quantflow.pipelines.evaluate compare --incumbent eval_runs/B0 --candidate eval_runs/E1 --models xgboost
     python -m quantflow.pipelines.evaluate tune --snapshot eval_snapshots/2026-11-06 --workers 3
+    python -m quantflow.pipelines.evaluate publish --validation eval_runs/P4 --test eval_runs/T3
 
 export reads the database once, read-only, into a snapshot directory;
 coverage, run and tune read only the snapshot, and compare only two run
-folders, applying Phase 3's keep-or-drop rule (evaluation/decision.py). run
+folders, applying Phase 3's keep-or-drop rule (evaluation/decision.py).
+publish writes what the README and the dashboard show (evaluation/publish.py)
+from a validation run and a test-date run on the same snapshot. run
 scores the validation dates unless given --window test with a reason: the
 test dates are reported, never used to choose, and every scoring of them is
 counted (docs/evaluation.md, section 2). A test-date run also refuses
@@ -33,10 +36,11 @@ import numpy as np
 import pandas as pd
 
 from quantflow.config import TICKERS
+from quantflow.dashboard import accuracy
 from quantflow.db.prices import classify_bars, daily_bars
 from quantflow.db.readonly import is_local_database, masked, read_only_connection
 from quantflow.db.snapshot import read_snapshot_tables
-from quantflow.evaluation import decision, metrics, report
+from quantflow.evaluation import decision, metrics, publish, report
 from quantflow.evaluation.rolling_origin import (
     MAX_FAILURE_SHARE,
     MAX_WORKERS,
@@ -572,6 +576,57 @@ def compare_runs(args) -> int:
     return 0
 
 
+# ── publish ───────────────────────────────────────────────────────────────────
+
+# The table is written where the dashboard reads it, next to accuracy.py, and
+# the chart under the same checkout's docs/, wherever the command runs from.
+PUBLISHED_TABLE = accuracy.PUBLISHED
+PUBLISHED_CHART = (
+    PUBLISHED_TABLE.parents[3] / "docs" / "images" / "mape_by_days_ahead.png"
+)
+
+
+def publish_results(args) -> int:
+    """The dashboard's accuracy table and the README's chart, from a
+    validation run and a test-date run of the same snapshot, tickers and
+    models, both run on committed code. Different tickers or models would put
+    two incomparable "all tickers" figures side by side, and drop the chart
+    panel of any model one run lacks."""
+    runs = []
+    for window, directory in (("validation", args.validation), ("test", args.test)):
+        header = run_header(directory)
+        if header.get("window") != window:
+            print(
+                f"Refusing: {directory} is not a {window} run "
+                f"(window {header.get('window')!r}).",
+                file=sys.stderr,
+            )
+            return 2
+        if "uncommitted" in header.get("commit", "uncommitted"):
+            print(
+                f"Refusing: {directory} ran with uncommitted changes.", file=sys.stderr
+            )
+            return 2
+        runs.append(publish.read_run(directory, header))
+    for key in ("snapshot digest", "tickers", "models"):
+        values = {run.header.get(key) for run in runs}
+        if len(values) != 1 or None in values:
+            print(
+                f"Refusing: the runs differ in {key} ({sorted(map(str, values))}).",
+                file=sys.stderr,
+            )
+            return 2
+    table = publish.accuracy_table(runs)
+    # The chart first: if it fails, the table is left as it was, so the
+    # dashboard and the README never describe different runs.
+    publish.horizon_chart(runs, args.chart)
+    args.table.parent.mkdir(parents=True, exist_ok=True)
+    table.to_csv(args.table, index=False, lineterminator="\n")
+    print(f"Table: {args.table} ({len(table)} rows)")
+    print(f"Chart: {args.chart}")
+    return 0
+
+
 # ── command line ──────────────────────────────────────────────────────────────
 
 
@@ -647,6 +702,18 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
     )
 
+    published = commands.add_parser(
+        "publish", help="the README chart and the dashboard's accuracy table"
+    )
+    published.add_argument(
+        "--validation", type=Path, required=True, help="a validation run folder"
+    )
+    published.add_argument(
+        "--test", type=Path, required=True, help="a test-date run folder"
+    )
+    published.add_argument("--table", type=Path, default=PUBLISHED_TABLE)
+    published.add_argument("--chart", type=Path, default=PUBLISHED_CHART)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "export":
@@ -671,6 +738,8 @@ def main(argv: list[str] | None = None) -> int:
             return compare_runs(args)
         if args.command == "tune":
             return tune_boosters(args)
+        if args.command == "publish":
+            return publish_results(args)
         return run_evaluation(args)
     except Exception as e:
         print(f"Failed: {type(e).__name__}: {masked(str(e))}", file=sys.stderr)

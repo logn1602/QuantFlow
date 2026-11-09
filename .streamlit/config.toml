@@ -1,0 +1,5 @@
+# The dashboard is styled for a dark theme: Plotly's dark template and dark
+# metric cards. Set here rather than following each viewer's setting, under
+# which the forecast chart's white "Actual" line vanished on a light page.
+[theme]
+base = "dark"

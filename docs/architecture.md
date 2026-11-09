@@ -250,61 +250,130 @@ already have a daily bar.
 
 ---
 
+## Running on free tiers
+
+Everything runs on free plans. Each limit below was checked against the provider's own
+pages on 2026-11-09.
+
+| Service | Free-plan limits | What it means here |
+|---|---|---|
+| Supabase (Postgres) | 500 MB database; 5 GB egress a month, plus 5 GB cached egress; a project pauses after 1 week of inactivity; no automatic backups | The daily refresh keeps the project active on weekdays. Backups are by hand (`pg_dump` to a folder outside the repo), as before the 2026-11-07 backfill. |
+| GitHub Actions | Free on standard runners in a public repository; scheduled workflows are disabled after 60 days without repository activity; a scheduled run can start late when GitHub is busy | The daily refresh stops if the repository sees no activity for 60 days, which would also stop the news forward test (docs/evaluation.md, section 4). It often starts hours after 22:30 UTC; the 12:00 UTC news cutoff (D7) allows for that. |
+| Streamlit Community Cloud | An app with no traffic for 12 hours goes to sleep; a visit wakes it | A first visitor may wait for the app to wake; the README carries a screenshot so the dashboard can be seen without it. |
+| NewsAPI (Developer plan) | 100 requests a day, no more available; articles appear with a 24-hour delay; searches go back one month; the plan is for development and testing only, not production | The daily refresh uses the free key on the live dashboard, which the plan's terms do not cover. Open for the owner: keep the RSS feeds only, or a paid plan. |
+
+### Database size (measured 2026-11-09)
+
+Measured with `scripts/diagnostics/free_tier_usage.sql`, one read-only transaction
+through the diagnostics runner (`run_1a_diagnostics.py --sql ... --live`):
+
+| | Size | Rows (Postgres's estimate) |
+|---|---|---|
+| Whole database (Supabase's own schemas included) | 51 MB of 500 MB | |
+| `news_sentiment` | 19 MB | 38,466 |
+| `raw_prices` | 8.9 MB | 36,144 (per ticker: 648 daily bars and 3,770 15-minute bars, plus 100 Alpha Vantage rows) |
+| `anomalies` | 6.1 MB | 765 |
+| `technical_indicators` | 4.5 MB | 4,984 |
+| `model_metrics` | 0.7 MB | 2,618 |
+| everything else | under 0.3 MB each | |
+
+The last 30 days added 5,336 price rows (1,176 of them the 2026-11-07 backfill), 4,355
+articles and 680 metrics rows, about 3.6 MB a month at the current rates. At that pace
+the database reaches 500 MB in roughly ten years. The anomaly and indicator tables are
+replaced every run, so their files hold dead rows (6.1 MB for 765 anomaly rows);
+autovacuum reuses that space, so it does not grow without bound.
+
+### Egress (estimated 2026-11-09)
+
+Measured on a local copy, not the live database: a throwaway Postgres loaded with the
+2026-11-06 snapshot to the live row counts (4,418 price rows a ticker, 37,949
+articles), the daily stages run against it through a proxy counting every byte the
+server sent (wire bytes before TLS, which adds under 1%):
+
+| Daily refresh step | Bytes sent by the database |
+|---|---|
+| Indicators | 3.2 MB |
+| Anomalies | 3.2 MB |
+| Models (every model, all 8 tickers) | 13.0 MB |
+| Backtest | 9.8 MB |
+| Split guard (not run locally; 8 reads of 0.40 MB each, by the measured read) | about 3.2 MB |
+| **One daily run** | **about 33 MB** |
+
+That is about 0.7 GB a month at 22 runs. Nearly all of it is price reads: every stage
+reads each ticker's whole `raw_prices` history, which grows by about 570 rows a ticker
+a month (a daily bar and 26 15-minute bars a trading day), so the monthly figure grows
+with it, to about 1.6 GB by September 2027 (the
+news forward test's end). The fetch and sentiment steps, backups (one `pg_dump`, about
+the database's size) and the laptop scheduler (unused) add little. Supabase's usage
+page holds the measured monthly total; the owner checks it there.
+
+**The dashboard.** Measured before Phase 4's caching: a first render for one ticker
+read 0.33 MB (329,727 bytes) and a repeat render a minute later 0.31 MB (306,574 bytes),
+because the price loader, the largest read, was not cached and so every rerun read the
+ticker's prices again; a public "Refresh Data" button also cleared the cache for every
+visitor.
+
+**Caching (decision E), done in Phase 4.** Every loader, prices included, now keeps
+what it read for an hour (`CACHE_SECONDS` in `dashboard/app.py`), and the Refresh
+button is gone: the data changes once a day, and the page shows each refresh within
+the hour. Repeat views inside the hour read nothing, so the page reads at most once an
+hour for each loader, ticker and lookback setting, whatever the traffic. A visitor on
+the default lookback costs about 0.33 MB an hour per ticker at most, under 8 MB a
+ticker a day. The daily run's whole-history price reads are the larger line, and the
+one the trending tier would multiply, so the Phase 5 design states the reads it adds.
+
+---
+
 ## Known problems
 
-Ordered by how much they would change the reported results.
+Ordered by how much they would change the reported results. Updated 2026-11-09
+(Phase 4): items 1, 2, 6 and 8 are fixed; 8 to 13 were found in Phase 4.
 
-### 1. The base-model comparison is not like-for-like
+### 1. The base-model comparison was not like-for-like (fixed in Phase 2)
 
-The most significant flaw in the project, and it is a measurement flaw, not a
-code defect.
+ARIMA and Prophet were scored on a 30-day forecast made blind, XGBoost and LightGBM on
+30 one-step predictions each given the true previous day, so the boosters' lower MAPE
+mostly measured the easier task. The rolling-origin evaluation (docs/evaluation.md,
+section 2) now scores every model on the task the dashboard publishes, a forecast 1 to
+7 trading days ahead from each of 42 validation and 25 test origins, the boosters
+recursively as the live run does, beside a naive "no change" baseline. The 30-day
+holdout figures the daily run still records (`model_metrics`) keep the old mismatch and
+are no longer shown anywhere.
 
-- ARIMA and Prophet: fit on train, forecast 30 steps. Day 30 is predicted 30
-  days blind.
-- XGBoost and LightGBM: predict on holdout rows that carry the **actual**
-  lagged close and indicators for each day. Thirty independent one-step-ahead
-  predictions, each given a true yesterday.
+### 2. The displayed MAPE did not describe the published forecast (fixed in Phase 4)
 
-The boosters are solving a far easier problem. Their ~3% mean MAPE against
-ARIMA's 5.48% mostly measures the difference in horizon, not in model quality.
-
-Fixing it properly means walk-forward refitting: at each holdout day, refit on
-everything before it, predict one step, advance. That is 30 refits per model
-per ticker instead of one, which is why it has not been done — but it is the
-only way the four columns become comparable. A cheaper partial fix is to score
-the boosters' existing recursive rollout (`generate_forecast`) against actuals,
-which at least measures the same artefact the dashboard publishes.
-
-### 2. Reported MAPE does not describe the published forecast
-
-The dashboard shows a 7-day forecast built by feeding each prediction back in
-as the next day's lag. Errors compound across those seven steps. The MAPE shown
-beside it is a one-step-ahead number. They are different quantities and the
-README now says so, but a reader glancing at the dashboard will still connect
-them.
+The dashboard showed the 30-day holdout MAPE (a 20-day out-of-fold figure for the
+ensemble) beside a 7-day forecast. It now shows the 7-day error the evaluation measured,
+per ticker, with "no change" beside every model (`dashboard/accuracy.py`, reading
+`published_accuracy.csv`). What remains: those figures are as of the evaluation's
+snapshot (data to 2026-11-06) and change only when the evaluation is rerun and published
+again (item 10).
 
 ### 3. The backtest sample is far too small
 
-Eleven trades across eight tickers over 20 days. Annualised return, Sharpe and
-alpha are computed and stored, and are meaningless at this sample size —
-scaling a 20-day window by 252/20 turns a −0.24% move into an alpha of −1485%.
-The window is 20 days rather than 30 because the out-of-fold warmup consumes
-ten, so lengthening it means either a longer holdout or a shorter warmup.
+17 trades across eight tickers over a 20-day out-of-fold window (a local run on the
+2026-11-06 data, 2026-11-09). Annualised
+return, Sharpe and alpha are computed and stored, and are meaningless at this sample
+size: scaling a 20-day window by 252/20 blows small moves up into extreme figures (in the
+data of 2026-08-04, a -0.24% return became an alpha of -1485%). The
+README no longer reports backtest figures; the dashboard shows them, labelled as a
+demonstration of the harness, not an edge.
 
 ### 4. The scheduler has no dependency graph
 
-`pipelines/scheduler.py` orders stages by wall-clock offset — models at 16:45,
-ensemble at 17:00, backtest at 17:15. If the model job overruns by fifteen
-minutes, the ensemble runs against stale base forecasts and reports a number
-that looks fine. There is no completion signal, no retry, and an in-memory job
-store that loses all state on restart.
+`pipelines/scheduler.py` orders stages by wall-clock offset: models at 16:45, ensemble at
+17:00, backtest at 17:15. If the model job overruns by fifteen minutes, the ensemble
+runs against stale base forecasts and reports a number that looks fine. There is no
+completion signal, no retry, and an in-memory job store that loses all state on
+restart. Production does not use it: the daily GitHub Actions workflow runs the stages
+in order, each after the last has finished.
 
 ### 5. The dashboard connects at import time
 
 `dashboard/app.py` opens a database connection at module scope, so it cannot be
-imported without live credentials and therefore cannot be unit tested. Its
-coverage is 0% and is excluded from the coverage report rather than counted as
-a gap.
+imported without live credentials and therefore cannot be unit tested. Its coverage is
+0% and is excluded from the coverage report rather than counted as a gap. The accuracy
+it shows is computed in `dashboard/accuracy.py`, which reads no database and is tested.
 
 ### 6. Duplicated work in the backtest (fixed in Phase 2)
 
@@ -314,14 +383,70 @@ ticker. It now runs once (`tests/unit/test_backtest_pipeline.py`).
 
 ### 7. Anomaly table duplication
 
-The live `anomalies` table holds many copies of each `(ticker, ts)` flag
-because `UNIQUE (ticker, ts)` was added to `schema.sql` after the table already
-existed, and `CREATE TABLE IF NOT EXISTS` cannot retrofit a constraint, so the
-`ON CONFLICT DO NOTHING` in `save_anomalies` had nothing to detect. The write
-path now replaces each ticker's flags inside a transaction, which is correct
-regardless of constraint state. `sql/migrations/001_dedupe_anomalies.sql`
-collapses the existing duplicates and adds the constraint; it has not been run
-against the live database. Fresh installs are unaffected.
+The live `anomalies` table held many copies of each `(ticker, ts)` flag because
+`UNIQUE (ticker, ts)` was added to `schema.sql` after the table already existed, and
+`CREATE TABLE IF NOT EXISTS` cannot retrofit a constraint, so the `ON CONFLICT DO
+NOTHING` in `save_anomalies` had nothing to detect. The write path now replaces each
+ticker's flags inside a transaction, which is correct regardless of constraint state,
+so each run leaves one copy of each of its flags (about 765 rows on 2026-11-09).
+`sql/migrations/001_dedupe_anomalies.sql`,
+which adds the constraint, has not been run against the live database. The replace
+leaves dead rows behind: 6.1 MB on disk for those 765 rows (see "Running on free
+tiers"). Fresh installs are unaffected.
+
+### 8. The dashboard did not set the dark theme it is styled for (fixed in Phase 4)
+
+Found taking the README screenshot (2026-11-09). With no `.streamlit/config.toml`, the
+dashboard followed each viewer's light or dark setting, but its charts use Plotly's dark
+template and its metric cards a dark background: in the light theme the forecast
+chart's white "Actual" line vanished against the white page and the cards' labels were
+dark on dark. `.streamlit/config.toml` now sets `[theme] base = "dark"`, so every viewer
+sees it as designed (`tests/unit/test_dashboard_settings.py`).
+
+### 9. The live ensemble's weights are fitted on a different task
+
+The live ensemble's NNLS weights come from a 30-day stack in which ARIMA forecasts 30
+days blind, Prophet predicts the 30 dates, the boosters predict one step ahead from the
+true previous day, and naive's column is one constant; live, every column is a forecast
+1 to 7 days ahead (docs/evaluation.md, section 17). The rolling weights fit the right
+task but did not score better on the validation dates (D2); the forward test (D17)
+compares the two again.
+
+### 10. The live run keeps no forecast history
+
+`run_models` deletes the previous run's forecasts before writing new ones, so nothing
+records what was forecast for a date once it has passed, and the live 7-day error
+cannot be measured from the dashboard's own forecasts. The published accuracy comes
+from the evaluation instead, and goes stale until the next rerun.
+
+### 11. XGBoost is fitted four times per ticker per run
+
+The scored holdout fit and the live fit (models step), the ensemble's 30-day stack, and
+the backtest's holdout predictions each fit XGBoost, whose tuned settings (600 trees,
+depth 6, one thread) take about 7 times as long as the earlier ones. On the manual run
+of 2026-11-09 the models step took 110 s and the backtest 39 s, against 30 s and 14 s on
+2026-11-07. Fitting fewer times must leave every forecast unchanged.
+
+### 12. Every stage rereads each ticker's whole price history
+
+`load_daily_bars` reads every `raw_prices` row of a ticker, 15-minute bars included,
+and keeps one row per date; the indicators, anomalies, split guard, models and backtest
+each call it. That is most of the daily run's database egress (about 33 MB a run, see
+"Running on free tiers"), and it grows with the stored bars, about 570 rows a ticker a
+month. Reading only the window a stage needs, or the daily bars only where they exist,
+would cut it.
+
+### 13. A push may not reach the live dashboard
+
+Streamlit Cloud installs `quantflow` from `requirements.txt`, whose `.` line makes an
+ordinary (not editable) install, and `dashboard.py` runs that installed copy. By
+Streamlit's documentation, the app copies committed files but needs a reboot for a fresh
+build after a change to a file it does not monitor; the installed package is such a
+case. So a change to the package, the dashboard's code or its published accuracy table,
+reaches the live app when `requirements.txt` also changes (which rebuilds the
+environment) or after a reboot from the app's workspace. Not verified on the live app
+yet. Fixes for the owner to weigh: an editable install (`-e .`), or `dashboard.py`
+putting the checkout's `src/` first on the import path.
 
 ---
 
@@ -361,7 +486,9 @@ forecasts and backtest results. The natural split is a time-series store for
 `raw_prices` and indicators — where the access pattern is append-heavy and
 range-scanned — leaving relational storage for the low-volume result tables.
 
-**Evaluation.** The single 30-day holdout is a point estimate. Rolling-origin
-evaluation across several windows would give a distribution instead, which is
-what is actually needed to say whether the ensemble's one-ticker win is signal
-or noise. At the current sample size, it is not possible to tell.
+**Evaluation.** The rolling-origin evaluation refits every model at every origin:
+about 16 minutes for eight tickers and 42 origins with 3 worker processes on an 8 GB
+laptop, growing with tickers times origins times models. Past a few dozen tickers it
+belongs on a machine with more memory, or in a scheduled job of its own; the code
+already runs tickers in parallel processes and gives the same cells at any worker
+count.
