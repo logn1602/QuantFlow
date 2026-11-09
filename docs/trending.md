@@ -1,20 +1,19 @@
 # Trending tier: design
 
 Phase 5 of the work brief (sections 6 and 7), written 2026-11-09 before any trending
-code exists. Nothing here is built yet: Checkpoint 5 decides it, and Phase 6 implements
-what is approved, on `feat/trending`. Already decided by the owner and applied below:
+code exists, and approved at Checkpoint 5 the same day with the owner's changes (section
+18). Phase 6 implements it, on `feat/trending`. Decided by the owner and applied below:
 the trending tier stores daily bars only (2026-11-07); its news is RSS only, like the
 core's (D18); the split guard's jump check warns but never blocks for trending tickers
 (2026-11-07); `TRENDING_PINNED` starts with `SPCX`; and this document states the storage
 and egress the tier adds (section 9).
 
-This version keeps the tier apart from the core by construction: its own workflow, its
-own tables, and its prices under a source value of its own. The first draft shared the
-core's tables and workflow and kept them apart with guards and filters; the review
-(gstack `/plan-eng-review` and an independent second reader) showed those guards fail
-on a wrong `TICKERS`, and that sharing the daily job's timeout and test step put the
-forward tests at risk. Section 18 lists every choice left for the checkpoint, with the
-first draft's alternative.
+The tier is kept apart from the core by construction: its own workflow and its own
+tables, prices included. The first draft shared the core's tables and workflow and kept
+them apart with guards and filters; the review (gstack `/plan-eng-review` and an
+independent second reader) showed those guards fail on a wrong `TICKERS`, and that
+sharing the daily job's timeout and test step put the forward tests at risk. Section 18
+records the decisions.
 
 ## 1. Goal and the two tiers
 
@@ -23,8 +22,8 @@ contaminating the evaluated core set.
 
 | | Core watchlist | Trending tier |
 |---|---|---|
-| Which symbols | `TICKERS` in config, unchanged: the source of truth for CI, the workflow and Streamlit Cloud | Discovered every run from Yahoo's lists, plus `TRENDING_PINNED` |
-| Prices | `raw_prices`, source `yfinance`: daily bars and 15-minute bars, never rewritten | `raw_prices`, source `trending`: daily bars only, about 6 months on first sight, refreshed from Yahoo every run |
+| Which symbols | `TICKERS` in config (the eight, kept for now): the source of truth for CI, the workflow and Streamlit Cloud | Discovered every run from Yahoo's lists, plus `TRENDING_PINNED` |
+| Prices | `raw_prices`: daily bars and 15-minute bars, never rewritten | `trending_prices`, its own table: daily bars only, about 6 months on first sight, refreshed from Yahoo every run |
 | Indicators, anomaly flags | Stored by their stages, every run | Computed by the same functions; a summary stored, the rest computed when shown |
 | News sentiment | RSS (D18), in `news_sentiment` | RSS, the same feed format, in `trending_news` |
 | Forecasts, ensemble, backtest | Yes | **No** |
@@ -55,7 +54,7 @@ nothing it does can reach them:
 
 | Core resource | Who reads it | How the tier stays out |
 |---|---|---|
-| `raw_prices`, source `yfinance` | Every price stage, the split guard, the backfill, the dashboard's latest closes and the snapshot export each read `source = 'yfinance'` only (`db/prices.load_daily_bars` and its wrappers default to it), as do the 1a diagnostics; the free-tier counts group by source, so trending rows show there as their own line | Trending bars are stored under source `trending`, and the tier's only delete matches `source = 'trending'`, so no setting, `TICKERS` included, can make it reach a core row |
+| `raw_prices` | Every price stage, the split guard, the backfill, the dashboard, the snapshot export, the diagnostics | Trending bars go to `trending_prices`, a table of their own, so no core or evaluation query can pick them up by missing a filter, and no setting, `TICKERS` included, can make a trending write reach a core row |
 | `news_sentiment` | The core features' news read and D6's "a fetch happened" signal (`engineering.load_features`), the snapshot export, the dashboard | Trending articles go to `trending_news`; nothing that reads `news_sentiment` changes |
 | `technical_indicators`, `anomalies`, `forecasts`, `model_metrics`, `backtest_results` | The dashboard, the models | The tier writes none of them |
 | `daily_refresh.yml`: its steps, inputs, exit codes, 45-minute job timeout, test step and FinBERT cache | The forward tests' daily news and forecasts | The tier runs in its own workflow (section 12); its tests are marked and left out of the daily test step |
@@ -73,8 +72,8 @@ different matter (section 17).
 @dataclass(frozen=True)
 class TrendingItem:
     symbol: str  # validated (section 4.1) before anything else sees it
-    source: str  # "yahoo_screener"
-    list_name: str  # "most_actives", "day_gainers", "day_losers"
+    source: str  # "yahoo_screener", "yahoo_trending"
+    list_name: str  # "trending_tickers", "most_actives", "day_gainers", ...
     rank: int  # 1-based position in that list
     pct_change: float | None
     volume: int | None
@@ -122,13 +121,31 @@ The quote fields used (`symbol`, `shortName`, `quoteType`, `regularMarketPrice`,
 captured response in Phase 6, which becomes the test fixture. A missing field is `None`,
 not a failure.
 
-### `trending_tickers`: not in the first version
+### Yahoo's trending tickers (included; checked 2026-11-09)
 
-yfinance 1.7.0 has no trending-tickers call (searched in its source). Yahoo's trending
-list sits on a separate unofficial endpoint and returns symbols without quote fields, so
-using it means a second HTTP client (`requests`, with a timeout and a User-Agent naming
-the project and its repository) and a quote lookup per symbol before the EQUITY filter
-can apply. Recommended: leave it out of Phase 6 (decision T5).
+The list closest to what the tier is for, the stocks people look up most. yfinance
+1.7.0 has no call for it (nothing in the package mentions "trending"), so
+`YahooTrendingSource` makes a plain request, as the brief prescribes for that case:
+`requests.get("https://query1.finance.yahoo.com/v1/finance/trending/US", ...)` with
+`count=25`, `useQuotes=true` and `fields` naming the quote fields the rules use, a
+10-second timeout, and the User-Agent `QuantFlow/1.0
+(+https://github.com/logn1602/QuantFlow)`. With `useQuotes`, each item carries its
+quote (`quoteType`, `shortName`, `regularMarketPrice`, `regularMarketChangePercent`,
+`regularMarketVolume`, `marketCap`, `firstTradeDateMilliseconds`, Yahoo's own
+`trendingScore`), so one request is enough, with no lookup per symbol. `requests` is
+already a dependency.
+
+Checked on 2026-11-09 at 08:57 UTC, from this laptop, before New York's open: 20
+requests, 5 each from a plain request and from yfinance's own session, with and
+without `useQuotes`, three seconds apart. All 20 returned HTTP 200 with 25 items, the
+same list every time, in 0.02 to 0.4 seconds (one took 4.8). The list mixed equities
+with leveraged ETFs and crypto (`NVDL`, `MSTU`, `BTC-USD`), which the EQUITY filter
+removes, and two core tickers (`NVDA`, `GOOGL`), which rule 3 removes. 17 of its 25
+symbols were on none of the three screener lists that day: it adds names the screeners
+do not carry. One check from one machine is not a guarantee: the endpoint is unofficial,
+and GitHub's runners may be treated differently, so Phase 6's first runs confirm it
+there. Whenever it fails, the source returns `[]` like any other, and the screener lists
+still count.
 
 ### A social source (designed for, not built)
 
@@ -159,7 +176,7 @@ URL-encoded.
 ### 4.2 The rules, in order
 
 1. Validate (4.1); drop items that fail.
-2. Keep `quote_type == "EQUITY"` only.
+2. Keep `quote_type == "EQUITY"` only (it removes the trending list's ETFs and crypto).
 3. Drop core tickers (`TICKERS`). With the tier's storage apart (section 2), a wrong
    `TICKERS` here costs at most a duplicate entry in the Trending tab, never a core row.
 4. Floors: `TRENDING_MIN_PRICE` ($5 by default) and `TRENDING_MIN_MARKET_CAP` (off by
@@ -173,8 +190,9 @@ URL-encoded.
 Every run, from the deduped candidates and the stored `tickers` rows:
 1. Every pinned symbol is active (section 5), outside the cap.
 2. Then, up to `TRENDING_MAX_ACTIVE` (default 15) discovered symbols:
-   - first, symbols on today's lists, by best rank, then higher volume, then symbol, so
-     the order is deterministic;
+   - first, symbols on today's lists, by best rank; equal ranks go to the list named
+     first in `TRENDING_LISTS` (`trending_tickers` by default, the closest to "looked up
+     most"), then to higher volume, then to the symbol, so the order is deterministic;
    - then symbols active before, absent today, but seen within the last
      `TRENDING_INACTIVE_AFTER_DAYS` (default 5) fetched sessions, most recently seen
      first.
@@ -184,8 +202,8 @@ Every run, from the deduped candidates and the stored `tickers` rows:
 4. An active symbol not chosen is deactivated (`active = false`); its prices, news and
    snapshots stay.
 
-What this does in practice: the three lists carry about 60 distinct symbols after
-dedupe (an estimate; Phase 6 measures it), so on a normal day the cap fills from today's lists, and the active set is
+What this does in practice: the four lists carry about 70 to 80 distinct symbols after
+dedupe (an estimate from the 2026-11-09 check; Phase 6 measures it), so on a normal day the cap fills from today's lists, and the active set is
 today's 15 best-ranked names, at most 5 of them new. The grace for absent symbols
 matters only when the lists are short, or when one of them failed. Churn among the top
 movers is high, so the new-symbol limit is the one that binds (section 9 plans on it).
@@ -264,6 +282,19 @@ CREATE TABLE IF NOT EXISTS tickers (
     big_move_date     DATE
 );
 
+-- raw_prices' columns for a daily bar, apart from it on purpose (section 2).
+CREATE TABLE IF NOT EXISTS trending_prices (
+    ticker      VARCHAR(10)     NOT NULL,
+    ts          TIMESTAMPTZ     NOT NULL,   -- the trading date's 00:00 UTC, as raw_prices' daily bars
+    open        NUMERIC(12, 4),
+    high        NUMERIC(12, 4),
+    low         NUMERIC(12, 4),
+    close       NUMERIC(12, 4)  NOT NULL,
+    volume      BIGINT,
+    fetched_at  TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
 CREATE TABLE IF NOT EXISTS trending_snapshots (
     snapshot_ts   TIMESTAMPTZ   NOT NULL,
     session_date  DATE          NOT NULL,
@@ -312,9 +343,10 @@ CREATE INDEX IF NOT EXISTS idx_trending_news_ticker_ts
   number of distinct `session_date`s with an entry for the symbol, one grouped query.
 - `trending_news` is `news_sentiment`'s twin, written by the same code (7.5); an
   integration test keeps their columns and key equal.
-- Trending prices go in `raw_prices` with `source = 'trending'`: the same columns, the
-  same daily-bar rows, and no new price table, since every core reader already filters
-  on `source` (section 2).
+- `trending_prices` holds `raw_prices`' daily-bar columns with the same timestamp
+  convention (00:00 UTC on the trading date), so the core's pure helpers shape and read
+  its rows unchanged (`db/prices.daily_bars`, the one-row-per-date rule), while no core
+  query can reach them.
 
 Access goes through a new `db/trending.py`: batched writes through `db/batch.insert_rows`
 (one multi-row insert per chunk, conflicts skipped and not counted), the price
@@ -328,7 +360,8 @@ apart from the dashboard's display queries, which follow the existing pattern.
 ```
  trending.yml, after the daily refresh has finished
  --------------------------------------------------
- Yahoo predefined screeners (yf.screen)         TRENDING_PINNED (SPCX)
+ Yahoo's trending list (requests)              TRENDING_PINNED (SPCX)
+ Yahoo predefined screeners (yf.screen)              |
    most_actives, day_gainers, day_losers               |
         |                                              |
         v                                              |
@@ -343,14 +376,14 @@ apart from the dashboard's display queries, which follow the existing pattern.
         +-------------------------------------+------------------------+
         v                                     v                        v
  daily bars from Yahoo, replaced     compute_indicators,        RSS template feed,
- per symbol in raw_prices            detect_anomalies on        FinBERT,
- under source 'trending'      --->   the same bars: summary     trending_news
+ per symbol in trending_prices,      detect_anomalies on        FinBERT,
+ one transaction each         --->   the same bars: summary     trending_news
         |                            on tickers
         v
  jump check: warn and badge, never block
 
- Never touched: news_sentiment, the core's raw_prices rows (source 'yfinance'),
- technical_indicators, anomalies, forecasts, model_metrics, backtest_results.
+ Never touched: raw_prices, news_sentiment, technical_indicators, anomalies,
+ forecasts, model_metrics, backtest_results.
 ```
 
 1. Fetch every source; store every item in `trending_snapshots`, with its session date.
@@ -371,21 +404,26 @@ trading date for its indicators and its chart, and 15-minute bars would multiply
 storage by 27.
 
 Each run, each active symbol's daily bars are downloaded from Yahoo (`auto_adjust=False`,
-as the core's) from its `first_bar_date`, or 6 months back for a new symbol, shaped by
-the Phase 1 daily-bar path (`yfinance_fetcher.download`, `as_daily_bars`,
-`bars_to_rows`), and **replace** the symbol's `source = 'trending'` rows in one
-transaction. Replacing rather than appending, as the core does, because a trending
-name's prices are a cache of Yahoo's, not an evaluated history: a split or reverse split
-(common among the names these lists carry) would otherwise leave the stored rows on the
-old basis until rescaled by hand, while a re-fetch is on Yahoo's current basis every
-day. It costs the same one download per symbol that appending would.
+as the core's) from its `first_bar_date`, or 6 months back for a new symbol, through the
+Phase 1 daily-bar path (`yfinance_fetcher.download`, `as_daily_bars`), and **replace**
+the symbol's rows in `trending_prices`. Replacing rather than appending, as the core
+does, because a trending name's prices are a cache of Yahoo's, not an evaluated history:
+a split or reverse split (common among the names these lists carry) would otherwise
+leave the stored rows on the old basis until rescaled by hand, while a re-fetch is on
+Yahoo's current basis every day. It costs the same one download per symbol that
+appending would.
 
-Guards: the delete matches `source = 'trending'` and the symbol, nothing else, so it
-cannot reach a core row whatever `TICKERS` holds. The replacement is skipped, with a
-warning, when the download does not reach back to the symbol's `first_bar_date`, so a
-partial answer from Yahoo can never shorten a history; `first_bar_date` comes from
-`tickers`, so no stored bars are read to check. The replaced rows leave dead tuples that
-autovacuum reclaims: about 4,000 rows a run, under 1 MB.
+**One transaction per ticker, as the forecasts since PR #19**
+(`db.forecasts.replace_forecasts`): the symbol's old rows are deleted and its new rows
+inserted together, so a reader, the dashboard among them, finds the old rows or the new
+ones, never none. A failed insert rolls the delete back with it, and a replacement with no
+rows is refused, so a symbol never loses its history to a bad answer.
+
+The replacement is also skipped, with a warning, when the download does not reach back to
+the symbol's `first_bar_date`, so a partial answer from Yahoo can never shorten a
+history; `first_bar_date` comes from `tickers`, so no stored bars are read to check. The
+replaced rows leave dead tuples that autovacuum reclaims: about 4,000 rows a run, under
+1 MB.
 
 ### 7.3 The split guard on trending names
 
@@ -396,8 +434,8 @@ autovacuum reclaims: about 4,000 rows a run, under 1 MB.
   (`big_move_date`), and nothing stops.
 - **The basis check does not apply**: it compares stored closes with Yahoo's current
   ones, and the stored closes *are* Yahoo's current ones each day (7.2).
-- The core's split guard is untouched: it reads `source = 'yfinance'` for `TICKERS` only,
-  so a trending symbol can never fail it.
+- The core's split guard is untouched: it reads `raw_prices` for `TICKERS` only, so a
+  trending symbol can never fail it.
 
 ### 7.4 Indicators and anomaly flags
 
@@ -408,7 +446,7 @@ and the anomaly z-score's 30-row window. The run stores, on each symbol's `ticke
 what the tab's table shows: the session, the last close, RSI(14), the number of anomaly
 flags in the last 10 trading days, and the latest big move. The full indicator and flag
 series are computed again when a visitor opens a symbol's chart (section 10), from its
-stored bars, by the same functions. Nothing is written to `technical_indicators` or
+rows in `trending_prices`, by the same functions. Nothing is written to `technical_indicators` or
 `anomalies`, and the stages' `run` functions are not called: they read and write the
 core's tables.
 
@@ -507,10 +545,10 @@ Phase 4 did.
 
 | What | Size | First year |
 |---|---|---|
-| First-sight histories | 126 bars x 246 B = 31 KB a new symbol | 5 a run: 1,250 symbols, 39 MB; fewer later, as the names the lists carry repeat |
+| First-sight histories | 126 bars x at most 246 B (`raw_prices`' measured row; `trending_prices` has no id or source column, and one index fewer) = 31 KB a new symbol | 5 a run: 1,250 symbols, 39 MB; fewer later, as the names the lists carry repeat |
 | Daily bars of the active set | 16 x 250 bars | 1 MB |
 | `trending_news` | 16 symbols x 250 days x 494 B | 22 MB at the core's 11 a day; 40 MB at 20 a day, a full feed daily |
-| `trending_snapshots` | 75 rows a run, about 160 B each | 3 MB |
+| `trending_snapshots` | 100 rows a run (four lists of 25), about 160 B each | 4 MB |
 | `tickers` | one row a symbol ever seen | under 0.3 MB |
 | Indicator and anomaly series | not stored (7.4) | 0 |
 | Dead tuples from the daily price replacement | about 4,000 rows a run, reused by autovacuum | under 1 MB, not growing |
@@ -537,8 +575,9 @@ Against about 33 MB a run (0.7 GB a month) for the daily refresh today: negligib
 
 **The dashboard's Trending tab**, cached for an hour like every loader: the table (the
 active symbols' `tickers` rows, their snapshot aggregates and their 7-day news
-aggregate, about 20 to 30 KB) and, per symbol a visitor opens, its bars (about 250 rows,
-22 KB), from which the chart's indicators and flags are computed. Worst case, every
+aggregate, about 20 to 30 KB) and, per symbol a visitor opens, its rows in
+`trending_prices` (about 250, 22 KB), from which the chart's indicators and flags are
+computed. Worst case, every
 active symbol opened every hour: 16 x 30 KB x 24, about 12 MB a day; at the dashboard's
 real traffic, a few MB a month. All of it sits well inside the free plan's 5 GB a month.
 
@@ -551,8 +590,8 @@ A seventh tab, "Trending", captioned **"Discovery only: not forecast or backtest
   anomaly flags of the last 10 trading days, and badges: pinned, promotion-eligible, big
   move (7.3);
 - for the selected row, the price and indicator charts the core tabs use
-  (`price_chart`, `rsi_macd_chart`), on its bars from `raw_prices` (source `trending`),
-  with indicators and flags computed by `compute_indicators` and `detect_anomalies`.
+  (`price_chart`, `rsi_macd_chart`), on its rows in `trending_prices`, with indicators
+  and flags computed by `compute_indicators` and `detect_anomalies`.
 
 Data loading is testable, which `app.py` itself is not (Known problem 5): the queries
 and the table's shaping live in an importable `dashboard/trending_view.py` that takes a
@@ -571,7 +610,7 @@ down (as `SPLIT_GUARD_THRESHOLD` is handled today):
 | Variable | Default | Meaning |
 |---|---|---|
 | `TRENDING_PINNED` | `SPCX` | Always tracked, outside the cap; at most 10 read |
-| `TRENDING_LISTS` | `most_actives,day_gainers,day_losers` | Yahoo's predefined lists to read |
+| `TRENDING_LISTS` | `trending_tickers,most_actives,day_gainers,day_losers` | The lists to read, in priority order for equal ranks (4.3) |
 | `TRENDING_MAX_ACTIVE` | `15` | Discovered symbols tracked at once |
 | `TRENDING_MAX_NEW_PER_RUN` | `5` | Symbols never seen before that may join in one run |
 | `TRENDING_INACTIVE_AFTER_DAYS` | `5` | Fetched sessions absent before deactivation, cap permitting |
@@ -608,14 +647,10 @@ stop the core's data steps on a forward-test day. CI still runs every test. Tren
 tests never read `config.TICKERS`: CI sets two tickers and the daily refresh eight, and
 a test that read them could pass in one and fail in the other.
 
-### The laptop scheduler (decision T7)
+### The laptop scheduler: no job (decision T7)
 
-The brief asks for a `run_trending_job` that nothing in the model chain depends on. The
-scheduler is unused (the owner relies on the daily workflow; `docs/architecture.md`
-says so). Recommended: add it as the brief says, as small as possible (one job, once a
-day after the close, calling the same entry point; it logs a failure and never raises),
-so the scheduler stays a complete local alternative. It reads no core prices, so the
-split guard's pause does not apply to it.
+The brief's `scheduler.py` job is dropped (the owner, Checkpoint 5): the owner does not
+run the laptop scheduler, and relies on the daily workflow. The scheduler is unchanged.
 
 ### Make
 
@@ -629,8 +664,9 @@ listed in `make help`. `make promote` waits with the rest of promotion (section 
 | Need | Existing code | Reused as |
 |---|---|---|
 | Yahoo's lists | `yf.screen`, `yf.PREDEFINED_SCREENER_QUERIES` (yfinance 1.7.0) | The Yahoo source; no new HTTP client |
-| Daily bars from Yahoo | `ingestion/yfinance_fetcher.download`, `as_daily_bars`, `bars_to_rows` | The price fetch (7.2) |
-| Reading bars by source | `db/prices.load_daily_bars(ticker, source=...)` | The tab's chart, with `source="trending"` |
+| Daily bars from Yahoo | `ingestion/yfinance_fetcher.download`, `as_daily_bars` | The price fetch (7.2) |
+| One row per trading date | `db/prices.daily_bars` (the Phase 1 rule) | Shaping `trending_prices` rows for the analytics and the chart |
+| Replacing one ticker's rows in one transaction | `db/forecasts.replace_forecasts` (PR #19) | The pattern of the price replacement (7.2) |
 | Batched writes | `db/batch.insert_rows` | Every trending write |
 | Indicators, anomaly flags | `features/indicators.compute_indicators`, `features/anomalies.detect_anomalies` | The run's summary and the tab's chart |
 | Sentiment | `features/sentiment.fetch_rss`, `get_finbert`, `analyze_batch`, `save_sentiment`, `_clean_text`; `db/sentiment.insert_sentiment` | The run's sentiment step, with the two new parameters (7.5) |
@@ -644,9 +680,9 @@ listed in `make help`. `make promote` waits with the rest of promotion (section 
 
 | Module | Role |
 |---|---|
-| `ingestion/trending_sources.py` | `TrendingItem`, `TrendingSource`, `YahooScreenerSource` |
+| `ingestion/trending_sources.py` | `TrendingItem`, `TrendingSource`, `YahooScreenerSource`, `YahooTrendingSource` |
 | `ingestion/trending_rules.py` | Pure functions: validation, filters, dedupe, session dates, the active set, deactivation, eligibility |
-| `db/trending.py` | Reads and batched writes for `tickers`, `trending_snapshots`, `trending_news`; the price replacement |
+| `db/trending.py` | Reads and batched writes for `tickers`, `trending_snapshots`, `trending_news`, `trending_prices`; the price replacement |
 | `pipelines/trending.py` | The run (7.1) and the CLI behind `make trending` |
 | `dashboard/trending_view.py` | The tab's queries and shaping, testable |
 
@@ -661,6 +697,7 @@ of 7.5 (a test, beside the existing boundary tests).
 | A Yahoo list (HTTP error, timeout, malformed) | `[]` for that list; the others still count | A warning in the trending run's log |
 | Every list at once (Yahoo down, or its format changed) | Nothing deactivated or counted; prices, analytics and sentiment still run for the active set; then the run exits 1 | A failed trending run and GitHub's failure notice, every day it lasts |
 | One symbol's history download, or a partial one | Its stored bars stay; it stays active | A warning |
+| A price replacement's insert | Rolled back with its delete: the old rows stay, and the tab never finds the symbol without bars | A warning, and a failed run |
 | One symbol's indicators, flags or sentiment | That symbol is skipped for that step; the rest go on | A warning |
 | An RSS feed | No articles for that symbol that run | A warning |
 | A database error | The run fails | A failed trending run; the core is unaffected |
@@ -673,7 +710,9 @@ of 7.5 (a test, beside the existing boundary tests).
 
 Offline, as every unit test here, marked `trending`:
 - Sources: saved responses for success, an empty list, a malformed body and an HTTP
-  error; a source never raises.
+  error, for both the screeners and the trending list (its fixture a captured response
+  with `useQuotes`); a source never raises; the trending request carries its timeout and
+  User-Agent.
 - Rules: validation (good, too long, bad characters, lower case), EQUITY and core
   exclusion, the floors, dedupe (list names and best rank), session dating (a fetch
   after the close, after midnight UTC, before the next open; two fetches of one session
@@ -684,13 +723,13 @@ Offline, as every unit test here, marked `trending`:
 - The listing-date file through the shared parser: a required reason, bars before the
   date dropped.
 - `db/trending.py` with the fake database: batched writes counted as written; the price
-  replacement deleting only `source = 'trending'` rows of its symbol, and skipped for a
-  download that does not reach `first_bar_date`.
+  replacement deleting only its symbol's rows in `trending_prices`, refusing no rows,
+  and skipped for a download that does not reach `first_bar_date`.
 - The run: an empty active set calls no stage; a run with nothing from every source
   deactivates nothing and exits 1; one failing symbol does not stop the others.
 - The core unchanged: `fetch_rss` and `save_sentiment` without the new parameters behave
   exactly as today; the feed template reproduces the eight `RSS_FEEDS` URLs; nothing in
-  the tier writes `news_sentiment` or a `source = 'yfinance'` row.
+  the tier writes `raw_prices` or `news_sentiment`.
 - The workflows: `daily_refresh.yml` unchanged but for the test step's `not trending`;
   `trending.yml` triggered by the daily refresh's completion and dispatch, with its own
   timeout; trending tests do not read `config.TICKERS`.
@@ -700,15 +739,18 @@ Offline, as every unit test here, marked `trending`:
 
 On a throwaway Postgres (integration): the migration twice (idempotent), the new tables
 readable by the read-only role, `trending_news` matching `news_sentiment`'s columns and
-key, the batched writes and the price replacement on real types.
+key, the batched writes on real types, and the price replacement in one transaction: a
+failed insert leaves the old rows, and a second connection polling during a replacement
+always finds the symbol's bars (as PR #19's check did for forecasts).
 
 ## 16. Order of work (Phase 6)
 
 The brief's section 8, adjusted for the decisions above, on `feat/trending`, tests green
 after every step:
 
-1. Config, `TrendingItem`, `TrendingSource` and the Yahoo source, with saved responses
-   (success, empty, malformed, HTTP error); one real response captured as the fixture.
+1. Config, `TrendingItem`, `TrendingSource` and both Yahoo sources, with saved responses
+   (success, empty, malformed, HTTP error); one real response of each captured as the
+   fixture.
 2. Migration `002_trending.sql`, `sql/schema_trending.sql`, `make setup`,
    `db/trending.py`; mocked-database tests, then the integration tests on a throwaway
    Postgres.
@@ -718,8 +760,7 @@ after every step:
 5. `pipelines/trending.py` and `make trending`, verified against a throwaway Postgres
    loaded with the snapshot, with a cap of 3. The brief's check "against my DB" writes to
    the live database, so it is the owner's to run, or a one-off go-ahead.
-6. `trending.yml`, the daily refresh's test-step marker, and the scheduler job, with the
-   workflow tests.
+6. `trending.yml` and the daily refresh's test-step marker, with the workflow tests.
 7. The Trending tab, then gstack `/qa` on it.
 8. gstack `/cso` on the trending path; the egress measured through the proxy.
 
@@ -739,25 +780,32 @@ tier does not touch their cells (section 2). A change to `TICKERS` would, in two
   days when only its fetch stored anything from "no fetch" into "fetched, no news" for
   the original eight, changing their features.
 
-The owner's question at Checkpoint 5: whether to change the core watchlist at all (for
-example, keep the eight and add a few diversifiers outside technology, communications and
-banks). Whatever is decided, recommended: the forward tests score the original eight as
-pre-registered, their snapshot is exported with `--tickers` set to those eight (written
-into D16 now, before any forward date is scored), and any other core ticker is reported
-beside them, not in them.
+Decided at Checkpoint 5 (2026-11-09): the core stays at the eight for now. The forward
+tests stay on the original eight, and their snapshot is exported for exactly those eight
+(`evaluate export --tickers AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM`), written into D16
+(docs/evaluation.md, section 4) before any forward date is scored. A core ticker added
+later would be reported beside the eight, not in them.
 
-## 18. Decisions for Checkpoint 5
+## 18. Decisions (Checkpoint 5, 2026-11-09)
 
-| | Decision | Recommended | The alternative |
-|---|---|---|---|
-| T1 | Where the tier runs | Its own workflow, `trending.yml`, after the daily refresh finishes; the daily test step leaves trending tests out (section 12) | Steps at the end of `daily_refresh.yml` with `continue-on-error` (the first draft): they share its 45-minute timeout, a trending failure sends no failure notice, and a trending test can stop the core |
-| T2 | Trending storage | Its own: prices under source `trending` in `raw_prices`, news in `trending_news`, a summary on `tickers`; no core table written (section 2) | The core's tables with guards and filters (the first draft): a wrong `TICKERS` defeats the guards, and the core's news read in `engineering.py` must be filtered mid-window |
-| T3 | Trending prices | Re-fetched from Yahoo and replaced every run (7.2), so the basis check does not apply and the jump check marks big moves (7.3) | Appended like the core's, with a warn-only basis check and hand rescales after splits |
-| T4 | Limits | 15 discovered symbols plus up to 10 pinned, 5 new a run, deactivation after 5 fetched sessions absent when the cap has room, a $5 price floor; eligibility at 20 sessions and 504 trading days | Other values; no price floor (the brief's default) |
-| T5 | Yahoo's `trending_tickers` | Not in Phase 6 (section 3) | A second HTTP client and a quote lookup per symbol |
-| T6 | Promotion | Phase 6 shows eligibility only; `make promote` and the short-history row wait until a promotion is wanted, at the latest after the forward window (section 8) | Build both in Phase 6, as the brief lists them |
-| T7 | The laptop scheduler | A minimal job, as the brief asks (section 12) | No job: the scheduler is unused |
-| W | The core watchlist, and the forward tests' snapshot | The owner's choice; recommended either way: the forward tests stay on the eight, exported with `--tickers` (section 17) | |
+Approved by the owner as recommended, with the changes marked.
+
+| | Decision |
+|---|---|
+| T1 | The tier runs in its own workflow, `trending.yml`, after the daily refresh finishes; the daily test step leaves trending tests out (section 12). |
+| T2 | Its own storage, **prices included: `trending_prices`, a table of its own, not `raw_prices` under a source value, so no core or evaluation query can pick them up by missing a filter** (owner's change); news in `trending_news`, a summary on `tickers`; no core table written (section 2). |
+| T3 | Prices re-fetched from Yahoo every run, **each ticker's rows replaced in one transaction, as the forecasts since PR #19, so the dashboard never finds the trending table empty** (owner's change; 7.2); the basis check does not apply, and the jump check marks big moves (7.3). |
+| T4 | 15 discovered symbols plus up to 10 pinned, 5 new a run, deactivation after 5 fetched sessions absent when the cap has room, a $5 price floor; eligibility at 20 sessions and 504 trading days. |
+| T5 | **Yahoo's trending-tickers list, checked first as the owner asked: it works (20 of 20 requests, 2026-11-09), so it is included,** through a plain request (section 3), and first in `TRENDING_LISTS`. |
+| T6 | Promotion: Phase 6 shows eligibility only; `make promote` and the short-history row wait until a promotion is wanted, at the latest after the forward window (section 8). |
+| T7 | **No laptop-scheduler job: the owner does not run the scheduler; the brief's item is dropped** (owner's change; section 12). |
+| W | The core stays at the eight for now; the forward tests stay on them, with their snapshot exported for exactly those eight (`--tickers`), written into D16 (section 17). |
+
+The first draft's alternatives, not taken: steps at the end of `daily_refresh.yml` with
+`continue-on-error` (sharing its 45-minute timeout, sending no failure notice, and
+letting a trending test stop the core); the core's tables with guards and filters (a
+wrong `TICKERS` defeats the guards, and `engineering.py`'s news read would need a filter
+mid-window); appended prices with a warn-only basis check; building `make promote` now.
 
 ## 19. Not in this design
 
@@ -765,5 +813,6 @@ beside them, not in them.
 - 15-minute bars for trending names.
 - NewsAPI, or any news source but RSS (D18).
 - A social source (designed in section 3, not built).
-- Automatic promotion; and, until decision T6 says otherwise, `make promote` and the
+- Automatic promotion; and, until a promotion is wanted (T6), `make promote` and the
   short-history row (section 8).
+- A laptop-scheduler job for the tier (T7: dropped; the brief listed one).

@@ -454,8 +454,19 @@ gets its test on dates still to come, with the plan fixed before any of them exi
   origin is 2027-09-03 and its day-7 target 2027-09-15, 213 trading days after the
   snapshot by the project calendar. Scored once, when that close is in; no interim
   look, since an early look that misses invites another.
-- **Snapshot**: a new one, exported then on the owner's go-ahead (D5). The 2026-11-06
-  snapshot and its test dates stay as they are.
+- **Snapshot**: a new one, exported then on the owner's go-ahead (D5), for exactly the
+  original eight tickers, whatever the core watchlist holds by then (amended 2026-11-09,
+  before any forward date is scored):
+
+  ```bash
+  uv run python -m quantflow.pipelines.evaluate export --as-of <the last target's date> --tickers AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM --live
+  ```
+
+  Without `--tickers` the export takes `TICKERS`, and the harness takes D6's fetch times
+  from every article in the snapshot, so a ninth ticker's articles would turn days with
+  no fetch for the eight into fetched days with no news, changing their features. The
+  forward tests score those eight; a core ticker added later is reported beside them,
+  not in them. The 2026-11-06 snapshot and its test dates stay as they are.
 - **News**: RSS articles only (D18), at every forward origin and in the training
   history behind it.
 - **Gate**: D15 on the forward origins, counting RSS articles only: at least half the
@@ -570,7 +581,7 @@ instead, with the rule written on 2026-11-08, before any forward date exists:
 
 - **Window and scoring**: the forward test of section 4 (D16): 42 origins every 5
   trading days from 2026-11-09, the last target 2027-09-15, scored once on a new
-  snapshot after that close, no interim look. The ensemble comparison does not depend
+  snapshot of the original eight tickers after that close, no interim look. The ensemble comparison does not depend
   on the news gate: it is decided even if the news reads "not enough data" again.
 - **The two weightings**, fixed now: the current weights (`ensemble_stack`, NNLS
   refitted at each origin on its 30-day holdout stack, as the live run does) and the
@@ -930,7 +941,7 @@ Decided by the owner; the body above applies them.
 | D13 | The rule for the test dates (section 2): every keep-or-drop decision on the validation dates only, D2 included; test results reported, never used to choose, and anything kept stays kept if it looks worse there, as the README says; every test scoring counted (ledger, MLflow tag) and the count and phases stated in the README. Phase 2 scores the test dates twice (T1, T2). |
 | D14 | Point-in-time anomaly scores for the features, on `feat/evaluation-live` with D4: the live training rows stop looking ahead (section 2). A correction, measured as R5. The README's "features are backward-looking" claim is corrected in Phase 4. |
 | D15 | News coverage per window is reported before any news run; under half of the validation (ticker, date) rows with a real article means the ablation is "not enough data" and no news feature is kept or dropped on it (section 4). |
-| D16 | The news gets a forward test: 42 origins every 5 trading days from 2026-11-09, scored once after the last target (2027-09-15) on a new snapshot, with the D15 gate and a keep-or-drop rule written before scoring (section 4). Confirmed 2026-11-08. |
+| D16 | The news gets a forward test: 42 origins every 5 trading days from 2026-11-09, scored once after the last target (2027-09-15) on a new snapshot, with the D15 gate and a keep-or-drop rule written before scoring (section 4). Confirmed 2026-11-08. Amended 2026-11-09, before any forward date is scored (owner, Checkpoint 5: the core stays at the eight for now): the snapshot is exported for exactly the original eight tickers (`--tickers`), and the forward tests, D17's included, score those eight whatever the core watchlist holds by then. |
 | D18 | Decided 2026-11-09, before any forward date is scored: news from Yahoo Finance's RSS feeds only, on every date, history included, so the features mean the same before and after; NewsAPI's stored articles stay and never count, and the daily workflow no longer passes its key (its free plan is for development and testing only). The D15 gate counts RSS articles (section 4). |
 | D19 | Pre-registered 2026-11-09, before any forward date is scored: the news rule for the forward test. Per booster, the sentiment features are kept only if the booster's MAPE with them over every forward cell is strictly lower than without them and lower on at least 5 of the 8 tickers; a tie drops. "Not enough data" under the gate, or either variant failing more than 10% of its cells, means no decision (section 4). |
 | D20 | Decided 2026-11-09, after D18: the published figures are rerun on the RSS-only code, the validation dates (P4b) and, for reporting only, the test dates a fourth time (T4, ledger entry 4), so they describe the boosters as they run. No decision rests on T4: every keep-or-drop decision stays on the validation dates (D13). |
