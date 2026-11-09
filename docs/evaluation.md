@@ -88,6 +88,7 @@ Test-date ledger:
 | 1 | 2026-11-08 | 2 | `7f9133c` | `9a069158` | T1: the current system (R0's commit): naive, drift, ARIMA, Prophet, XGBoost, LightGBM, the ensemble with the old weights. 25 origins x 8 tickers. |
 | 2 | 2026-11-08 | 2 | `cff181e` | `ed9be5e8` | T2: the final Phase 2 commit, after D2 was settled on R7: the same models plus the ensemble with the new weights, scored beside the old (12 test-warmup origins supply the new weights' first rows). |
 | 3 | 2026-11-08 | 3 | `7beb3ff` | `93bdf518` | T3: the final Phase 3 model set, after every Phase 3 choice was settled on the validation dates (section 16): every model and both ensembles. |
+| 4 | 2026-11-09 | 4 | `c52b0ed` | `ad6d1694` | T4: every model and both ensembles after D18 (news from RSS only), for reporting only, on the owner's go-ahead, so the published figures describe the boosters as they run. No decision rests on it (D20). |
 
 Kept, and worse on the test dates (for the README, rule above): the live ensemble
 kept the old weights by D2 on the validation dates (3.381% against 3.389% MAPE);
@@ -95,7 +96,8 @@ on the test dates the new weights score 3.298% and the old 3.676%. The old weigh
 stay. Phase 3 (T3 against T2, section 16): XGBoost's tuned settings (E3) and the live
 stack's naive column (E6) were kept on the validation dates, and on the test dates
 XGBoost went from 3.440% to 3.538% and the live stack from 3.676% to 3.711%. Both
-stay.
+stay. On T4, after D18 and for reporting only, the new weights score 3.309% and the old
+3.679%.
 
 ### How a run flows
 
@@ -413,7 +415,7 @@ On the 2026-11-06 snapshot NewsAPI supplied 17,689 of the 37,949 stored articles
 change: rerun on 2026-11-09 counting RSS only, the `coverage` command gives the same 16
 of 336 validation rows and 200 of 200 test rows as below. What does change is every
 count and mean the boosters see wherever both sources had articles, the test dates
-included; the published figures (section 17) were run before the switch.
+included; the published figures were rerun after the switch (section 17, D20).
 
 ### News coverage comes before any news decision (decision D15)
 
@@ -931,6 +933,7 @@ Decided by the owner; the body above applies them.
 | D16 | The news gets a forward test: 42 origins every 5 trading days from 2026-11-09, scored once after the last target (2027-09-15) on a new snapshot, with the D15 gate and a keep-or-drop rule written before scoring (section 4). Confirmed 2026-11-08. |
 | D18 | Decided 2026-11-09, before any forward date is scored: news from Yahoo Finance's RSS feeds only, on every date, history included, so the features mean the same before and after; NewsAPI's stored articles stay and never count, and the daily workflow no longer passes its key (its free plan is for development and testing only). The D15 gate counts RSS articles (section 4). |
 | D19 | Pre-registered 2026-11-09, before any forward date is scored: the news rule for the forward test. Per booster, the sentiment features are kept only if the booster's MAPE with them over every forward cell is strictly lower than without them and lower on at least 5 of the 8 tickers; a tie drops. "Not enough data" under the gate, or either variant failing more than 10% of its cells, means no decision (section 4). |
+| D20 | Decided 2026-11-09, after D18: the published figures are rerun on the RSS-only code, the validation dates (P4b) and, for reporting only, the test dates a fourth time (T4, ledger entry 4), so they describe the boosters as they run. No decision rests on T4: every keep-or-drop decision stays on the validation dates (D13). |
 | D17 | Pre-registered 2026-11-08, before any forward date is scored: the forward test (D16) also compares the live ensemble's current weights with the new rolling-origin weights on the same cells. The live ensemble uses the new weights if their MAPE over every forward cell is no higher than the current weights' (a tie goes to the new weights, as in D2); either failing on more than 10% of its cells means no decision (section 5). |
 
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
@@ -1224,28 +1227,30 @@ the README leaves out, and how to reproduce them.
 
 | | Validation dates | Test dates |
 |---|---|---|
-| Run | `P4` | `T3` (ledger entry 3) |
-| Commit | `a3c0c4e` (`main` after PR #16) | `7beb3ff` (Phase 3) |
-| MLflow run | `30a6be1e` | `93bdf518` |
+| Run | `P4b` | `T4` (ledger entry 4, reporting only) |
+| Commit | `c52b0ed` (`main` after PR #20) | the same |
+| MLflow run | `70495566` | `ad6d1694` |
 | Start dates | 42, every 5 trading days, 2025-06-30 to 2026-04-23 | 25, 2026-05-07 to 2026-10-28 |
 | Forecasts per model | 2,352 (8 tickers x 42 x 7 days ahead) | 1,400 |
 | Snapshot | `eval_snapshots/2026-11-06`, digest `f0c3957b`, data to 2026-11-06 | the same |
 
-P4 reran every model and both ensembles at `main` on 2026-11-09 (16 minutes, 3
-workers). All 22,848 cells, warmup origins included, equal run E6's exactly, every
-column but timing, so the Phase 3 results describe the code on `main`. The test dates
-were not scored a fourth time. T3 is taken to describe `main`'s forecasts on them, on
-two grounds: the commits since T3 change no forecast by their content (section 16; the
-lock upgrade of PR #14 moved no numeric or model library), and on the validation dates
-`main` reproduces the Phase 3 final exactly. The test dates themselves were not rerun
-at `main`.
+Republished on 2026-11-09 after D18 (news from RSS only, section 4). The first Phase 4
+figures came from P4 (`a3c0c4e`, whose cells equal Phase 3's final run E6 exactly) and
+T3 (`7beb3ff`), and both counted NewsAPI's articles as well as RSS's.
 
-Both runs counted NewsAPI's articles as well as RSS's. From 2026-11-09 the features
-count RSS articles only (D18, section 4), so the live boosters, and the ensembles that
-combine them, no longer match P4 and T3 exactly. On the validation dates news reaches
-only the last two origins (16 of 336 rows), so P4 barely depends on it; on the test
-dates every origin has news, and T3 stays as recorded: rerunning it would be a fourth
-scoring of the test dates (D13).
+P4b reran every model and both ensembles at `main` (14 minutes, 3 workers). Against P4,
+cell by cell over all 22,848 cells, warmup origins included: naive, drift, ARIMA,
+Prophet and LightGBM are unchanged; XGBoost differs in 33 cells and each ensemble in 26,
+all at the last validation origin, 2026-04-23 (news reaches only the last two validation
+origins). At the precision shown one figure moved: NVDA's XGBoost MAPE, 3.51% to 3.52%.
+
+T4 scored the test dates a fourth time on the same commit (12 minutes), for reporting
+only, so the published test-date figures describe the boosters as they now run; no
+decision rests on it (ledger entry 4, D20). Against T3: naive, drift, ARIMA and Prophet
+are unchanged cell for cell; XGBoost, LightGBM and both ensembles moved at nearly every
+test origin, each by under 0.04 points of pooled MAPE (XGBoost 3.538% to 3.536%,
+LightGBM 3.557% to 3.521%, the live ensemble 3.711% to 3.679%, the rolling one 3.285% to
+3.309%), and none passes the primary test against naive, as before.
 
 `evaluate publish` (below) turns the two runs into what is shown:
 `src/quantflow/dashboard/published_accuracy.csv`, the dashboard's accuracy table (per
@@ -1258,7 +1263,7 @@ snapshot and published again.
 
 ### By days ahead
 
-MAPE %, validation dates (P4):
+MAPE %, validation dates (P4b):
 
 | Model | 1 day | 2 days | 3 days | 4 days | 5 days | 6 days | 7 days |
 |---|---|---|---|---|---|---|---|
@@ -1271,17 +1276,17 @@ MAPE %, validation dates (P4):
 | Ensemble (rolling) | 2.16 | 2.97 | 3.20 | 3.33 | 3.56 | 3.99 | 4.46 |
 | Prophet | 4.87 | 5.32 | 5.35 | 5.36 | 5.52 | 5.85 | 6.33 |
 
-MAPE %, test dates (T3):
+MAPE %, test dates (T4):
 
 | Model | 1 day | 2 days | 3 days | 4 days | 5 days | 6 days | 7 days |
 |---|---|---|---|---|---|---|---|
 | No change | 1.70 | 2.42 | 3.06 | 3.21 | 3.55 | 3.78 | 4.31 |
 | ARIMA | 1.71 | 2.40 | 3.08 | 3.25 | 3.58 | 3.81 | 4.32 |
 | Drift | 1.71 | 2.42 | 3.10 | 3.24 | 3.59 | 3.88 | 4.38 |
-| XGBoost | 2.03 | 2.96 | 3.54 | 3.67 | 3.94 | 4.06 | 4.56 |
-| LightGBM | 2.06 | 3.07 | 3.53 | 3.65 | 3.95 | 4.04 | 4.60 |
-| Ensemble (live) | 2.19 | 3.07 | 3.66 | 3.75 | 4.11 | 4.33 | 4.86 |
-| Ensemble (rolling) | 1.90 | 2.58 | 3.28 | 3.37 | 3.67 | 3.89 | 4.31 |
+| XGBoost | 2.03 | 3.00 | 3.57 | 3.65 | 3.94 | 4.04 | 4.52 |
+| LightGBM | 2.03 | 3.01 | 3.49 | 3.59 | 3.93 | 4.02 | 4.58 |
+| Ensemble (live) | 2.16 | 3.01 | 3.64 | 3.70 | 4.10 | 4.30 | 4.84 |
+| Ensemble (rolling) | 1.91 | 2.65 | 3.31 | 3.37 | 3.67 | 3.90 | 4.35 |
 | Prophet | 5.25 | 5.70 | 6.48 | 6.53 | 6.95 | 7.41 | 7.71 |
 
 Error grows with every day ahead ("no change" from 1.38% at 1 day to 4.16% at 7 on the
@@ -1293,7 +1298,7 @@ Per-horizon figures are descriptive: the primary test (section 3) pools the hori
 
 ### By ticker
 
-MAPE %, the lowest in bold, validation dates (P4):
+MAPE %, the lowest in bold, validation dates (P4b):
 
 | Ticker | No change | ARIMA | Drift | XGBoost | LightGBM | Ensemble (live) | Ensemble (rolling) | Prophet |
 |---|---|---|---|---|---|---|---|---|
@@ -1303,25 +1308,25 @@ MAPE %, the lowest in bold, validation dates (P4):
 | JPM | **1.94** | 1.94 | 1.96 | 2.13 | 2.38 | 2.45 | 2.24 | 3.26 |
 | META | 3.35 | **3.34** | 3.44 | 3.74 | 3.82 | 3.85 | 4.26 | 6.49 |
 | MSFT | **2.20** | 2.23 | 2.21 | 2.24 | 2.46 | 2.57 | 2.67 | 4.34 |
-| NVDA | 3.24 | **3.17** | 3.29 | 3.51 | 3.91 | 3.87 | 3.55 | 5.25 |
+| NVDA | 3.24 | **3.17** | 3.29 | 3.52 | 3.91 | 3.87 | 3.55 | 5.25 |
 | TSLA | 4.28 | 4.21 | 4.57 | 4.23 | **4.20** | 4.34 | 4.73 | 9.05 |
 
-MAPE %, test dates (T3):
+MAPE %, test dates (T4):
 
 | Ticker | No change | ARIMA | Drift | XGBoost | LightGBM | Ensemble (live) | Ensemble (rolling) | Prophet |
 |---|---|---|---|---|---|---|---|---|
-| AAPL | 2.54 | 2.58 | **2.43** | 3.62 | 3.45 | 3.81 | 2.71 | 3.61 |
-| AMZN | 2.75 | 2.75 | 2.81 | 3.08 | 3.01 | 3.16 | **2.74** | 6.10 |
-| GOOGL | **3.39** | 3.43 | 3.59 | 3.57 | 3.96 | 3.93 | 3.69 | 5.99 |
-| JPM | **1.33** | 1.33 | 1.34 | 1.96 | 1.99 | 2.12 | 1.36 | 3.16 |
-| META | **3.97** | 4.01 | 4.01 | 4.43 | 4.52 | 4.40 | 4.40 | 8.82 |
-| MSFT | 3.02 | 3.05 | 3.02 | 3.24 | **2.94** | 3.11 | 3.10 | 8.74 |
-| NVDA | 3.84 | **3.84** | 3.90 | 3.97 | 4.09 | 4.56 | 3.88 | 7.36 |
-| TSLA | 4.35 | **4.34** | 4.40 | 4.43 | 4.48 | 4.59 | 4.41 | 8.82 |
+| AAPL | 2.54 | 2.58 | **2.43** | 3.63 | 3.50 | 3.86 | 2.78 | 3.61 |
+| AMZN | **2.75** | 2.75 | 2.81 | 3.06 | 2.83 | 3.02 | 2.82 | 6.10 |
+| GOOGL | **3.39** | 3.43 | 3.59 | 3.53 | 3.92 | 3.88 | 3.69 | 5.99 |
+| JPM | **1.33** | 1.33 | 1.34 | 2.00 | 2.08 | 2.15 | 1.35 | 3.16 |
+| META | **3.97** | 4.01 | 4.01 | 4.49 | 4.35 | 4.29 | 4.31 | 8.82 |
+| MSFT | **3.02** | 3.05 | 3.02 | 3.22 | 3.07 | 3.20 | 3.22 | 8.74 |
+| NVDA | 3.84 | **3.84** | 3.90 | 3.97 | 3.96 | 4.48 | 3.84 | 7.36 |
+| TSLA | 4.35 | **4.34** | 4.40 | 4.40 | 4.46 | 4.54 | 4.47 | 8.82 |
 
 Tickers on which a model's skill against "no change" is positive, validation / test:
-ARIMA 4 / 1, drift 2 / 1, XGBoost 1 / 0, LightGBM 1 / 1, the live ensemble 0 / 0, the
-rolling ensemble 0 / 1, Prophet 0 / 0. A lowest figure on one ticker is not a win:
+ARIMA 4 / 1, drift 2 / 1, XGBoost 1 / 0, LightGBM 1 / 0, the live ensemble 0 / 0, the
+rolling ensemble 0 / 0, Prophet 0 / 0. A lowest figure on one ticker is not a win:
 "beats naive" rests only on the primary test, which no model passes on either set of
 dates.
 
@@ -1343,7 +1348,7 @@ The dashboard's "Ensemble" is `ensemble_stack`:
   noted at Checkpoint 3; any change is an experiment for fresh data.
 - **Band.** Each bound is the base models' bounds weighted like the forecast
   (`combine_forecasts`). Naive has no band, so its bounds are its forecast, which
-  narrows the ensemble's band (E6): validation coverage 56.6%, test 48.6%.
+  narrows the ensemble's band (E6): validation coverage 56.6%, test 49.1%.
 - **The rolling weights** (`ensemble_rolling`, section 5) are fitted out of fold on
   earlier origins' 7-day forecasts. They are evaluated, never shown: D2 kept the live
   weights on the validation dates (3.381% against 3.389%), and D17's forward test
@@ -1370,24 +1375,24 @@ Every command runs from the repo root with `uv run`; outputs land in
    uv run python -m quantflow.pipelines.evaluate coverage --snapshot eval_snapshots/2026-11-06
    ```
 
-3. The validation dates, every model and both ensembles, about 16 minutes with 3
-   workers on an 8 GB laptop:
+3. The validation dates, every model and both ensembles, about 14 to 16 minutes with
+   3 workers on an 8 GB laptop:
 
    ```bash
-   uv run python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06 --label P4 --workers 3
+   uv run python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06 --label P4b --workers 3
    ```
 
 4. The test dates, counted in the ledger (section 2) and refused on uncommitted
-   changes, about 11 minutes:
+   changes, about 11 to 12 minutes:
 
    ```bash
-   uv run python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06 --window test --reason "..." --label T3 --workers 3
+   uv run python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06 --window test --reason "..." --label T4 --workers 3
    ```
 
 5. The dashboard's table and the README's chart, from the two runs:
 
    ```bash
-   uv run python -m quantflow.pipelines.evaluate publish --validation eval_runs/P4 --test eval_runs/T3
+   uv run python -m quantflow.pipelines.evaluate publish --validation eval_runs/P4b --test eval_runs/T4
    ```
 
    It refuses runs that differ in snapshot, tickers or models, or ran on uncommitted
