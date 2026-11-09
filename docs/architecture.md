@@ -267,7 +267,7 @@ pages on 2026-11-09.
 Measured with `scripts/diagnostics/free_tier_usage.sql`, one read-only transaction
 through the diagnostics runner (`run_1a_diagnostics.py --sql ... --live`):
 
-| | Size | Rows |
+| | Size | Rows (Postgres's estimate) |
 |---|---|---|
 | Whole database (Supabase's own schemas included) | 51 MB of 500 MB | |
 | `news_sentiment` | 19 MB | 38,466 |
@@ -300,25 +300,33 @@ server sent (wire bytes before TLS, which adds under 1%):
 | **One daily run** | **about 33 MB** |
 
 That is about 0.7 GB a month at 22 runs. Nearly all of it is price reads: every stage
-reads each ticker's whole `raw_prices` history, which grows by about 546 rows a ticker
-a month, so the monthly figure grows with it, to about 1.5 GB by September 2027 (the
-news forward test's end). A cold render of the dashboard for one ticker read 0.33 MB;
-every loader is cached for 5 minutes, so repeat views inside that window read nothing.
-The fetch and sentiment steps, backups (one `pg_dump`, about the database's size) and the
-laptop scheduler (unused) add little. Supabase's usage page holds the measured monthly
-total; the owner checks it there.
+reads each ticker's whole `raw_prices` history, which grows by about 570 rows a ticker
+a month (a daily bar and 26 15-minute bars a trading day), so the monthly figure grows
+with it, to about 1.6 GB by September 2027 (the
+news forward test's end). The fetch and sentiment steps, backups (one `pg_dump`, about
+the database's size) and the laptop scheduler (unused) add little. Supabase's usage
+page holds the measured monthly total; the owner checks it there.
 
-**Caching (decision E) stays in Phase 6.** The dashboard is not where the egress goes:
-at 0.33 MB a cold render, a hundred cold renders a day would still be about 1 GB a
-month. The daily run's whole-history price reads are the larger line and the one
-the trending tier would multiply, so the Phase 5 design states the reads it adds.
+**The dashboard.** A first render for one ticker read 0.33 MB (329,727 bytes) and a
+repeat render a minute later 0.31 MB (306,574 bytes): the other loaders cache for 5
+minutes, but the price loader, the largest read, is not cached (decision E), so every
+rerun reads the ticker's prices again: a visit, a ticker or lookback change. The public
+"Refresh Data" button also clears the cache for every visitor. Beside the daily run's
+0.7 to 1.6 GB a month, the free 5 GB leaves room for about 11,000 to 14,000 reruns a
+month, a few hundred a day, which a burst of traffic could use up.
+
+**Caching (decision E), Phase 4's recommendation: move it earlier.** Caching the price
+loader like the others (one decorator) would make repeat views inside 5 minutes read
+nothing, and the Refresh button could go, since the data changes once a day. The
+daily run's whole-history price reads are the other line, and the one the trending
+tier would multiply, so the Phase 5 design states the reads it adds.
 
 ---
 
 ## Known problems
 
 Ordered by how much they would change the reported results. Updated 2026-11-09
-(Phase 4): items 1, 2 and 6 are fixed, 8 to 12 are new.
+(Phase 4): items 1, 2 and 6 are fixed, 8 to 13 are new.
 
 ### 1. The base-model comparison was not like-for-like (fixed in Phase 2)
 
@@ -345,7 +353,8 @@ again (item 10).
 17 trades across eight tickers over a 20-day out-of-fold window (a local run on the
 2026-11-06 data, 2026-11-09). Annualised
 return, Sharpe and alpha are computed and stored, and are meaningless at this sample
-size: scaling a 20-day window by 252/20 turns a -0.24% move into an alpha of -1485%. The
+size: scaling a 20-day window by 252/20 blows small moves up into extreme figures (in the
+data of 2026-08-04, a -0.24% return became an alpha of -1485%). The
 README no longer reports backtest figures; the dashboard shows them, labelled as a
 demonstration of the harness, not an edge.
 
@@ -377,8 +386,9 @@ The live `anomalies` table held many copies of each `(ticker, ts)` flag because
 `UNIQUE (ticker, ts)` was added to `schema.sql` after the table already existed, and
 `CREATE TABLE IF NOT EXISTS` cannot retrofit a constraint, so the `ON CONFLICT DO
 NOTHING` in `save_anomalies` had nothing to detect. The write path now replaces each
-ticker's flags inside a transaction, which is correct regardless of constraint state;
-on 2026-11-09 the table held 765 rows, one per flag. `sql/migrations/001_dedupe_anomalies.sql`,
+ticker's flags inside a transaction, which is correct regardless of constraint state,
+so each run leaves one copy of each of its flags (about 765 rows on 2026-11-09).
+`sql/migrations/001_dedupe_anomalies.sql`,
 which adds the constraint, has not been run against the live database. The replace
 leaves dead rows behind: 6.1 MB on disk for those 765 rows (see "Running on free
 tiers"). Fresh installs are unaffected.
@@ -421,9 +431,21 @@ of 2026-11-09 the models step took 110 s and the backtest 39 s, against 30 s and
 `load_daily_bars` reads every `raw_prices` row of a ticker, 15-minute bars included,
 and keeps one row per date; the indicators, anomalies, split guard, models and backtest
 each call it. That is most of the daily run's database egress (about 33 MB a run, see
-"Running on free tiers"), and it grows with the 15-minute bars, about 546 rows a ticker a
+"Running on free tiers"), and it grows with the stored bars, about 570 rows a ticker a
 month. Reading only the window a stage needs, or the daily bars only where they exist,
 would cut it.
+
+### 13. A push may not reach the live dashboard
+
+Streamlit Cloud installs `quantflow` from `requirements.txt`, whose `.` line makes an
+ordinary (not editable) install, and `dashboard.py` runs that installed copy. By
+Streamlit's documentation, the app copies committed files but needs a reboot for a fresh
+build after a change to a file it does not monitor; the installed package is such a
+case. So a change to the package, the dashboard's code or its published accuracy table,
+reaches the live app when `requirements.txt` also changes (which rebuilds the
+environment) or after a reboot from the app's workspace. Not verified on the live app
+yet. Fixes for the owner to weigh: an editable install (`-e .`), or `dashboard.py`
+putting the checkout's `src/` first on the import path.
 
 ---
 

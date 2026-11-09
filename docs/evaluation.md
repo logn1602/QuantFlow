@@ -1180,8 +1180,11 @@ the README leaves out, and how to reproduce them.
 P4 reran every model and both ensembles at `main` on 2026-11-09 (16 minutes, 3
 workers). All 22,848 cells, warmup origins included, equal run E6's exactly, every
 column but timing, so the Phase 3 results describe the code on `main`. The test dates
-were not scored a fourth time: every commit since T3 changes no forecast (section 16,
-and P4's equality with E6), so T3 describes `main`'s forecasts on them.
+were not scored a fourth time. T3 is taken to describe `main`'s forecasts on them, on
+two grounds: the commits since T3 change no forecast by their content (section 16; the
+lock upgrade of PR #14 moved no numeric or model library), and on the validation dates
+`main` reproduces the Phase 3 final exactly. The test dates themselves were not rerun
+at `main`.
 
 `evaluate publish` (below) turns the two runs into what is shown:
 `src/quantflow/dashboard/published_accuracy.csv`, the dashboard's accuracy table (per
@@ -1223,7 +1226,8 @@ MAPE %, test dates (T3):
 Error grows with every day ahead ("no change" from 1.38% at 1 day to 4.16% at 7 on the
 validation dates). ARIMA and drift stay within about 0.1 point of "no change" at every
 horizon, ARIMA a hundredth below it at some; on the validation dates the boosted trees
-and the ensembles are furthest behind it 1 day ahead and close part of the gap by day 7.
+and the ensembles trail it most over the first three days and close part of the gap by
+day 7.
 Per-horizon figures are descriptive: the primary test (section 3) pools the horizons.
 
 ### By ticker
@@ -1322,6 +1326,12 @@ Every command runs from the repo root with `uv run`; outputs land in
    ```bash
    uv run python -m quantflow.pipelines.evaluate publish --validation eval_runs/P4 --test eval_runs/T3
    ```
+
+   It refuses runs that differ in snapshot, tickers or models, or ran on uncommitted
+   code. Streamlit Cloud installs the package from `requirements.txt` and, by its
+   documentation, needs a reboot for a fresh build after a change to a file it does not
+   monitor: after committing a new table, reboot the app from its workspace unless
+   `requirements.txt` changed too (docs/architecture.md, Known problem 13).
 
 6. Phase 3's keep-or-drop rule between two runs, for example:
 

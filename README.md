@@ -80,7 +80,7 @@ Data flows one way. `quantflow.models` depends on `quantflow.evaluation`, never 
 
 ## Evaluation
 
-The question: does any model forecast what the dashboard publishes, the closing price 1 to 7 trading days ahead, better than **"no change"**, the forecast that every future close equals today's? On these dates, **no**. ARIMA and drift tie it; the boosted trees, both ensembles and Prophet are measurably worse. Daily prices are close to a random walk, so this is a common result, reported as measured.
+The question: does any model forecast what the dashboard publishes, the closing price 1 to 7 trading days ahead, better than **"no change"**, the forecast that every future close equals today's? On these dates, **no**. ARIMA and drift cannot be told apart from it; the boosted trees, both ensembles and Prophet are measurably worse. Daily prices are close to a random walk, so this is a common result, reported as measured.
 
 Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4 (commit `a3c0c4e`, MLflow `30a6be1e`, 2026-11-09), test-date figures from run T3 (commit `7beb3ff`, MLflow `93bdf518`, 2026-11-08). Where each number comes from: [docs/evaluation.md, section 17](docs/evaluation.md#17-phase-4-the-published-results-2026-11-09).
 
@@ -104,7 +104,7 @@ Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4 
 | Ensemble, rolling weights (evaluation only) | 3.38% | 3.29% | -0.170 | -0.041 | no, worse (under 0.001 / 0.04) |
 | Prophet | 5.51% | 6.58% | -0.906 | -1.096 | no, worse (under 0.001 on both) |
 
-ARIMA and drift cannot be told apart from "no change"; every other model is worse by the test on both sets of dates. Some models come out ahead on a ticker or two (ARIMA on 4 of 8 on the validation dates), but none overall.
+ARIMA and drift cannot be told apart from "no change"; every other model is worse by the test on both sets of dates. Some models come out ahead on individual tickers (ARIMA on 4 of 8 on the validation dates), but none overall.
 
 ![MAPE by days ahead: each model in its own panel against "no change", validation dates solid and test dates dashed](docs/images/mape_by_days_ahead.png)
 
@@ -114,7 +114,7 @@ Error grows with every day ahead ("no change" goes from 1.38% at 1 day to 4.16% 
 
 The shaded bands on the dashboard are not a promised range. On the same forecasts, the share of actual closes that fell inside each:
 
-| Model | How the band is built | Validation | Test | Median width |
+| Model | How the band is built | Validation | Test | Median width (validation) |
 |---|---|---|---|---|
 | ARIMA | statsmodels' 95% interval | 92% | 90% | 12.5% of the forecast |
 | Prophet | Prophet's 95% interval (seeded) | 74% | 62% | 12.8% |
@@ -133,7 +133,7 @@ The boosted trees can use FinBERT sentiment from news headlines. Whether that he
 
 - **Phase 2 (2026-11-08)** built this evaluation: the rolling start dates, "no change" and drift as baselines, news dated by when it became available, missing news kept missing rather than read as neutral, and point-in-time anomaly scores in the live training rows.
 - **Phase 3 (2026-11-08)** ran six experiments on the validation dates and kept two: tuned XGBoost settings, and "no change" as a fifth input to the ensembles. Dropped: predicting returns instead of prices, rolling open, high and low forward, tuned LightGBM settings, choosing ARIMA's order by AIC, and per-horizon ensemble weights. No alternative band passed its rule.
-- **The test dates have been scored three times**: twice in Phase 2 (T1, T2) and once in Phase 3 (T3), each entered in a [ledger](docs/evaluation.md#the-rule-for-the-test-dates). These figures reuse T3; no forecast has changed since.
+- **The test dates have been scored three times**: twice in Phase 2 (T1, T2) and once in Phase 3 (T3), each entered in a [ledger](docs/evaluation.md#the-rule-for-the-test-dates). These figures reuse T3 rather than score the test dates a fourth time: every change since leaves the forecasts as they were, and on the validation dates `main` reproduces the Phase 3 final exactly.
 - **Kept although worse on the test dates**, because decisions rest on the validation dates only:
   - the live ensemble's weights, kept over the rolling weights on the validation dates (3.381% against 3.389% when decided), while on the test dates the rolling weights score 3.29% and the live ones 3.71%;
   - XGBoost's tuned settings: test MAPE from 3.44% to 3.54% between T2 and T3, a change that also includes Phase 3's two fixes to XGBoost;
