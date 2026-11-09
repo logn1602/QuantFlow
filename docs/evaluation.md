@@ -1103,13 +1103,18 @@ Nothing beats naive. Phase 3 narrowed XGBoost's gap to naive by about a fifth (0
 0.263 points of mean APE difference); every other model is within 0.01 points of where
 Phase 2 left it.
 
-**Open, for the owner** (no rule here decides them):
+**Decided by the owner at Checkpoint 3 (2026-11-08)**, on the two questions the band
+rule left open:
 
-- The band rule says that if neither candidate passes, the boosters' bands stop being
-  presented as 95% bands (the dashboard and README never label them so) and the
-  ensemble stops combining them as if they were. How the ensemble's band is then built
-  is a design choice not made here.
-- Naive's zero-width band in the ensembles (E6) narrows their bands, as above.
+- The bands stay as they are: the boosters' plus or minus 2%, and the ensembles
+  combining their base models' bounds, naive's at zero width. Instead of implying a
+  level, every band on the dashboard and in the README is labelled with its measured
+  coverage on the validation and test dates (done in Phase 4, section 17).
+- Naive's zero-width band narrows the ensembles' bands (E6, as above). Giving naive a
+  random-walk band instead (the latest close times exp(plus or minus 1.96 sigma
+  sqrt(h)), sigma from the last 60 daily log returns, what `boosting.random_walk_band`
+  computes) is a later candidate, decided on fresh data with its rule written before
+  scoring.
 
 **Deviations from the plan**, all decided before any affected number was seen:
 
@@ -1153,3 +1158,176 @@ the trading day after the latest close (it raises only when they do not), a chec
 the booster adapter's forecast starts at the origin, and tests. A check run at `60ecf03`
 (naive and both boosters, AAPL and MSFT, 1,764 validation cells) equals run E6 exactly,
 so T3 still describes the final code's forecasts.
+
+---
+
+## 17. Phase 4: the published results (2026-11-09)
+
+What the README and the dashboard publish, where each number comes from, the tables
+the README leaves out, and how to reproduce them.
+
+### Where the published numbers come from
+
+| | Validation dates | Test dates |
+|---|---|---|
+| Run | `P4` | `T3` (ledger entry 3) |
+| Commit | `a3c0c4e` (`main` after PR #16) | `7beb3ff` (Phase 3) |
+| MLflow run | `30a6be1e` | `93bdf518` |
+| Start dates | 42, every 5 trading days, 2025-06-30 to 2026-04-23 | 25, 2026-05-07 to 2026-10-28 |
+| Forecasts per model | 2,352 (8 tickers x 42 x 7 days ahead) | 1,400 |
+| Snapshot | `eval_snapshots/2026-11-06`, digest `f0c3957b`, data to 2026-11-06 | the same |
+
+P4 reran every model and both ensembles at `main` on 2026-11-09 (16 minutes, 3
+workers). All 22,848 cells, warmup origins included, equal run E6's exactly, every
+column but timing, so the Phase 3 results describe the code on `main`. The test dates
+were not scored a fourth time: every commit since T3 changes no forecast (section 16,
+and P4's equality with E6), so T3 describes `main`'s forecasts on them.
+
+`evaluate publish` (below) turns the two runs into what is shown:
+`src/quantflow/dashboard/published_accuracy.csv`, the dashboard's accuracy table (per
+window, ticker and model: MAPE, skill against naive, band coverage, the primary test,
+and the run each row came from), and `docs/images/mape_by_days_ahead.png`, the
+README's chart. The dashboard cannot measure this itself: the daily run fits each
+model once and deletes the previous run's forecasts, so it keeps no forecast history
+to score. The published figures change only when the evaluation is rerun on a new
+snapshot and published again.
+
+### By days ahead
+
+MAPE %, validation dates (P4):
+
+| Model | 1 day | 2 days | 3 days | 4 days | 5 days | 6 days | 7 days |
+|---|---|---|---|---|---|---|---|
+| No change | 1.38 | 2.29 | 2.56 | 2.88 | 3.21 | 3.67 | 4.16 |
+| ARIMA | 1.40 | 2.32 | 2.59 | 2.89 | 3.20 | 3.66 | 4.15 |
+| Drift | 1.40 | 2.32 | 2.58 | 2.92 | 3.24 | 3.77 | 4.28 |
+| XGBoost | 1.72 | 2.67 | 2.95 | 3.14 | 3.41 | 3.83 | 4.28 |
+| LightGBM | 1.95 | 2.89 | 3.18 | 3.42 | 3.62 | 3.99 | 4.37 |
+| Ensemble (live) | 1.97 | 2.84 | 3.14 | 3.37 | 3.68 | 4.12 | 4.48 |
+| Ensemble (rolling) | 2.16 | 2.97 | 3.20 | 3.33 | 3.56 | 3.99 | 4.46 |
+| Prophet | 4.87 | 5.32 | 5.35 | 5.36 | 5.52 | 5.85 | 6.33 |
+
+MAPE %, test dates (T3):
+
+| Model | 1 day | 2 days | 3 days | 4 days | 5 days | 6 days | 7 days |
+|---|---|---|---|---|---|---|---|
+| No change | 1.70 | 2.42 | 3.06 | 3.21 | 3.55 | 3.78 | 4.31 |
+| ARIMA | 1.71 | 2.40 | 3.08 | 3.25 | 3.58 | 3.81 | 4.32 |
+| Drift | 1.71 | 2.42 | 3.10 | 3.24 | 3.59 | 3.88 | 4.38 |
+| XGBoost | 2.03 | 2.96 | 3.54 | 3.67 | 3.94 | 4.06 | 4.56 |
+| LightGBM | 2.06 | 3.07 | 3.53 | 3.65 | 3.95 | 4.04 | 4.60 |
+| Ensemble (live) | 2.19 | 3.07 | 3.66 | 3.75 | 4.11 | 4.33 | 4.86 |
+| Ensemble (rolling) | 1.90 | 2.58 | 3.28 | 3.37 | 3.67 | 3.89 | 4.31 |
+| Prophet | 5.25 | 5.70 | 6.48 | 6.53 | 6.95 | 7.41 | 7.71 |
+
+Error grows with every day ahead ("no change" from 1.38% at 1 day to 4.16% at 7 on the
+validation dates). ARIMA and drift stay within about 0.1 point of "no change" at every
+horizon, ARIMA a hundredth below it at some; on the validation dates the boosted trees
+and the ensembles are furthest behind it 1 day ahead and close part of the gap by day 7.
+Per-horizon figures are descriptive: the primary test (section 3) pools the horizons.
+
+### By ticker
+
+MAPE %, the lowest in bold, validation dates (P4):
+
+| Ticker | No change | ARIMA | Drift | XGBoost | LightGBM | Ensemble (live) | Ensemble (rolling) | Prophet |
+|---|---|---|---|---|---|---|---|---|
+| AAPL | **2.33** | 2.39 | 2.34 | 2.63 | 2.82 | 2.68 | 3.05 | 4.62 |
+| AMZN | 2.98 | 2.98 | **2.96** | 3.23 | 3.17 | 3.31 | 3.44 | 5.22 |
+| GOOGL | 2.71 | 2.81 | **2.65** | 3.43 | 4.02 | 3.90 | 3.13 | 5.89 |
+| JPM | **1.94** | 1.94 | 1.96 | 2.13 | 2.38 | 2.45 | 2.24 | 3.26 |
+| META | 3.35 | **3.34** | 3.44 | 3.74 | 3.82 | 3.85 | 4.26 | 6.49 |
+| MSFT | **2.20** | 2.23 | 2.21 | 2.24 | 2.46 | 2.57 | 2.67 | 4.34 |
+| NVDA | 3.24 | **3.17** | 3.29 | 3.51 | 3.91 | 3.87 | 3.55 | 5.25 |
+| TSLA | 4.28 | 4.21 | 4.57 | 4.23 | **4.20** | 4.34 | 4.73 | 9.05 |
+
+MAPE %, test dates (T3):
+
+| Ticker | No change | ARIMA | Drift | XGBoost | LightGBM | Ensemble (live) | Ensemble (rolling) | Prophet |
+|---|---|---|---|---|---|---|---|---|
+| AAPL | 2.54 | 2.58 | **2.43** | 3.62 | 3.45 | 3.81 | 2.71 | 3.61 |
+| AMZN | 2.75 | 2.75 | 2.81 | 3.08 | 3.01 | 3.16 | **2.74** | 6.10 |
+| GOOGL | **3.39** | 3.43 | 3.59 | 3.57 | 3.96 | 3.93 | 3.69 | 5.99 |
+| JPM | **1.33** | 1.33 | 1.34 | 1.96 | 1.99 | 2.12 | 1.36 | 3.16 |
+| META | **3.97** | 4.01 | 4.01 | 4.43 | 4.52 | 4.40 | 4.40 | 8.82 |
+| MSFT | 3.02 | 3.05 | 3.02 | 3.24 | **2.94** | 3.11 | 3.10 | 8.74 |
+| NVDA | 3.84 | **3.84** | 3.90 | 3.97 | 4.09 | 4.56 | 3.88 | 7.36 |
+| TSLA | 4.35 | **4.34** | 4.40 | 4.43 | 4.48 | 4.59 | 4.41 | 8.82 |
+
+Tickers on which a model's skill against "no change" is positive, validation / test:
+ARIMA 4 / 1, drift 2 / 1, XGBoost 1 / 0, LightGBM 1 / 1, the live ensemble 0 / 0, the
+rolling ensemble 0 / 1, Prophet 0 / 0. A lowest figure on one ticker is not a win:
+"beats naive" rests only on the primary test, which no model passes on either set of
+dates.
+
+### The live ensemble
+
+The dashboard's "Ensemble" is `ensemble_stack`:
+
+- **Weights.** Non-negative least squares, normalised to sum to 1, over ARIMA, Prophet,
+  XGBoost, LightGBM and naive, refitted every run on a 30-day stack: the base models are
+  fitted on everything but the last 30 trading days and predict those days
+  (`models/ensemble.py`, `build_holdout_stack`). The evaluation builds the same stack at
+  every origin.
+- **The stack's columns are not the task the weights are used for.** In it, ARIMA
+  forecasts all 30 days from the end of the training split, Prophet predicts the 30
+  dates, XGBoost and LightGBM predict each day one step ahead from its true previous
+  day, and naive's column is the last training close, one constant over the 30 days.
+  Live, every column is a forecast 1 to 7 days ahead. The rolling weights (below) were
+  built to fix this; D2 kept the live weights on the validation dates. Naive's column was
+  noted at Checkpoint 3; any change is an experiment for fresh data.
+- **Band.** Each bound is the base models' bounds weighted like the forecast
+  (`combine_forecasts`). Naive has no band, so its bounds are its forecast, which
+  narrows the ensemble's band (E6): validation coverage 56.6%, test 48.6%.
+- **The rolling weights** (`ensemble_rolling`, section 5) are fitted out of fold on
+  earlier origins' 7-day forecasts. They are evaluated, never shown: D2 kept the live
+  weights on the validation dates (3.381% against 3.389%), and D17's forward test
+  compares the two again on fresh data.
+
+### Reproducing the figures
+
+Every command runs from the repo root with `uv run`; outputs land in
+`eval_runs/<label>/` and the MLflow experiment `rolling_origin_evaluation` in
+`mlflow.db`, both git-ignored.
+
+1. The snapshot, read once from the database, read-only (section 6). The 2026-11-06
+   snapshot is git-ignored and backed up outside the repo; its digest identifies it:
+
+   ```bash
+   uv run python -m quantflow.pipelines.evaluate export --as-of 2026-11-06 --live
+   ```
+
+2. News coverage per window (D15):
+
+   ```bash
+   uv run python -m quantflow.pipelines.evaluate coverage --snapshot eval_snapshots/2026-11-06
+   ```
+
+3. The validation dates, every model and both ensembles, about 16 minutes with 3
+   workers on an 8 GB laptop:
+
+   ```bash
+   uv run python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06 --label P4 --workers 3
+   ```
+
+4. The test dates, counted in the ledger (section 2) and refused on uncommitted
+   changes, about 11 minutes:
+
+   ```bash
+   uv run python -m quantflow.pipelines.evaluate run --snapshot eval_snapshots/2026-11-06 --window test --reason "..." --label T3 --workers 3
+   ```
+
+5. The dashboard's table and the README's chart, from the two runs:
+
+   ```bash
+   uv run python -m quantflow.pipelines.evaluate publish --validation eval_runs/P4 --test eval_runs/T3
+   ```
+
+6. Phase 3's keep-or-drop rule between two runs, for example:
+
+   ```bash
+   uv run python -m quantflow.pipelines.evaluate compare --incumbent eval_runs/B0 --candidate eval_runs/E3 --models xgboost
+   ```
+
+The scoring contract (out-of-fold scoring, like-for-like windows, no number from
+degenerate input) is asserted on synthetic data with `make eval`, without a database.
