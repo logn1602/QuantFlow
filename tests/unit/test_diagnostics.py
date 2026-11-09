@@ -50,12 +50,18 @@ def test_the_sql_is_four_queries_that_only_read(diagnostics, sql_file):
         assert ";" not in code.rstrip(";"), f"{name}: more than one statement"
 
 
+def _read_only_role(monkeypatch, diagnostics):
+    monkeypatch.setattr(diagnostics.config, "DB_READONLY_USER", "quantflow_readonly.x")
+    monkeypatch.setattr(diagnostics.config, "DB_READONLY_PASSWORD", "ro-pw")
+
+
 def test_sql_picks_the_query_file_and_a_remote_database_still_needs_live(
     diagnostics, monkeypatch, tmp_path
 ):
     ran = []
     monkeypatch.setattr(diagnostics, "run", lambda out, sql_file: ran.append(sql_file))
     monkeypatch.setattr(diagnostics.config, "DB_HOST", "db.example.supabase.co")
+    _read_only_role(monkeypatch, diagnostics)
     out = str(tmp_path / "usage.md")
     assert diagnostics.main(["--sql", str(FREE_TIER_SQL), "--out", out]) == 2
     assert ran == []
@@ -153,6 +159,25 @@ def test_a_query_file_with_no_queries_is_refused_before_connecting(
     assert not out.exists()
 
 
+@pytest.mark.parametrize("user, password", [("", ""), ("quantflow_readonly.x", "")])
+def test_live_is_refused_without_the_read_only_role(
+    diagnostics, monkeypatch, tmp_path, capsys, user, password
+):
+    """--live logs in as the SELECT-only role (sql/schema_roles.sql), never
+    with the pipeline's credentials, and refuses before connecting without
+    it: the query check is a scan, the role is the guarantee."""
+    ran = []
+    monkeypatch.setattr(diagnostics, "run", lambda out, sql_file: ran.append(sql_file))
+    monkeypatch.setattr(diagnostics.config, "DB_HOST", "db.example.supabase.co")
+    monkeypatch.setattr(diagnostics.config, "DB_READONLY_USER", user)
+    monkeypatch.setattr(diagnostics.config, "DB_READONLY_PASSWORD", password)
+    out = tmp_path / "results.md"
+
+    assert diagnostics.main(["--live", "--out", str(out)]) == 2
+    assert ran == []
+    assert "DB_READONLY_USER" in capsys.readouterr().err
+
+
 def test_a_remote_database_is_refused_without_live(diagnostics, monkeypatch, tmp_path):
     """It must stop before connecting: this suite refuses any real connection,
     so reaching get_engine would fail the run (exit 1), not refuse it (exit 2)."""
@@ -170,14 +195,17 @@ def test_an_error_is_printed_with_the_connection_settings_masked(
         "DB_USER": "postgres.abcdefgh",
         "DB_PASSWORD": "s3cret-pw",
         "DB_NAME": "quantdb",
+        "DB_READONLY_USER": "quantflow_readonly.abcdefgh",
+        "DB_READONLY_PASSWORD": "ro-s3cret",
     }
     for key, value in settings.items():
         monkeypatch.setattr(diagnostics.config, key, value)
 
     def refuse(out, sql_file):
         raise RuntimeError(
-            'password authentication failed for user "postgres.abcdefgh" '
-            "(s3cret-pw) at db.example.supabase.co/quantdb"
+            'password authentication failed for user "quantflow_readonly.abcdefgh" '
+            "(ro-s3cret) at db.example.supabase.co/quantdb, as postgres.abcdefgh "
+            "(s3cret-pw)"
         )
 
     monkeypatch.setattr(diagnostics, "run", refuse)

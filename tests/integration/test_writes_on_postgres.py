@@ -62,12 +62,19 @@ def _schema_engine(url, schema, **settings):
 
 
 @pytest.fixture
-def pg(request, install_engine, is_local_pg_url):
+def pg(request, install_engine, is_local_pg_url, monkeypatch):
     url = request.config.getoption("--pg-url")
     if not url:
         pytest.skip("needs --pg-url pointing at a disposable local Postgres")
     if not is_local_pg_url(url):
         pytest.fail("--pg-url must be a local database, never the live one")
+    # Whatever .env's DB_HOST is, code that judges the database's locality
+    # (db.readonly) sees this one: a read it took for the live database
+    # would log in as the read-only role on an engine of its own, around
+    # the test engine installed below.
+    from quantflow import config
+
+    monkeypatch.setattr(config, "DB_HOST", "127.0.0.1")
 
     schema = f"qf_test_{uuid.uuid4().hex[:8]}"
     admin = create_engine(url)

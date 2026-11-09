@@ -140,6 +140,14 @@ def test_database_url_is_assembled_from_parts(monkeypatch):
     assert cfg.DATABASE_URL == "postgresql://quant:pw@db.example.com:6543/flow"
 
 
+def test_the_read_only_role_is_read_from_the_environment(monkeypatch):
+    cfg = _reload_with(
+        monkeypatch, DB_READONLY_USER="quantflow_readonly.ref", DB_READONLY_PASSWORD="r"
+    )
+    assert cfg.DB_READONLY_USER == "quantflow_readonly.ref"
+    assert cfg.DB_READONLY_PASSWORD == "r"
+
+
 @pytest.mark.parametrize(
     "name, default", [("DB_PORT", 5432), ("FETCH_INTERVAL_MINUTES", 15)]
 )

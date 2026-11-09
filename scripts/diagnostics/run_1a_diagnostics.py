@@ -23,12 +23,13 @@ Read-only four ways:
 
 These protect the database's rows. The check is a scan, not Postgres's own
 parser, so the guarantee that does not depend on it is a database role that
-can only SELECT (sql/schema_roles.sql), which the owner would create for
---live runs.
+can only SELECT (sql/schema_roles.sql): --live runs log in as it
+(DB_READONLY_USER and DB_READONLY_PASSWORD in .env), never with the
+pipeline's credentials, and refuse to run without it (db.readonly).
 
-The connection is the project's own: quantflow.db.connection.get_engine(),
-configured from .env. Nothing here prints the URL, host, user or password, and
-an error message is printed with those values masked.
+A local database is read with the connection settings in .env. Nothing here
+prints the URL, host, user or password, and an error message is printed with
+those values masked.
 
 A non-local database is refused unless --live is given, so a trial run against
 a throwaway local cluster cannot reach the live one by mistake.
@@ -38,7 +39,8 @@ Usage, from the repo root:
     uv run python scripts/diagnostics/run_1a_diagnostics.py --live --out results.md
     uv run python scripts/diagnostics/run_1a_diagnostics.py --sql scripts/diagnostics/free_tier_usage.sql --live --out usage.md
 
-The first refuses anything but a local database; --live allows the one in .env.
+The first refuses anything but a local database; --live allows the one in .env,
+read as the read-only role.
 """
 
 import argparse
@@ -50,7 +52,12 @@ import pandas as pd
 from psycopg2 import extensions
 
 from quantflow import config  # noqa: F401  (tests patch its settings through here)
-from quantflow.db.readonly import is_local_database, masked, read_only_connection
+from quantflow.db.readonly import (
+    is_local_database,
+    live_refusal,
+    masked,
+    read_only_connection,
+)
 
 SQL_FILE = Path(__file__).with_name("1a_diagnostics.sql")
 
@@ -229,7 +236,9 @@ def run(out: Path, sql_file: Path = SQL_FILE) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run diagnostic queries read-only")
     parser.add_argument(
-        "--live", action="store_true", help="allow the non-local database in .env"
+        "--live",
+        action="store_true",
+        help="read the non-local database in .env, as the read-only role",
     )
     parser.add_argument(
         "--out", required=True, type=Path, help="results file (Markdown)"
@@ -249,16 +258,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Refusing: {e}", file=sys.stderr)
         return 2
 
-    local = is_local_database()
-    if not local and not args.live:
-        print(
-            "Refusing: .env points at a non-local database; pass --live.",
-            file=sys.stderr,
-        )
+    refusal = live_refusal(args.live)
+    if refusal:
+        print(f"Refusing: {refusal}", file=sys.stderr)
         return 2
     print(
         "Target: "
-        + ("a local database" if local else "the live database configured in .env")
+        + (
+            "a local database"
+            if is_local_database()
+            else "the live database configured in .env, as the read-only role"
+        )
         + "; one read-only transaction, rolled back at the end"
     )
     try:

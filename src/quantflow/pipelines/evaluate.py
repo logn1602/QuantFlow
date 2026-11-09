@@ -38,7 +38,7 @@ import pandas as pd
 from quantflow.config import TICKERS
 from quantflow.dashboard import accuracy
 from quantflow.db.prices import classify_bars, daily_bars
-from quantflow.db.readonly import is_local_database, masked, read_only_connection
+from quantflow.db.readonly import live_refusal, masked, read_only_connection
 from quantflow.db.snapshot import read_snapshot_tables
 from quantflow.evaluation import decision, metrics, publish, report
 from quantflow.evaluation.rolling_origin import (
@@ -649,7 +649,9 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("--tickers", type=_tickers, default=None)
     export.add_argument("--out", type=Path, default=SNAPSHOT_ROOT)
     export.add_argument(
-        "--live", action="store_true", help="allow the non-local database in .env"
+        "--live",
+        action="store_true",
+        help="read the non-local database in .env, as the read-only role",
     )
 
     coverage = commands.add_parser("coverage", help="news coverage per window")
@@ -717,11 +719,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "export":
-            if not is_local_database() and not args.live:
-                print(
-                    "Refusing: .env points at a non-local database; pass --live.",
-                    file=sys.stderr,
-                )
+            # The live database is read only as the read-only role.
+            refusal = live_refusal(args.live)
+            if refusal:
+                print(f"Refusing: {refusal}", file=sys.stderr)
                 return 2
             directory = export_snapshot(args.as_of, args.tickers or TICKERS, args.out)
             snapshot = read_snapshot(directory)
