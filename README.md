@@ -17,7 +17,7 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 
 ![The dashboard's Forecasts tab for AAPL: each model's 7-day forecast beside "no change", with the measured coverage of every band](docs/images/dashboard_forecasts.png)
 
-*The dashboard's Forecasts tab (AAPL, data to 2026-11-06).*
+*The dashboard's Forecasts tab (AAPL, data to 2026-11-06). Taken before the news switched to RSS only on 2026-11-09, so its sentiment card and the boosted trees' and the ensemble's lines still include NewsAPI's articles; its band figures equal the current ones.*
 
 ---
 
@@ -82,7 +82,7 @@ Data flows one way. `quantflow.models` depends on `quantflow.evaluation`, never 
 
 The question: does any model forecast what the dashboard publishes, the closing price 1 to 7 trading days ahead, better than **"no change"**, the forecast that every future close equals today's? On these dates, **no**. ARIMA and drift cannot be told apart from it; the boosted trees, both ensembles and Prophet are measurably worse. Daily prices are close to a random walk, so this is a common result, reported as measured.
 
-Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4 (commit `a3c0c4e`, MLflow `30a6be1e`, 2026-11-09), test-date figures from run T3 (commit `7beb3ff`, MLflow `93bdf518`, 2026-11-08). Both counted NewsAPI's articles as well as RSS's, before the news switched to RSS only ([news](#does-the-news-help-not-enough-data-yet)). Where each number comes from: [docs/evaluation.md, section 17](docs/evaluation.md#17-phase-4-the-published-results-2026-11-09).
+Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4b (commit `c52b0ed`, MLflow `70495566`), test-date figures from run T4 (the same commit, MLflow `ad6d1694`), both of 2026-11-09, with news from RSS only ([news](#does-the-news-help-not-enough-data-yet)). Where each number comes from: [docs/evaluation.md, section 17](docs/evaluation.md#17-phase-4-the-published-results-2026-11-09).
 
 ### How it's measured
 
@@ -98,10 +98,10 @@ Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4 
 | **No change** | **2.88%** | **3.15%** | 0 | 0 | the baseline |
 | ARIMA | 2.88% | 3.17% | -0.003 | -0.007 | no, no clear difference (0.79 / 0.41) |
 | Drift | 2.93% | 3.19% | -0.011 | -0.010 | no, no clear difference (0.42 / 0.28) |
-| XGBoost | 3.14% | 3.54% | -0.096 | -0.170 | no, worse (under 0.001 on both) |
-| LightGBM | 3.35% | 3.56% | -0.177 | -0.174 | no, worse (under 0.001 on both) |
-| Ensemble, live weights | 3.37% | 3.71% | -0.185 | -0.228 | no, worse (under 0.001 on both) |
-| Ensemble, rolling weights (evaluation only) | 3.38% | 3.29% | -0.170 | -0.041 | no, worse (under 0.001 / 0.04) |
+| XGBoost | 3.14% | 3.54% | -0.096 | -0.171 | no, worse (under 0.001 on both) |
+| LightGBM | 3.35% | 3.52% | -0.177 | -0.170 | no, worse (under 0.001 on both) |
+| Ensemble, live weights | 3.37% | 3.68% | -0.185 | -0.221 | no, worse (under 0.001 on both) |
+| Ensemble, rolling weights (evaluation only) | 3.38% | 3.31% | -0.170 | -0.051 | no, worse (under 0.001 / 0.003) |
 | Prophet | 5.51% | 6.58% | -0.906 | -1.096 | no, worse (under 0.001 on both) |
 
 ARIMA and drift cannot be told apart from "no change"; every other model is worse by the test on both sets of dates. Some models come out ahead on individual tickers (ARIMA on 4 of 8 on the validation dates), but none overall.
@@ -121,7 +121,7 @@ The shaded bands on the dashboard are not a promised range. On the same forecast
 | XGBoost | the forecast plus or minus 2% | 46% | 40% | 4.0% |
 | LightGBM | the forecast plus or minus 2% | 41% | 40% | 4.0% |
 | Ensemble, live weights | its inputs' bounds, weighted like the forecast; "no change" has no band | 57% | 49% | 5.0% |
-| Ensemble, rolling weights | the same | 62% | 47% | 7.0% |
+| Ensemble, rolling weights | the same | 62% | 46% | 7.0% |
 
 Only ARIMA's comes close to what it claims. The bands stay as they are, labelled on the dashboard with these figures; a band for "no change" (a random walk's) is a later candidate, to be decided on fresh data.
 
@@ -129,17 +129,17 @@ Only ARIMA's comes close to what it claims. The bands stay as they are, labelled
 
 The boosted trees can use FinBERT sentiment from news headlines. Whether that helps cannot be measured yet: news is stored only from 2026-04-10 and no free archive reaches further back, so only 4.8% of the validation (ticker, start date) pairs had a real article, against the 50% set in advance as the minimum for the comparison. The news gets a forward test instead: 42 start dates from 2026-11-09, scored once after 2027-09-15, with the keep-or-drop rule written on 2026-11-09, before any start date is scored ([docs/evaluation.md, section 4](docs/evaluation.md#4-does-the-news-help-2d)).
 
-From 2026-11-09 the features count Yahoo Finance's RSS articles only, the stored history included, so they mean the same before and after: NewsAPI's free plan is for development and testing only. NewsAPI had supplied 47% of the articles that counted; the coverage above is the same from RSS alone. The published figures were run before the switch, so on the test dates, where every start date has news, they describe boosters that also read NewsAPI's articles; they stay as recorded rather than score the test dates a fourth time.
+From 2026-11-09 the features count Yahoo Finance's RSS articles only, the stored history included, so they mean the same before and after: NewsAPI's free plan is for development and testing only. NewsAPI had supplied 47% of the articles that counted; the coverage above is the same from RSS alone. The figures on this page were rerun after the switch (P4b and T4): on the validation dates, where news reaches only the last two start dates, only the last one's boosted-tree and ensemble forecasts changed; on the test dates the boosted trees and the ensembles moved by under 0.04 points of MAPE each, and no conclusion changed.
 
 ### What changed, and what looks worse on the test dates
 
 - **Phase 2 (2026-11-08)** built this evaluation: the rolling start dates, "no change" and drift as baselines, news dated by when it became available, missing news kept missing rather than read as neutral, and point-in-time anomaly scores in the live training rows.
 - **Phase 3 (2026-11-08)** ran six experiments on the validation dates and kept two: tuned XGBoost settings, and "no change" as a fifth input to the ensembles. Dropped: predicting returns instead of prices, rolling open, high and low forward, tuned LightGBM settings, choosing ARIMA's order by AIC, and per-horizon ensemble weights. No alternative band passed its rule.
-- **The test dates have been scored three times**: twice in Phase 2 (T1, T2) and once in Phase 3 (T3), each entered in a [ledger](docs/evaluation.md#the-rule-for-the-test-dates). These figures reuse T3 rather than score the test dates a fourth time: every change since leaves the forecasts as they were, and on the validation dates `main` reproduces the Phase 3 final exactly.
+- **The test dates have been scored four times**: twice in Phase 2 (T1, T2), once in Phase 3 (T3), and once on 2026-11-09 (T4), after the news switched to RSS only, so these figures describe the boosted trees as they now run. T4 was for reporting only: no decision rests on it. Each scoring is entered in a [ledger](docs/evaluation.md#the-rule-for-the-test-dates).
 - **Kept although worse on the test dates**, because decisions rest on the validation dates only:
-  - the live ensemble's weights, kept over the rolling weights on the validation dates (3.381% against 3.389% when decided), while on the test dates the rolling weights score 3.29% and the live ones 3.71%;
+  - the live ensemble's weights, kept over the rolling weights on the validation dates (3.381% against 3.389% when decided), while on the test dates (T4) the rolling weights score 3.31% and the live ones 3.68%;
   - XGBoost's tuned settings: test MAPE from 3.44% to 3.54% between T2 and T3, a change that also includes Phase 3's two fixes to XGBoost;
-  - "no change" as the live ensemble's fifth input: the ensemble's test MAPE went from 3.68% to 3.71% over the same scorings, which also carry XGBoost's changes.
+  - "no change" as the live ensemble's fifth input: the ensemble's test MAPE went from 3.68% to 3.71% between T2 and T3, scorings that also carry XGBoost's changes.
 
 ### The 2026-08-04 figures, and why they were replaced
 
