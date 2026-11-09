@@ -22,8 +22,16 @@ import pandas as pd
 
 from quantflow.utils.trading_calendar import NEWS_CUTOFF_AFTER_DATE, news_cutoff
 
+# The sources whose articles count, on every date: RSS only, from 2026-11-09
+# (docs/evaluation.md, section 4). NewsAPI's free plan is for development and
+# testing only, so the daily run stopped fetching it. Its stored articles stay
+# in news_sentiment and never count, history included, so a feature means the
+# same before the switch and after it.
+NEWS_SOURCES = ("rss",)
+
 # NewsAPI's free tier serves articles about a day after publication, so the
-# live run on day t has none of day t's NewsAPI articles. RSS arrives live.
+# live run on day t had none of day t's NewsAPI articles. RSS arrives live.
+# NewsAPI's articles no longer count; this still dates them.
 SOURCE_DELAY = {"newsapi": pd.Timedelta(hours=24)}
 
 # The neutral row stored for every headline while FinBERT could not load,
@@ -55,8 +63,10 @@ NEWS_DAY_COLUMNS = [*NEWS_DAY_KEYS, *NEWS_DAY_SUMS]
 
 
 def bad_rows(articles: pd.DataFrame) -> pd.Series:
-    """True for the rows no feature should use: FinBERT placeholders, and
-    MarketWatch's general headlines credited to AAPL."""
+    """True for the rows no feature should use: articles from a source not in
+    NEWS_SOURCES, FinBERT placeholders, and MarketWatch's general headlines
+    credited to AAPL."""
+    other_source = ~articles["source"].isin(NEWS_SOURCES)
     placeholder = articles["sentiment"].eq(PLACEHOLDER_SENTIMENT)
     for column, value in PLACEHOLDER_SCORES.items():
         placeholder &= np.isclose(
@@ -67,7 +77,7 @@ def bad_rows(articles: pd.DataFrame) -> pd.Series:
     general = articles["ticker"].eq(ticker) & (
         domains.eq(domain) | domains.str.endswith("." + domain)
     )
-    return pd.Series(placeholder | general, index=articles.index)
+    return pd.Series(other_source | placeholder | general, index=articles.index)
 
 
 def available_at(articles: pd.DataFrame) -> pd.Series:
@@ -188,6 +198,7 @@ def query_rules() -> dict:
     """The rules above, as db.features.load_news_days applies them in the
     database: one definition for the rows summed here and the sums read."""
     return {
+        "sources": NEWS_SOURCES,
         "source_delays": SOURCE_DELAY,
         "placeholder_sentiment": PLACEHOLDER_SENTIMENT,
         "placeholder_scores": PLACEHOLDER_SCORES,

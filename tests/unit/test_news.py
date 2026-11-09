@@ -72,7 +72,7 @@ def test_a_saturday_article_lands_on_monday():
     )
 
 
-def test_a_newsapi_article_counts_a_day_after_it_was_published():
+def test_a_newsapi_article_is_available_a_day_after_it_was_published():
     stored_early = _date_of(
         "2026-03-03 14:00", "2026-03-03 14:05", {"source": "newsapi"}
     )
@@ -234,9 +234,22 @@ def test_news_days_count_and_sum_each_tickers_articles_per_day():
         ("AAPL", "2026-03-03", True): (1, 1, 0, 1, Decimal("0.7")),
         ("MSFT", "2026-03-03", False): (1, 0, 0, 1, Decimal("0")),
         ("MSFT", "2026-03-03", True): (3, 1, 1, 2, Decimal("0.25")),
-        ("MSFT", "2026-03-04", True): (1, 1, 0, 1, Decimal("0.125")),
+        # NewsAPI: dated a day after publishing, and not counted.
+        ("MSFT", "2026-03-04", False): (1, 1, 0, 1, Decimal("0.125")),
     }
     assert set(days["stored_day"]) == {pd.Timestamp("2026-03-03")}
+
+
+def test_only_rss_articles_count_from_any_date():
+    """The features count RSS articles only, history included, so they mean
+    the same before and after NewsAPI stopped (2026-11-09); the database
+    query applies the same rule (query_rules)."""
+    frame = pd.DataFrame(
+        [_article("2026-03-03 14:00", "2026-03-03 23:00", source=source)
+         for source in ("rss", "newsapi", "alpha_vantage")]
+    )  # fmt: skip
+    assert news.bad_rows(frame).tolist() == [False, True, True]
+    assert news.query_rules()["sources"] == ("rss",)
 
 
 def test_news_day_sums_are_exact_and_do_not_depend_on_the_row_order():

@@ -597,7 +597,8 @@ def test_the_news_sums_the_live_run_reads_are_the_evaluations(pg, install_engine
 
     summed = news.news_days(rows)
     pd.testing.assert_frame_equal(read, summed)
-    assert read.loc[~read["counts"], "articles"].sum() == 4  # 6, 9, 10 and 14
+    # 3 and 4 (NewsAPI, not counted from 2026-11-09), 6, 9, 10 and 14.
+    assert read.loc[~read["counts"], "articles"].sum() == 6
     for ticker, live in features.items():
         built = build_features(
             prices.load_daily_bars(ticker),

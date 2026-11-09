@@ -178,10 +178,13 @@ def test_a_weekend_article_counts_on_monday(stored_bars):
     assert _counts(stored_bars, saturday) == {"2026-03-09": 1}
 
 
-def test_a_newsapi_article_counts_from_a_day_after_it_was_published(stored_bars):
+def test_a_newsapi_article_does_not_count(stored_bars):
+    """From 2026-11-09 the features count RSS articles only, history
+    included: NewsAPI's free plan is for development only. Its stored
+    articles stay in the table and never count."""
     newsapi = _article("2026-03-03 15:00", "positive", 0.6, source="newsapi",
                        inserted_at=pd.Timestamp("2026-03-03 15:05", tz="UTC"))  # fmt: skip
-    assert _counts(stored_bars, newsapi) == {"2026-03-04": 1}
+    assert _counts(stored_bars, newsapi) == {}
 
 
 def test_an_article_stored_late_counts_from_when_it_arrived(stored_bars):

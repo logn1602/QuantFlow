@@ -190,6 +190,12 @@ def test_the_finbert_model_is_cached_by_the_revision_the_code_pins():
     assert names.index("Cache the FinBERT model") < names.index(SENTIMENT)
 
 
+def test_the_daily_refresh_no_longer_fetches_newsapi():
+    """NewsAPI's free plan is for development and testing only; without the
+    key the sentiment stage reads Yahoo's RSS feeds alone."""
+    assert "NEWS_API_KEY" not in DAILY_REFRESH
+
+
 AUDIT_WORKFLOW = WORKFLOWS / "dependency_audit.yml"
 
 
