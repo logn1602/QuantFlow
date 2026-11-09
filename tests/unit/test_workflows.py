@@ -188,3 +188,20 @@ def test_the_finbert_model_is_cached_by_the_revision_the_code_pins():
     assert FINBERT_REVISION in cache
     names = list(STEPS)
     assert names.index("Cache the FinBERT model") < names.index(SENTIMENT)
+
+
+AUDIT = "Audit dependencies"
+
+
+def test_the_audit_runs_last_and_an_advisory_fails_the_run():
+    """The audit ran before the fetches with continue-on-error, so an advisory
+    never turned the run red: on 2026-09-04 (run 33821129953) pip-audit exited
+    1, yet GitHub recorded the step and the run as successes. Last in the job,
+    it fails the run only after the data is refreshed, and it runs after a
+    failed data step too, so no day goes unaudited."""
+    names = list(STEPS)
+    assert names[-1] == AUDIT
+    assert "uvx pip-audit" in STEPS[AUDIT]
+    assert not any("uvx pip-audit" in STEPS[name] for name in names[:-1])
+    assert "continue-on-error" not in STEPS[AUDIT]
+    assert _condition(AUDIT) == "${{ !cancelled() }}"
