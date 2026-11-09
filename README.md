@@ -96,8 +96,8 @@ Data to 2026-11-06 (snapshot digest `f0c3957b`). Validation figures from run P4 
 | Model | MAPE, validation | MAPE, test | Skill, validation | Skill, test | Beats "no change"? (p, validation / test) |
 |---|---|---|---|---|---|
 | **No change** | **2.88%** | **3.15%** | 0 | 0 | the baseline |
-| ARIMA | 2.88% | 3.17% | -0.003 | -0.007 | no, a tie (0.79 / 0.41) |
-| Drift | 2.93% | 3.19% | -0.011 | -0.010 | no, a tie (0.42 / 0.28) |
+| ARIMA | 2.88% | 3.17% | -0.003 | -0.007 | no, no clear difference (0.79 / 0.41) |
+| Drift | 2.93% | 3.19% | -0.011 | -0.010 | no, no clear difference (0.42 / 0.28) |
 | XGBoost | 3.14% | 3.54% | -0.096 | -0.170 | no, worse (under 0.001 on both) |
 | LightGBM | 3.35% | 3.56% | -0.177 | -0.174 | no, worse (under 0.001 on both) |
 | Ensemble, live weights | 3.37% | 3.71% | -0.185 | -0.228 | no, worse (under 0.001 on both) |
