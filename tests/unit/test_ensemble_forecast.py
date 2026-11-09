@@ -147,3 +147,69 @@ def test_one_misaligned_ticker_fails_the_run_after_the_others_finish(
         ensemble.run(["MSFT", "AAPL"])
     assert [df["ticker"].iloc[0] for df in saved] == ["AAPL"]
     assert np.allclose(saved[0]["predicted_close"], 97.0)
+
+
+def _held(dates):
+    from quantflow.db.forecasts import ForecastSet
+
+    held = ForecastSet()
+    for model in ensemble.BASE_MODELS:
+        held.save(
+            pd.DataFrame(
+                {"ticker": "AAPL", "model": model, "ds": dates,
+                 "predicted_close": 100.0 + np.arange(7),
+                 "lower_bound": 98.0 + np.arange(7),
+                 "upper_bound": 102.0 + np.arange(7)}
+            )
+        )  # fmt: skip
+    return held
+
+
+def test_the_ensemble_reads_the_base_forecasts_its_run_holds(read_tables):
+    """In the daily run the base forecasts are held until every model is
+    done (run_models), so the table still has the previous run's: the
+    ensemble must combine the ones its own run made."""
+    read_tables["forecasts"] = _base(dict.fromkeys(ensemble.BASE_MODELS, SHIFTED))
+    held = _held(SEVEN)
+
+    forecast = ensemble.generate_ensemble_forecast(
+        "AAPL", _meta(), 97.0, LATEST_CLOSE, forecasts=held
+    )
+
+    assert [pd.Timestamp(d) for d in forecast["ds"]] == list(SEVEN)
+    assert np.allclose(forecast["predicted_close"], 100.0 + np.arange(7))
+
+
+def test_the_ensemble_goes_to_the_runs_set_when_given_one(monkeypatch, read_tables):
+    rng = np.random.default_rng(1)
+    truth = 100 + np.cumsum(rng.normal(0, 1, 30))
+    stack = pd.DataFrame(
+        {"actual": truth} | dict.fromkeys(ensemble.STACK_COLUMNS, truth)
+    )
+    history = pd.bdate_range(end=LATEST_CLOSE, periods=5)
+    monkeypatch.setattr(
+        ensemble,
+        "load_prices",
+        lambda t: pd.DataFrame({"ds": history, "y": [93.0, 94.0, 95.0, 96.0, 97.0]}),
+    )
+    monkeypatch.setattr(ensemble, "load_features", lambda t, news=None: pd.DataFrame())
+    monkeypatch.setattr(ensemble, "build_holdout_stack", lambda *a: stack.copy())
+    monkeypatch.setattr(ensemble, "save_model_metrics", lambda *a, **k: None)
+    monkeypatch.setattr(ensemble, "log_to_mlflow", lambda *a, **k: None)
+
+    def refuse(df):
+        raise AssertionError("stored before the run was done")
+
+    monkeypatch.setattr(ensemble, "save_forecasts", refuse)
+    monkeypatch.setattr(
+        ensemble, "tune_and_train_meta",
+        lambda stacked: (_meta(naive=1.0), {"coefficients": {}, "eval_days": 0,
+                                           "ensemble_mape": None}),
+    )  # fmt: skip
+    held = _held(SEVEN)
+
+    results = ensemble.run(["AAPL"], news=pd.DataFrame(), forecasts=held)
+
+    assert results == {"AAPL": 7}
+    stack_rows = held.base("AAPL", ["ensemble_stack"])
+    assert np.allclose(stack_rows["predicted_close"], 97.0)

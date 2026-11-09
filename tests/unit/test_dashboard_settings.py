@@ -3,8 +3,9 @@
 The dashboard's page settings, read as text: app.py connects to the database
 when imported, so it cannot be imported here (docs/architecture.md, Known
 problem 5). The theme it is styled for, every loader cached for one shared
-lifetime that still picks up the daily refresh, no public control that
-clears the cache, and no model crowned above the others.
+lifetime that still picks up the daily refresh (dashboard/caching.py, tested
+in test_dashboard_caching.py), no public control that clears the cache, and
+no model crowned above the others.
 """
 
 import ast
@@ -27,31 +28,22 @@ def test_the_dashboard_sets_the_dark_theme_it_is_styled_for():
     assert config["theme"]["base"] == "dark"
 
 
-def test_every_loader_is_cached_for_the_same_lifetime():
+def test_every_loader_is_cached_for_the_same_lifetime_except_when_empty():
     """The price loader was a bare import, so every rerun read the ticker's
     prices from the database again; the latest closes were read uncached
-    too."""
+    too. Then every loader kept an empty result for the hour as well: one
+    that ran while the daily run replaced the forecasts showed none to every
+    visitor until it expired."""
     loaders = {
         node.name: node
         for node in TREE.body
         if isinstance(node, ast.FunctionDef) and node.name.startswith("load_")
     }
-    assert {"load_prices", "load_latest_closes"} <= set(loaders)
+    assert {"load_prices", "load_latest_closes", "load_forecasts"} <= set(loaders)
     for name, node in loaders.items():
         decorators = [ast.unparse(d) for d in node.decorator_list]
-        assert "st.cache_data(ttl=CACHE_SECONDS)" in decorators, name
-
-
-def test_the_cache_lifetime_picks_up_the_daily_refresh_within_an_hour():
-    lifetime = next(
-        node.value
-        for node in TREE.body
-        if isinstance(node, ast.Assign)
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == "CACHE_SECONDS"
-    )
-    assert isinstance(lifetime, ast.Constant)
-    assert 0 < lifetime.value <= 3600
+        assert decorators == ["cached"], name
+    assert "st.cache_data" not in SOURCE
 
 
 def test_no_public_control_clears_the_cache():

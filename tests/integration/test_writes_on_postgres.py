@@ -352,6 +352,73 @@ def test_the_ensemble_reads_only_each_models_latest_run(pg):
     assert len(df) == 6
 
 
+def _forecast(ticker, model, start, close):
+    return pd.DataFrame(
+        {
+            "ticker": ticker,
+            "model": model,
+            "ds": pd.bdate_range(start, periods=7),
+            "predicted_close": close + np.linspace(0, 1, 7) / 3,
+            "lower_bound": close - 2.123456,
+            "upper_bound": close + 2.987654,
+        }
+    )
+
+
+def _stored(pg, ticker):
+    with pg.connect() as conn:
+        return pd.read_sql(
+            text(
+                "SELECT model, forecast_date, predicted_close FROM forecasts"
+                " WHERE ticker = :t ORDER BY model, forecast_date"
+            ),
+            conn,
+            params={"t": ticker},
+        )
+
+
+def test_a_failed_forecast_replacement_keeps_the_stored_forecasts(pg):
+    """The daily run replaces each ticker's forecasts in one transaction
+    (db.forecasts.replace_forecasts): if the insert fails, the delete rolls
+    back with it, so a reader never finds the ticker without forecasts."""
+    from quantflow.db.forecasts import ForecastSet, replace_forecasts, save_forecasts
+
+    for ticker in ("AAPL", "MSFT"):
+        save_forecasts(_forecast(ticker, "arima", "2026-11-09", 100.0))
+    before = _stored(pg, "AAPL")
+
+    held = ForecastSet()
+    held.save(_forecast("AAPL", "arima", "2026-11-10", 101.0))
+    broken = [row | {"forecast_date": "not a date"} for row in held.rows("AAPL")]
+    with pytest.raises(DataError):
+        replace_forecasts("AAPL", broken)
+    pd.testing.assert_frame_equal(_stored(pg, "AAPL"), before)
+
+    assert replace_forecasts("AAPL", held.rows("AAPL")) == 7
+    after = _stored(pg, "AAPL")
+    assert after["forecast_date"].min() == dt.date(2026, 11, 10)
+    assert len(_stored(pg, "MSFT")) == 7  # another ticker is left alone
+
+
+def test_the_held_base_forecasts_are_what_the_table_returns(pg):
+    """The ensemble reads the base forecasts from the run's set in the daily
+    run and from the table otherwise: the same frame either way, so its
+    forecast does not depend on which."""
+    from quantflow.db.forecasts import ForecastSet, replace_forecasts
+
+    held = ForecastSet()
+    for i, model in enumerate(("xgboost", "arima", "lightgbm", "prophet")):
+        held.save(_forecast("AAPL", model, "2026-11-10", 100.0 + i * 1.234567))
+    models = ["arima", "prophet", "xgboost", "lightgbm"]
+    assert replace_forecasts("AAPL", held.rows("AAPL")) == 28
+
+    pd.testing.assert_frame_equal(
+        held.base("AAPL", models),
+        load_base_forecasts("AAPL", models),
+        check_exact=True,
+    )
+
+
 def test_saving_anomalies_counts_only_rows_written(pg):
     """On the schema's unique (ticker, ts), ON CONFLICT DO NOTHING skips a
     repeated row; save_anomalies used to count it anyway."""

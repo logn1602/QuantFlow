@@ -6,11 +6,13 @@ Runs the full forecasting pipeline in one command:
   2. XGBoost + LightGBM (ML models with 33 engineered features)
   3. Stacking Ensemble  (NNLS meta-learner over all 4 base models)
 
-Clears stale forecasts before retraining to keep data clean.
-
-Clearing stale forecasts is the DEFAULT — every run recomputes the full
-forecast set, so keeping the old rows would leave the dashboard averaging
-across runs.
+Every forecast is held until the last model is done (db.forecasts
+.ForecastSet), then each ticker's stored forecasts are replaced by the new
+ones in one transaction. A reader, the dashboard among them, finds the
+previous set or the new one: never a ticker with some models or none, as when
+the run deleted every forecast before fitting anything. A ticker the run made
+nothing for keeps the forecasts it had, and a model the run did not make for
+a ticker is left out of its new set rather than kept from the previous run.
 
 Usage:
     python run_models.py                  # all tickers, all models
@@ -23,17 +25,10 @@ import sys
 
 from quantflow import config
 from quantflow.config import TICKERS
-from quantflow.db.forecasts import clear_forecasts as db_clear_forecasts
+from quantflow.db.forecasts import ForecastSet, replace_forecasts
 from quantflow.utils.logger import get_logger
 
 logger = get_logger("run_models")
-
-
-def clear_forecasts(tickers: list[str] | None = None):
-    """Clear existing forecasts so old data doesn't pollute new runs."""
-    tickers = tickers or TICKERS
-    db_clear_forecasts(tickers)
-    logger.info(f"Cleared old forecasts for: {', '.join(tickers)}")
 
 
 def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, list[str]]:
@@ -42,7 +37,9 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
 
     Args:
         tickers: list of tickers. Defaults to config.TICKERS
-        clear:   whether to clear old forecasts before retraining
+        clear:   whether the new forecasts replace the stored ones, each
+                 ticker's in one transaction at the end (the default), or are
+                 stored beside them as each is made
 
     Returns:
         (results, failed_steps) — each step stays individually wrapped so one
@@ -53,14 +50,9 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     tickers = tickers or TICKERS
     results = {}
     failed = []
-
-    if clear:
-        logger.info("Clearing old forecasts...")
-        try:
-            clear_forecasts(tickers)
-        except Exception as e:
-            logger.exception(f"Clearing forecasts failed: {type(e).__name__}: {e}")
-            failed.append("clear_forecasts")
+    # Every forecast of the run, held until the last step (see the module
+    # docstring); None stores each as it is made.
+    held = ForecastSet() if clear else None
 
     # ── Step 1: ARIMA + Prophet ───────────────────────────────────────────────
     logger.info("=" * 50)
@@ -69,10 +61,10 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     try:
         from quantflow.models.statistical import run as forecast_run
 
-        forecast_results = forecast_run(tickers=tickers)
+        forecast_results = forecast_run(tickers=tickers, forecasts=held)
         for ticker, model_results in forecast_results.items():
             for model, n in model_results.items():
-                logger.info(f"  {ticker} [{model}]: {n} rows saved")
+                logger.info(f"  {ticker} [{model}]: {n} forecast rows")
         results["forecasting"] = forecast_results
     except Exception as e:
         logger.exception(f"ARIMA/Prophet failed: {type(e).__name__}: {e}")
@@ -96,10 +88,10 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     try:
         from quantflow.models.boosting import run as xgb_run
 
-        xgb_results = xgb_run(tickers=tickers, news=news)
+        xgb_results = xgb_run(tickers=tickers, news=news, forecasts=held)
         for ticker, model_results in xgb_results.items():
             for model, n in model_results.items():
-                logger.info(f"  {ticker} [{model}]: {n} rows saved")
+                logger.info(f"  {ticker} [{model}]: {n} forecast rows")
         results["xgboost_lightgbm"] = xgb_results
     except Exception as e:
         logger.exception(f"XGBoost/LightGBM failed: {type(e).__name__}: {e}")
@@ -112,13 +104,33 @@ def run(tickers: list[str] | None = None, clear: bool = True) -> tuple[dict, lis
     try:
         from quantflow.models.ensemble import run as ensemble_run
 
-        ensemble_results = ensemble_run(tickers=tickers, news=news)
+        ensemble_results = ensemble_run(tickers=tickers, news=news, forecasts=held)
         for ticker, n in ensemble_results.items():
-            logger.info(f"  {ticker} [ensemble_stack]: {n} rows saved")
+            logger.info(f"  {ticker} [ensemble_stack]: {n} forecast rows")
         results["ensemble"] = ensemble_results
     except Exception as e:
         logger.exception(f"Stacking ensemble failed: {type(e).__name__}: {e}")
         failed.append("ensemble")
+
+    # ── Each ticker's forecasts replaced in one transaction ──────────────────
+    if held is not None:
+        store_failed = False
+        for ticker in tickers:
+            rows = held.rows(ticker)
+            if not rows:
+                logger.error(f"  {ticker}: no forecast made; the stored ones stay")
+                continue
+            try:
+                n = replace_forecasts(ticker, rows)
+                logger.info(f"  {ticker}: {n} forecast rows replace the stored ones")
+            except Exception as e:
+                logger.exception(
+                    f"Storing {ticker}'s forecasts failed, the stored ones stay: "
+                    f"{type(e).__name__}: {e}"
+                )
+                store_failed = True
+        if store_failed:
+            failed.append("save_forecasts")
 
     logger.info("=" * 50)
     if failed:

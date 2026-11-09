@@ -314,13 +314,25 @@ ticker's prices again; a public "Refresh Data" button also cleared the cache for
 visitor.
 
 **Caching (decision E), done in Phase 4.** Every loader, prices included, now keeps
-what it read for an hour (`CACHE_SECONDS` in `dashboard/app.py`), and the Refresh
+what it read for an hour (`CACHE_SECONDS` in `dashboard/caching.py`), and the Refresh
 button is gone: the data changes once a day, and the page shows each refresh within
 the hour. Repeat views inside the hour read nothing, so the page reads at most once an
 hour for each loader, ticker and lookback setting, whatever the traffic. A visitor on
 the default lookback costs about 0.33 MB an hour per ticker at most, under 8 MB a
 ticker a day. The daily run's whole-history price reads are the larger line, and the
 one the trending tier would multiply, so the Phase 5 design states the reads it adds.
+
+**What a visit can find mid-run (fixed 2026-11-09).** The daily run deleted every
+ticker's forecasts before fitting anything and wrote each model's as it finished, so a
+visit during those minutes found some of a ticker's models or none, and the cache then
+kept that for the hour. Now the run holds its forecasts until the last model is done
+(`db.forecasts.ForecastSet`) and replaces each ticker's in one transaction
+(`replace_forecasts`): a visitor finds the previous set or the new one. Run for two
+tickers on the snapshot, a second connection polling every quarter second found no
+model for either ticker at some point on the old code, and all five throughout on the
+new, whose stored forecasts were identical. A ticker the run made nothing for keeps
+its previous set. And no loader keeps an empty result: it is read again on the next
+visit.
 
 ---
 
@@ -366,7 +378,9 @@ demonstration of the harness, not an edge.
 runs against stale base forecasts and reports a number that looks fine. There is no
 completion signal, no retry, and an in-memory job store that loses all state on
 restart. Production does not use it: the daily GitHub Actions workflow runs the stages
-in order, each after the last has finished.
+in order, each after the last has finished. Its model jobs also still delete their
+models' forecasts before fitting, so a visit during a job finds those models missing;
+the daily run replaces each ticker's set in one transaction instead.
 
 ### 5. The dashboard connects at import time
 
@@ -414,7 +428,7 @@ compares the two again.
 
 ### 10. The live run keeps no forecast history
 
-`run_models` deletes the previous run's forecasts before writing new ones, so nothing
+`run_models` replaces the previous run's forecasts with the new ones, so nothing
 records what was forecast for a date once it has passed, and the live 7-day error
 cannot be measured from the dashboard's own forecasts. The published accuracy comes
 from the evaluation instead, and goes stale until the next rerun.

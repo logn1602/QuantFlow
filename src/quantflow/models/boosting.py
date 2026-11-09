@@ -28,7 +28,7 @@ from sqlalchemy import text
 
 from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
-from quantflow.db.forecasts import save_forecasts
+from quantflow.db.forecasts import ForecastSet, save_forecasts
 from quantflow.db.metrics import save_model_metrics
 from quantflow.evaluation.metrics import regression_metrics
 from quantflow.evaluation.splits import HOLDOUT_DAYS, train_holdout_split
@@ -526,11 +526,18 @@ def compare_all_models(ticker: str):
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 
-def run(tickers: list[str] | None = None, news: pd.DataFrame | None = None) -> dict:
+def run(
+    tickers: list[str] | None = None,
+    news: pd.DataFrame | None = None,
+    forecasts: ForecastSet | None = None,
+) -> dict:
     """news is features.engineering.load_news' frame, read here once for
     every ticker unless the caller has read it (run_models reads it once
-    for the boosters and the ensemble)."""
+    for the boosters and the ensemble). forecasts is the set run_models holds
+    every forecast in until the run is done; without one, each forecast is
+    stored as it is made."""
     tickers = tickers or TICKERS
+    save = forecasts.save if forecasts is not None else save_forecasts
     results = {}
     if news is None:
         news = load_news()
@@ -579,13 +586,13 @@ def run(tickers: list[str] | None = None, news: pd.DataFrame | None = None) -> d
                 model_name,
                 ticker,
             )
-            n = save_forecasts(forecast)
+            n = save(forecast)
             log_mlflow(
                 ticker, model_name, result["metrics"], result["importance"], forecast
             )
             save_model_metrics(ticker, model_name, result["metrics"], HOLDOUT_DAYS)
             ticker_results[model_name] = n
-            logger.info(f"  {model_name}: {n} forecast rows saved")
+            logger.info(f"  {model_name}: {n} forecast rows")
 
             if model_name == "xgboost":
                 top5 = result["importance"].head(5)

@@ -49,7 +49,7 @@ from sqlalchemy import text
 
 from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
-from quantflow.db.forecasts import load_base_forecasts, save_forecasts
+from quantflow.db.forecasts import ForecastSet, load_base_forecasts, save_forecasts
 from quantflow.db.metrics import save_model_metrics
 from quantflow.db.prices import load_daily_close as load_prices
 from quantflow.evaluation.metrics import mape as _mape
@@ -420,6 +420,7 @@ def generate_ensemble_forecast(
     meta_model,
     latest_close: float | None = None,
     latest_date=None,
+    forecasts: ForecastSet | None = None,
 ) -> pd.DataFrame:
     """
     Load 7-day base model forecasts from DB and apply meta-learner to produce
@@ -435,8 +436,14 @@ def generate_ensemble_forecast(
     the base forecasts must start the trading day after latest_date, the
     close's own date: a failed base step leaves the previous run's forecasts
     in the table, which would otherwise be published beside today's close.
+
+    The base forecasts come from forecasts, the set the daily run holds them
+    in until it is done (run_models), or else from the table.
     """
-    df = load_base_forecasts(ticker, BASE_MODELS)
+    if forecasts is not None:
+        df = forecasts.base(ticker, BASE_MODELS)
+    else:
+        df = load_base_forecasts(ticker, BASE_MODELS)
     try:
         dates = check_forecast_dates(df, BASE_MODELS, FORECAST_DAYS)
     except ForecastAlignmentError as e:
@@ -572,10 +579,17 @@ def show_results(ticker: str):
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 
-def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
+def run(
+    tickers: list | None = None,
+    news: pd.DataFrame | None = None,
+    forecasts: ForecastSet | None = None,
+) -> dict:
     """news is load_news' frame, read here once for every ticker unless the
-    caller has read it."""
+    caller has read it. forecasts is the set run_models holds every forecast
+    in until the run is done: the ensemble reads the base forecasts from it
+    and adds its own; without one, it reads the table and stores its own."""
     tickers = tickers or TICKERS
+    save = forecasts.save if forecasts is not None else save_forecasts
     results = {}
     misaligned: list[str] = []
     if news is None:
@@ -630,7 +644,11 @@ def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
         logger.info("Generating 7-day ensemble forecast...")
         try:
             forecast_df = generate_ensemble_forecast(
-                ticker, meta_model, float(prices["y"].iloc[-1]), prices["ds"].iloc[-1]
+                ticker,
+                meta_model,
+                float(prices["y"].iloc[-1]),
+                prices["ds"].iloc[-1],
+                forecasts=forecasts,
             )
         except ForecastAlignmentError as e:
             # Carried to the end of the loop: one ticker's broken base run
@@ -641,8 +659,8 @@ def run(tickers: list | None = None, news: pd.DataFrame | None = None) -> dict:
             results[ticker] = 0
             continue
 
-        n = save_forecasts(forecast_df)
-        logger.info(f"  Saved {n} ensemble forecast rows to DB")
+        n = save(forecast_df)
+        logger.info(f"  {n} ensemble forecast rows")
 
         log_to_mlflow(ticker, meta_model, metrics, stacked_df, forecast_df)
 

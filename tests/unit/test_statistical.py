@@ -339,3 +339,38 @@ def test_the_stacks_naive_column_is_the_last_train_close(
     stack = ensemble.build_holdout_stack(HOLIDAY_IN_HOLDOUT, pd.DataFrame(), "AAPL")
     last_train_close = HOLIDAY_IN_HOLDOUT["y"].iloc[-31]
     assert len(stack) == 30 and (stack["naive"] == last_train_close).all()
+
+
+def _refuse_to_store(df):
+    raise AssertionError("stored before the run was done")
+
+
+def test_arima_and_prophet_go_to_the_runs_set_when_given_one(monkeypatch):
+    """run_models holds every forecast until the last model is done
+    (db.forecasts.ForecastSet), so the step must not store its own."""
+    from quantflow.db.forecasts import ForecastSet
+
+    def forecast(df, ticker, model):
+        days = pd.bdate_range("2026-11-10", periods=7)
+        return pd.DataFrame(
+            {"ticker": ticker, "model": model, "ds": days, "predicted_close": 1.0,
+             "lower_bound": 0.5, "upper_bound": 1.5}
+        ), {}  # fmt: skip
+
+    monkeypatch.setattr(statistical, "load_prices", lambda t: HOLIDAY_IN_HOLDOUT)
+    monkeypatch.setattr(
+        statistical, "run_arima", lambda df, t: forecast(df, t, "arima")
+    )
+    monkeypatch.setattr(
+        statistical, "run_prophet", lambda df, t: forecast(df, t, "prophet")
+    )
+    monkeypatch.setattr(statistical, "save_model_metrics", lambda *a, **k: None)
+    monkeypatch.setattr(statistical, "save_forecasts", _refuse_to_store)
+    held = ForecastSet()
+
+    results = statistical.run(["AAPL"], forecasts=held)
+
+    assert results == {"AAPL": {"arima": 7, "prophet": 7}}
+    assert sorted(held.base("AAPL", ["arima", "prophet"])["model"].unique()) == [
+        "arima", "prophet"
+    ]  # fmt: skip
