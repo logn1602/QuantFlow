@@ -75,8 +75,8 @@ def test_the_model_run_reads_the_news_once(news_reads, monkeypatch):
     each of them."""
     import quantflow.models.statistical as statistical
 
-    monkeypatch.setattr(statistical, "run", lambda tickers=None: {})
-    monkeypatch.setattr(run_models, "clear_forecasts", lambda tickers=None: None)
+    monkeypatch.setattr(statistical, "run", lambda tickers=None, **kwargs: {})
+    monkeypatch.setattr(run_models, "replace_forecasts", lambda *a, **k: 0)
 
     results, failed = run_models.run(TICKERS)
 

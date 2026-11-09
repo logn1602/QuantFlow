@@ -23,16 +23,10 @@ from sqlalchemy import text
 
 from quantflow.config import TICKERS
 from quantflow.dashboard import accuracy
+from quantflow.dashboard.caching import CACHE_SECONDS, cached
 from quantflow.db.connection import get_engine
 from quantflow.db.prices import load_recent_ohlcv
 from quantflow.features.news import NEWS_SOURCES
-
-# How long every loader keeps what it read. The data changes once a day, after
-# the US close, so an hour still shows each refresh within the hour, while it
-# bounds what the page reads from the database: at most one read an hour for
-# each loader, ticker and lookback, whatever the traffic (docs/architecture.md,
-# "Running on free tiers").
-CACHE_SECONDS = 3600
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -57,14 +51,14 @@ st.markdown(
 # ── Data loaders ──────────────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_prices(ticker: str, days: int = 180) -> pd.DataFrame:
     """The ticker's daily bars over the lookback, the largest read on the
     page: cached like the rest, where it was read again on every rerun."""
     return load_recent_ohlcv(ticker, days)
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_latest_closes(tickers: tuple[str, ...]) -> pd.DataFrame:
     """The newest stored close of each ticker, over one connection. A ticker
     whose read fails is left out, as before."""
@@ -94,7 +88,7 @@ def load_latest_closes(tickers: tuple[str, ...]) -> pd.DataFrame:
 # every indicator and anomaly stored at 00:00 UTC sat one day left of its
 # candle. No regression test yet: this module cannot be imported in tests
 # (Known problem #5 in docs/architecture.md).
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -112,7 +106,7 @@ def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_anomalies(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -128,7 +122,7 @@ def load_anomalies(ticker: str, days: int = 180) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_forecasts(ticker: str) -> pd.DataFrame:
     engine = get_engine()
     # Show only the most recent run per model. Averaging across runs blended
@@ -153,7 +147,7 @@ def load_forecasts(ticker: str) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_sentiment(ticker: str, days: int = 7) -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -177,7 +171,7 @@ def load_sentiment(ticker: str, days: int = 7) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_sentiment_summary() -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -198,7 +192,7 @@ def load_sentiment_summary() -> pd.DataFrame:
         return pd.read_sql(query, conn, params={"sources": list(NEWS_SOURCES)})
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_backtest_summary() -> pd.DataFrame:
     engine = get_engine()
     query = text("""
@@ -212,7 +206,7 @@ def load_backtest_summary() -> pd.DataFrame:
         return pd.read_sql(query, conn)
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_backtest_series(ticker: str) -> dict:
     import json as _json
 
@@ -233,7 +227,7 @@ def load_backtest_series(ticker: str) -> dict:
     }
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@cached
 def load_anomaly_summary() -> pd.DataFrame:
     engine = get_engine()
     query = text("""

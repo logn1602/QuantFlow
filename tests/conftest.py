@@ -155,12 +155,17 @@ class FakeDatabase:
         match = re.search(r"DELETE FROM\s+(\w+)", sql, re.IGNORECASE)
         assert match, f"cannot find the target table in: {sql}"
         table = match.group(1)
-        tickers = (rows[0] if rows else {}).get("tickers")
+        params = rows[0] if rows else {}
+        tickers = params.get("tickers")
         if tickers is None:
             return FakeResult(0)
+        models = params.get("models")
         before = len(self.tables[table])
         self.tables[table] = [
-            r for r in self.tables[table] if r.get("ticker") not in tickers
+            r
+            for r in self.tables[table]
+            if r.get("ticker") not in tickers
+            or (models is not None and r.get("model") not in models)
         ]
         return FakeResult(before - len(self.tables[table]))
 

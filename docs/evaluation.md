@@ -871,7 +871,7 @@ about 3.5 minutes from the live ensemble refits, if D2 approves them (section 5)
 | Separate ensemble weights per horizon | About 12 rows each; a Phase 3 candidate. |
 | The backtest on the new harness | Known problem #3; with the dashboard figures in Phase 4. |
 | The dashboard's accuracy figures | Phase 4, by the brief. |
-| Weights from stored live forecasts | Needs a retention decision (`run_models` clears them). |
+| Weights from stored live forecasts | Needs a retention decision (`run_models` replaces them every run). |
 | A manual GitHub workflow for the evaluation | Decision D9. |
 | Deleting the bad sentiment rows | The features ignore them; the DELETE is offered, yours to run. |
 | Social-media news sources | Phase 5 designs for them; not built. |
@@ -1250,7 +1250,7 @@ scoring of the test dates (D13).
 window, ticker and model: MAPE, skill against naive, band coverage, the primary test,
 and the run each row came from), and `docs/images/mape_by_days_ahead.png`, the
 README's chart. The dashboard cannot measure this itself: the daily run fits each
-model once and deletes the previous run's forecasts, so it keeps no forecast history
+model once and replaces the previous run's forecasts, so it keeps no forecast history
 to score. The published figures change only when the evaluation is rerun on a new
 snapshot and published again.
 

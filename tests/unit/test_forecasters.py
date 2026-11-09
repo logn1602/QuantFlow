@@ -270,3 +270,31 @@ def test_a_booster_forecast_that_does_not_start_at_the_origin_fails(
     )
     with pytest.raises(RuntimeError, match="not the origin"):
         forecasters.booster("xgboost")(_data(_prices()))
+
+
+def test_the_boosters_go_to_the_runs_set_when_given_one(monkeypatch, fake_regressors):
+    """run_models holds every forecast until the last model is done
+    (db.forecasts.ForecastSet), so the step must not store its own."""
+    from quantflow.db.forecasts import ForecastSet
+
+    prices = _prices()
+
+    def refuse(df):
+        raise AssertionError("stored before the run was done")
+
+    monkeypatch.setattr(boosting, "load_news", lambda: None)
+    monkeypatch.setattr(
+        boosting,
+        "load_features",
+        lambda t, news: build_features(prices, pd.DataFrame(), t),
+    )
+    monkeypatch.setattr(boosting, "save_forecasts", refuse)
+    monkeypatch.setattr(boosting, "log_mlflow", lambda *a, **k: None)
+    monkeypatch.setattr(boosting, "save_model_metrics", lambda *a, **k: None)
+    held = ForecastSet()
+
+    results = boosting.run(["AAPL"], forecasts=held)
+
+    assert results == {"AAPL": {"xgboost": 7, "lightgbm": 7}}
+    base = held.base("AAPL", ["xgboost", "lightgbm"])
+    assert sorted(base["model"].unique()) == ["lightgbm", "xgboost"]

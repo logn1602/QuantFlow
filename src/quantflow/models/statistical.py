@@ -33,7 +33,7 @@ from sqlalchemy import text
 
 from quantflow.config import TICKERS
 from quantflow.db.connection import get_engine
-from quantflow.db.forecasts import save_forecasts
+from quantflow.db.forecasts import ForecastSet, save_forecasts
 from quantflow.db.metrics import save_model_metrics
 from quantflow.db.prices import load_daily_close as load_prices
 from quantflow.evaluation.metrics import regression_metrics
@@ -371,9 +371,16 @@ def compare_models(ticker: str):
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 
-def run(tickers: list[str] | None = None, models: list[str] | None = None) -> dict:
+def run(
+    tickers: list[str] | None = None,
+    models: list[str] | None = None,
+    forecasts: ForecastSet | None = None,
+) -> dict:
+    """forecasts is the set run_models holds every forecast in until the run
+    is done; without one, each forecast is stored as it is made."""
     tickers = tickers or TICKERS
     models = models or ["arima", "prophet"]
+    save = forecasts.save if forecasts is not None else save_forecasts
     results = {}
 
     for ticker in tickers:
@@ -388,18 +395,18 @@ def run(tickers: list[str] | None = None, models: list[str] | None = None) -> di
         if "arima" in models:
             logger.info(f"  Fitting ARIMA for {ticker}...")
             arima_forecast, arima_metrics = run_arima(df, ticker)
-            n = save_forecasts(arima_forecast)
+            n = save(arima_forecast)
             save_model_metrics(ticker, "arima", arima_metrics, HOLDOUT_DAYS)
             ticker_results["arima"] = n
-            logger.info(f"  ARIMA: {n} forecast rows saved")
+            logger.info(f"  ARIMA: {n} forecast rows")
 
         if "prophet" in models:
             logger.info(f"  Fitting Prophet for {ticker}...")
             prophet_forecast, prophet_metrics = run_prophet(df, ticker)
-            n = save_forecasts(prophet_forecast)
+            n = save(prophet_forecast)
             save_model_metrics(ticker, "prophet", prophet_metrics, HOLDOUT_DAYS)
             ticker_results["prophet"] = n
-            logger.info(f"  Prophet: {n} forecast rows saved")
+            logger.info(f"  Prophet: {n} forecast rows")
 
         results[ticker] = ticker_results
 
