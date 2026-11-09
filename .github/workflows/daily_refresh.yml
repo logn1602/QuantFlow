@@ -68,19 +68,6 @@ jobs:
       - name: Run tests
         run: uv run pytest -m "not eval and not integration"
 
-      # Audits the exact versions installed above, read from uv.lock; nothing
-      # is installed or resolved for the audit. This is the only place the
-      # dependency set gets audited at all.
-      #
-      # continue-on-error while the baseline is unknown: a fresh upstream
-      # advisory should surface in the log, not silently block the daily data
-      # refresh. Tighten to a hard failure once the baseline is clean.
-      - name: Audit dependencies
-        run: |
-          uv export --locked --extra dev --no-hashes --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/locked-requirements.txt"
-          uvx pip-audit --requirement "$RUNNER_TEMP/locked-requirements.txt" --no-deps --disable-pip
-        continue-on-error: true
-
       - name: Fetch latest 15-min bars
         env:
           # yfinance needs no key. ALPHA_VANTAGE_API_KEY is kept here because
@@ -145,3 +132,17 @@ jobs:
         run: |
           echo "QuantFlow daily refresh complete!"
           echo "Live dashboard: https://quantflow-analytics.streamlit.app"
+
+      # Audits the exact versions installed above, read from uv.lock; nothing
+      # is installed or resolved for the audit. This is the only place the
+      # dependency set gets audited at all.
+      #
+      # Last, so a new upstream advisory fails the run (pip-audit exits 1)
+      # only after the data is refreshed, never blocking it. It runs after a
+      # failed data step too, so no day goes unaudited. A pip-audit outage
+      # also fails it, with the data already refreshed.
+      - name: Audit dependencies
+        if: ${{ !cancelled() }}
+        run: |
+          uv export --locked --extra dev --no-hashes --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/locked-requirements.txt"
+          uvx pip-audit --requirement "$RUNNER_TEMP/locked-requirements.txt" --no-deps --disable-pip
