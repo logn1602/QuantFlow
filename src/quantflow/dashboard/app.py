@@ -406,13 +406,12 @@ def forecast_chart(prices, forecasts, ticker):
         )
     # The yardstick every model is measured against: the latest close, held
     # for all 7 days (dashboard/accuracy.py has how they compare).
-    future = sorted(forecasts["forecast_date"].unique())
-    if future and not recent.empty:
-        last_date, last_close = recent["date"].iloc[-1], recent["close"].iloc[-1]
+    no_change = accuracy.no_change_forecast(recent, forecasts)
+    if not no_change.empty:
         fig.add_trace(
             go.Scatter(
-                x=[last_date, *future],
-                y=[last_close] * (len(future) + 1),
+                x=no_change["date"],
+                y=no_change["close"],
                 name="No change (latest close)",
                 line={"color": "#bdbdbd", "width": 2, "dash": "dot"},
                 mode="lines",
@@ -501,10 +500,7 @@ with st.sidebar:
     st.success("✅ Level 2 — XGBoost/LightGBM")
     st.success("✅ Level 3 — Stacking Ensemble")
     st.divider()
-    st.caption(
-        "Data refreshes once a day, after the US close; this page caches it "
-        "for 5 minutes"
-    )
+    st.caption("Data refreshes once a day, after the US close")
     if st.button("🔄 Refresh Data"):
         st.cache_data.clear()
         st.rerun()
@@ -630,24 +626,15 @@ with tab3:
             st.caption(accuracy.band_caption(published))
 
         st.subheader("7-day numbers, all models")
-        model_labels = {
-            "naive": "No change",
-            "arima": "ARIMA",
-            "prophet": "Prophet",
-            "xgboost": "XGBoost",
-            "lightgbm": "LightGBM",
-            "ensemble_stack": "⭐ Ensemble",
-        }
-        future = sorted(forecasts["forecast_date"].unique())
+        model_labels = {**accuracy.SHOWN, "ensemble_stack": "⭐ Ensemble"}
+        # Its first row is the latest close itself, not a forecast.
+        no_change = accuracy.no_change_forecast(prices, forecasts).iloc[1:]
         for col, (model, label) in zip(
             st.columns(len(model_labels)), model_labels.items(), strict=True
         ):
-            if model == "naive":
+            if model == accuracy.BASELINE:
                 mdf = pd.DataFrame(
-                    {
-                        "Date": future,
-                        "Forecast": round(float(prices["close"].iloc[-1]), 2),
-                    }
+                    {"Date": no_change["date"], "Forecast": no_change["close"].round(2)}
                 )
             else:
                 mdf = forecasts[forecasts["model"] == model][
@@ -671,6 +658,9 @@ with tab3:
             "No published evaluation found. Run: python -m "
             "quantflow.pipelines.evaluate publish --validation <run> --test <run>"
         )
+    elif not accuracy.covers(published, ticker):
+        st.info(f"The published evaluation did not score {ticker}.")
+        st.caption(accuracy.provenance(published))
     else:
         st.dataframe(
             accuracy.accuracy_rows(published, ticker),
