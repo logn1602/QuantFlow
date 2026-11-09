@@ -49,7 +49,7 @@ def test_every_shown_model_is_listed_beside_no_change_for_the_ticker():
     assert rows["Model"].tolist() == list(accuracy.SHOWN.values())
     no_change = rows.iloc[0]
     assert no_change["Model"] == "No change"
-    assert no_change["MAPE, validation"] == "2.88%"
+    assert no_change["MAPE, validation"] == "2.88% (lowest)"  # the fixture's lowest
     assert no_change[accuracy.SKILL] == ""
     assert no_change[accuracy.BAND] == "no band"
     arima = rows.iloc[1]
@@ -171,6 +171,24 @@ def test_the_rows_keep_windows_and_tickers_apart():
     assert arima["MAPE, validation"] == "2.98%"
     assert arima["MAPE, test"] == "3.98%"
     assert arima[accuracy.SKILL] == "-0.010"
+
+
+def test_only_the_lowest_measured_error_per_window_is_marked():
+    """Nothing is crowned; the one mark is the lowest 7-day error for the
+    ticker in each window, often "no change"."""
+    published = _published()
+    aapl_arima_validation = (
+        (published["ticker"] == "AAPL")
+        & (published["model"] == "arima")
+        & (published["window"] == "validation")
+    )
+    published.loc[aapl_arima_validation, "mape"] = 2.5
+    rows = accuracy.accuracy_rows(published, "AAPL").set_index("Model")
+    assert rows.loc["ARIMA", "MAPE, validation"] == "2.50% (lowest)"
+    assert rows.loc["No change", "MAPE, validation"] == "2.88%"
+    assert rows.loc["No change", "MAPE, test"] == "2.88% (lowest)"
+    marked = rows.apply(lambda col: col.str.endswith("(lowest)")).to_numpy().sum()
+    assert marked == 2
 
 
 def test_provenance_names_each_window_and_its_run():

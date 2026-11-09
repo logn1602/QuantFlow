@@ -73,7 +73,9 @@ def _coverage(rows: pd.DataFrame, model: str) -> str:
 
 def accuracy_rows(published: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """One row per shown model for `ticker`: MAPE on the validation and test
-    dates, skill against no change (validation) and band coverage."""
+    dates, skill against no change (validation) and band coverage. No model
+    is singled out; the one mark is "(lowest)" on the lowest MAPE in each
+    window, often "no change"'s."""
     rows = published[published["ticker"] == ticker]
     out = []
     for model, label in SHOWN.items():
@@ -92,7 +94,12 @@ def accuracy_rows(published: pd.DataFrame, ticker: str) -> pd.DataFrame:
         )
     table = pd.DataFrame(out)
     for column in ("MAPE, validation", "MAPE, test"):
-        table[column] = table[column].map(lambda v: "" if pd.isna(v) else f"{v:.2f}%")
+        lowest = table[column].min()
+        table[column] = table[column].map(
+            lambda v, lowest=lowest: (
+                "" if pd.isna(v) else f"{v:.2f}%" + (" (lowest)" if v == lowest else "")
+            )
+        )
     table[SKILL] = table[SKILL].map(
         lambda v: "" if v is None or pd.isna(v) else f"{v:+.3f}"
     )
