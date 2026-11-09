@@ -36,14 +36,32 @@ def _code_only(sql):
     return re.sub(r"'[^']*'", "''", sql)
 
 
-def test_the_sql_is_four_queries_that_only_read(diagnostics):
-    queries = diagnostics.queries()
+FREE_TIER_SQL = ROOT / "scripts" / "diagnostics" / "free_tier_usage.sql"
+
+
+@pytest.mark.parametrize("sql_file", [None, FREE_TIER_SQL], ids=["1a", "free_tier"])
+def test_the_sql_is_four_queries_that_only_read(diagnostics, sql_file):
+    queries = diagnostics.queries(sql_file or diagnostics.SQL_FILE)
     assert len(queries) == 4
     for name, sql in queries.items():
         code = _code_only(sql).strip()
         assert re.match(r"(WITH|SELECT)\b", code), name
         assert not re.search(WRITES, code, re.IGNORECASE), name
         assert ";" not in code.rstrip(";"), f"{name}: more than one statement"
+
+
+def test_sql_picks_the_query_file_and_a_remote_database_still_needs_live(
+    diagnostics, monkeypatch, tmp_path
+):
+    ran = []
+    monkeypatch.setattr(diagnostics, "run", lambda out, sql_file: ran.append(sql_file))
+    monkeypatch.setattr(diagnostics.config, "DB_HOST", "db.example.supabase.co")
+    out = str(tmp_path / "usage.md")
+    assert diagnostics.main(["--sql", str(FREE_TIER_SQL), "--out", out]) == 2
+    assert ran == []
+    assert diagnostics.main(["--sql", str(FREE_TIER_SQL), "--live", "--out", out]) == 0
+    assert diagnostics.main(["--live", "--out", out]) == 0
+    assert ran == [FREE_TIER_SQL, diagnostics.SQL_FILE]
 
 
 def test_a_remote_database_is_refused_without_live(diagnostics, monkeypatch, tmp_path):
@@ -67,7 +85,7 @@ def test_an_error_is_printed_with_the_connection_settings_masked(
     for key, value in settings.items():
         monkeypatch.setattr(diagnostics.config, key, value)
 
-    def refuse(out):
+    def refuse(out, sql_file):
         raise RuntimeError(
             'password authentication failed for user "postgres.abcdefgh" '
             "(s3cret-pw) at db.example.supabase.co/quantdb"

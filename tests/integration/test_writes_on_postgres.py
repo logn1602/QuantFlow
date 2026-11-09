@@ -390,6 +390,42 @@ def test_the_diagnostics_run_read_only_on_postgres(pg, monkeypatch, tmp_path):
     assert _count(pg, "SELECT count(*) FROM raw_prices") == 2  # nothing written
 
 
+def test_the_free_tier_usage_queries_run_read_only_on_postgres(
+    pg, monkeypatch, tmp_path
+):
+    """free_tier_usage.sql through the same runner (--sql): all four queries
+    run, daily bars and 15-min bars are counted apart, and nothing is written.
+    It reads model_metrics and backtest_results too, which the pg fixture
+    leaves out, so they are created here."""
+    import importlib.util
+    import sys
+
+    script = ROOT / "scripts" / "diagnostics" / "run_1a_diagnostics.py"
+    spec = importlib.util.spec_from_file_location("run_1a_diagnostics", script)
+    assert spec and spec.loader
+    diagnostics = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, diagnostics)
+    spec.loader.exec_module(diagnostics)
+    with pg.begin() as conn:
+        for name in ("schema_metrics.sql", "schema_backtest.sql"):
+            ddl = (ROOT / "sql" / name).read_text(encoding="utf-8")
+            # Their comments hold "%", which the driver reads as a placeholder.
+            conn.exec_driver_sql(ddl.replace("%", "%%"))
+
+    bars = _bars(["2026-04-09", "2026-04-10"])
+    bars.append({**bars[-1], "ts": pd.Timestamp("2026-04-10 13:30", tz="UTC")})
+    prices.insert_bars(bars)
+    out = tmp_path / "usage.md"
+    sql = ROOT / "scripts" / "diagnostics" / "free_tier_usage.sql"
+    assert diagnostics.main(["--sql", str(sql), "--live", "--out", str(out)]) == 0
+
+    text = out.read_text(encoding="utf-8")
+    assert text.count("### ") == 4
+    assert "| AAPL | yfinance | 3 | 2 | 1 | 2026-04-09 | 2026-04-10 |" in text
+    assert "| raw_prices | 3 |" in text
+    assert _count(pg, "SELECT count(*) FROM raw_prices") == 3  # nothing written
+
+
 def test_the_evaluation_snapshot_is_exported_read_only(pg, tmp_path, capsys):
     """pipelines.evaluate export, end to end: daily bars built by the same
     rule as the loaders, a date built from 15-min bars listed, articles
