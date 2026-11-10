@@ -31,7 +31,9 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DataError, IntegrityError, ProgrammingError
 
+from quantflow.dashboard import trending_view
 from quantflow.db import trending
+from quantflow.db.batch import insert_rows
 
 pytestmark = [pytest.mark.integration, pytest.mark.trending]
 
@@ -159,6 +161,10 @@ def test_a_role_with_default_select_reads_every_new_table_and_writes_none(
                 for name in TABLES:
                     count = conn.exec_driver_sql(f"SELECT count(*) FROM {name}")
                     assert count.scalar_one() == 0
+                # The Trending tab's reads, as the dashboard runs them.
+                assert trending_view.load_table(conn).empty
+                assert trending_view.load_list_status(conn).empty
+                assert trending_view.load_bars(conn, "SPCX").empty
                 with pytest.raises(ProgrammingError, match="permission denied"):
                     conn.exec_driver_sql(
                         "INSERT INTO trending_fetches VALUES "
@@ -450,3 +456,137 @@ def test_a_reader_always_finds_the_symbols_bars_during_replacements(pg):
 
     assert len(counts) > 30, "the reader barely ran; the check proves nothing"
     assert min(counts) == len(DAYS)
+
+
+# ── The Trending tab's reads (section 10) ─────────────────────────────────────
+
+
+def _seed_the_tab(pg):
+    """Two sessions of fetches, four symbols, some prices and news."""
+    earlier = T0 - pd.Timedelta(days=1)
+    day = {T0: dt.date(2026, 11, 10), earlier: dt.date(2026, 11, 9)}
+
+    def snap(ts, symbol, list_name, rank, pct):
+        return _snapshot(symbol, list_name, rank, pct_change=pct) | {
+            "snapshot_ts": ts,
+            "session_date": day[ts],
+        }
+
+    snapshots = [
+        snap(earlier, "HIMS", "most_actives", 4, -1.0),
+        snap(earlier, "GONE", "most_actives", 1, 3.0),
+        snap(T0, "HIMS", "trending_tickers", 2, -17.98),
+        snap(T0, "HIMS", "day_losers", 1, -17.99),
+        snap(T0, "TTWO", "trending_tickers", 1, 8.06),
+    ]
+    outcomes = [
+        _outcome(earlier, day[earlier], "most_actives", True),
+        _outcome(T0, day[T0], "trending_tickers", True),
+        _outcome(T0, day[T0], "day_losers", True),
+        _outcome(T0, day[T0], "most_actives", False),
+    ]
+    trending.save_fetch(snapshots, outcomes)
+    trending.upsert_tickers(
+        [
+            _ticker("HIMS", short_name="Hims & Hers"),
+            _ticker("TTWO"),
+            _ticker("SPCX", pinned=True, first_trade_date=dt.date(2026, 6, 12)),
+            _ticker("GONE", active=False),
+        ],
+        trending.SELECTION_COLUMNS,
+    )
+    trending.upsert_tickers(
+        [_ticker("HIMS", summary_session=dt.date(2026, 11, 9), rsi_14=28.61,
+                 recent_flags=4, last_close=18.8151)],
+        trending.SUMMARY_COLUMNS,
+    )  # fmt: skip
+    trending.replace_prices("SPCX", _bars("SPCX", DAYS[-30:], 140.0), DAYS[-30].date())
+    now = pd.Timestamp.now(tz="UTC")
+    news = [
+        {"ticker": "HIMS", "source": "rss", "headline": f"h{i}",
+         "published_at": now - pd.Timedelta(days=age), "sentiment": "negative",
+         "compound": score}
+        for i, (age, score) in enumerate([(1, -0.5), (2, -0.3), (10, 0.9)])
+    ]  # fmt: skip
+    with pg.begin() as conn:
+        insert_rows(conn, "trending_news", news)
+
+
+def test_the_tabs_table_is_one_grouped_read_of_the_active_symbols(pg):
+    _seed_the_tab(pg)
+    with pg.connect() as conn:
+        table = trending_view.load_table(conn)
+
+    # Active only, by today's best rank, the pinned symbol off the lists last.
+    assert list(table["symbol"]) == ["HIMS", "TTWO", "SPCX"]
+    hims = table.iloc[0]
+    assert hims["best_rank"] == 1 and sorted(hims["lists"]) == [
+        "day_losers",
+        "trending_tickers",
+    ]
+    assert float(hims["pct_change"]) == pytest.approx(-17.99)  # the best-ranked item
+    assert hims["days_trending"] == 2  # two sessions, counted once each
+    assert hims["articles_7d"] == 2  # the 10-day-old article is out of the window
+    assert float(hims["sentiment_7d"]) == pytest.approx(-0.4)
+    assert hims["short_name"] == "Hims & Hers" and hims["recent_flags"] == 4
+    spcx = table.iloc[2]
+    assert pd.isna(spcx["best_rank"]) and spcx["days_trending"] == 0
+    assert spcx["articles_7d"] == 0 and bool(spcx["pinned"])
+
+    shown = trending_view.table_rows(
+        table, settings=_view_settings(), today=dt.date(2026, 11, 10)
+    )
+    assert shown["Lists"].iloc[0] == "trending_tickers, day_losers"
+    assert list(shown["Badges"]) == ["", "", "pinned"]
+
+
+def _view_settings():
+    from quantflow.ingestion import trending_rules
+
+    return trending_rules.TrendingSettings(
+        pinned=("SPCX",),
+        lists=trending_rules.KNOWN_LISTS,
+        max_active=15,
+        max_new_per_run=5,
+        inactive_after=5,
+        min_price=5.0,
+        min_market_cap=None,
+        promotion_min_days=20,
+        promotion_min_history_days=504,
+    )
+
+
+def test_the_tabs_list_line_shows_each_lists_last_success(pg):
+    _seed_the_tab(pg)
+    with pg.connect() as conn:
+        status = trending_view.load_list_status(conn)
+    lines = trending_view.list_lines(status, _view_settings().lists)
+    assert lines == [
+        "trending_tickers: last succeeded 2026-11-10 23:10 UTC",
+        "most_actives: last succeeded 2026-11-09 23:10 UTC; failed since",
+        "day_gainers: never fetched",
+        "day_losers: last succeeded 2026-11-10 23:10 UTC",
+    ]
+
+
+def test_the_tabs_chart_reads_one_symbols_bars(pg):
+    _seed_the_tab(pg)
+    with pg.connect() as conn:
+        bars = trending_view.load_bars(conn, "SPCX")
+        none = trending_view.load_bars(conn, "HIMS")
+    assert len(bars) == 30 and none.empty
+    prices, indicators, _ = trending_view.chart_frames(bars, "SPCX")
+    assert len(prices) == 30 and not indicators.empty
+
+
+def test_before_the_migration_the_tab_reads_its_empty_state(pg_url, schema_engine):
+    """The tables are not there yet: each read is an empty frame, not an
+    error, and the connection is usable after."""
+    with (
+        _fresh_schema(pg_url, schema_engine) as (engine, _),
+        engine.connect() as conn,
+    ):
+        assert trending_view.load_table(conn).empty
+        assert trending_view.load_list_status(conn).empty
+        assert trending_view.load_bars(conn, "SPCX").empty
+        assert conn.exec_driver_sql("SELECT 1").scalar_one() == 1

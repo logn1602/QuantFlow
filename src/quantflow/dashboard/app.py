@@ -15,6 +15,8 @@ Usage:
     streamlit run dashboard.py
 """
 
+import logging
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -22,11 +24,12 @@ from plotly.subplots import make_subplots
 from sqlalchemy import text
 
 from quantflow.config import TICKERS
-from quantflow.dashboard import accuracy
+from quantflow.dashboard import accuracy, trending_view
 from quantflow.dashboard.caching import CACHE_SECONDS, cached
 from quantflow.db.connection import get_engine
 from quantflow.db.prices import load_recent_ohlcv
 from quantflow.features.news import NEWS_SOURCES
+from quantflow.ingestion import trending_rules
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -225,6 +228,27 @@ def load_backtest_series(ticker: str) -> dict:
         "daily_values": _json.loads(row[0]),
         "benchmark_values": _json.loads(row[1]),
     }
+
+
+@cached
+def load_trending_table() -> pd.DataFrame:
+    """The Trending tab's table, one grouped query (dashboard/trending_view.py)."""
+    with get_engine().connect() as conn:
+        return trending_view.load_table(conn)
+
+
+@cached
+def load_trending_lists() -> pd.DataFrame:
+    """Each trending list's last success, for the line above the table."""
+    with get_engine().connect() as conn:
+        return trending_view.load_list_status(conn)
+
+
+@cached
+def load_trending_bars(symbol: str) -> pd.DataFrame:
+    """One trending symbol's stored daily bars, for its chart."""
+    with get_engine().connect() as conn:
+        return trending_view.load_bars(conn, symbol)
 
 
 @cached
@@ -597,7 +621,7 @@ with col6:
 st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     [
         "📈 Price & Bollinger Bands",
         "📉 RSI & MACD",
@@ -605,6 +629,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         "🗞️ Sentiment",
         "🌍 Market Overview",
         "📊 Backtest",
+        "🔥 Trending",
     ]
 )
 
@@ -957,3 +982,62 @@ with tab6:
             "Base models and the ensemble meta-learner are both evaluated "
             "out-of-fold, so no prediction saw its own actual"
         )
+
+with tab7:
+    # The trending tier (docs/trending.md, section 10): discovery only, from
+    # its own tables. Its data loading and shaping live in trending_view.py,
+    # where they are tested; symbols and names are shown as text, never HTML.
+    st.caption(trending_view.CAPTION)
+    trending_settings: trending_rules.TrendingSettings | None
+    try:
+        trending_settings = trending_rules.settings(TICKERS)
+    except trending_rules.TrendingConfigError as error:
+        trending_settings = None
+        st.warning(f"The trending settings cannot be read: {error}")
+
+    if trending_settings is not None:
+        try:
+            trending_table = load_trending_table()
+            trending_lists = load_trending_lists()
+            if trending_table.empty and trending_lists.empty:
+                st.info(trending_view.EMPTY)
+            else:
+                st.caption(
+                    " · ".join(
+                        trending_view.list_lines(
+                            trending_lists, trending_settings.lists
+                        )
+                    )
+                )
+                shown = trending_view.table_rows(
+                    trending_table,
+                    settings=trending_settings,
+                    today=trending_rules.session_date(pd.Timestamp.now(tz="UTC")),
+                )
+                if shown.empty:
+                    st.info(trending_view.EMPTY)
+                else:
+                    st.dataframe(shown, use_container_width=True, hide_index=True)
+                    chosen = st.selectbox(
+                        "Chart", list(shown["Symbol"]), key="trending_symbol"
+                    )
+                    bars_t, indicators_t, flags_t = trending_view.chart_frames(
+                        load_trending_bars(chosen), chosen
+                    )
+                    if bars_t.empty:
+                        st.info(f"No stored bars for {chosen} yet.")
+                    else:
+                        st.plotly_chart(
+                            price_chart(bars_t, indicators_t, flags_t, chosen),
+                            use_container_width=True,
+                        )
+                        if not indicators_t.empty:
+                            st.plotly_chart(
+                                rsi_macd_chart(indicators_t, chosen),
+                                use_container_width=True,
+                            )
+        except Exception:
+            # The last tab: a fault here must not show a traceback, with the
+            # database's details, to every visitor.
+            logging.getLogger(__name__).exception("The Trending tab failed")
+            st.error("The trending data could not be loaded right now.")
