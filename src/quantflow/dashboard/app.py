@@ -1003,7 +1003,7 @@ with tab7:
                 st.info(trending_view.EMPTY)
             else:
                 st.caption(
-                    " · ".join(
+                    trending_view.list_caption(
                         trending_view.list_lines(
                             trending_lists, trending_settings.lists
                         )

@@ -158,6 +158,13 @@ def list_lines(status: pd.DataFrame, lists: Sequence[str]) -> list[str]:
     return lines
 
 
+def list_caption(lines: Sequence[str]) -> str:
+    """The lines as one caption, a line each: joined with Markdown's hard
+    line break, so a list's entry never wraps into the next one's (ISSUE-001,
+    /qa 2026-11-10). The lines hold list names and times only."""
+    return "  \n".join(lines)
+
+
 def _date(value: Any) -> dt.date | None:
     """A stored date as a date, None for NULL. pd.isna first: NaT is itself
     an instance of datetime.date."""

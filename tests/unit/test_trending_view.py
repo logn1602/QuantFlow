@@ -145,6 +145,19 @@ def test_no_status_at_all_reads_never_fetched_for_every_list():
     ]
 
 
+def test_each_list_has_a_line_of_its_own_above_the_table():
+    """Regression: ISSUE-001, found by /qa on 2026-11-10 (report in
+    .gstack/qa-reports/). The lines were joined into one run-on caption,
+    which wrapped in the middle of a list's entry at laptop widths; the
+    design shows one short line per list. Markdown's hard line break (two
+    spaces, a newline) keeps them one block, a line each."""
+    lines = ["trending_tickers: never fetched", "most_actives: never fetched"]
+    caption = view.list_caption(lines)
+    assert caption.split("  \n") == lines
+    assert " · " not in caption
+    assert view.list_caption([]) == ""
+
+
 # ── The table ─────────────────────────────────────────────────────────────────
 
 
