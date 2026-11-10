@@ -1,0 +1,87 @@
+name: QuantFlow Trending Tier
+
+# The trending tier (docs/trending.md): the stocks people are watching and
+# trading heavily right now, discovery and analytics only, in tables of its
+# own. Never forecast, ensembled or backtested, and never in the evaluation.
+#
+# Its own workflow, started once the daily refresh has finished, whatever its
+# result, never beside it: so it shares neither the refresh's 45-minute
+# timeout nor its test step, and a red trending run never turns the refresh,
+# which feeds the forward tests, red. It stops if GitHub ever disables the
+# refresh's schedule (60 days without repository activity), since it starts
+# from the refresh's completion.
+on:
+  workflow_run:
+    workflows: ["QuantFlow Daily Data Refresh"]
+    types: [completed]
+    branches: [main]
+
+  # Allow a manual run from the GitHub Actions tab.
+  workflow_dispatch:
+
+# GITHUB_TOKEN is only used for the actions/checkout clone. Nothing here
+# pushes, opens PRs, uploads or downloads artifacts, or calls the gh CLI.
+permissions:
+  contents: read
+
+# One trending run at a time; a running one is never cancelled.
+concurrency:
+  group: trending
+  cancel-in-progress: false
+
+jobs:
+  trending:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      # The core watchlist, which the tier leaves out of its lists (rule 3).
+      # The same eight as daily_refresh.yml and .env.example.
+      TICKERS: AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM
+      # Always tracked, outside the cap; the default in config.py and
+      # .env.example too.
+      TRENDING_PINNED: SPCX
+      LOG_LEVEL: INFO
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      # The exact versions in uv.lock, as CI and the daily refresh install
+      # them.
+      - name: Install dependencies
+        run: uv sync --locked --extra dev
+
+      # The whole offline suite, the trending tests included: the daily
+      # refresh's test step leaves those out, so they run here before the tier
+      # writes anything.
+      - name: Run tests
+        run: uv run pytest -m "not eval and not integration"
+
+      # The model the daily refresh caches, by the revision the code pins
+      # (FINBERT_REVISION in features/sentiment.py).
+      - name: Cache the FinBERT model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: finbert-${{ runner.os }}-4556d13015211d73dccd3fdd39d39232506f3e43
+
+      # Fetch the lists, choose the active set, then prices, analytics and
+      # sentiment for it, sentiment last. Exits 1 when any list failed, after
+      # storing what the others returned (T8), or when a price replacement or
+      # FinBERT failed, so GitHub's failure notice goes out.
+      - name: Run the trending tier
+        run: uv run python -m quantflow.pipelines.trending

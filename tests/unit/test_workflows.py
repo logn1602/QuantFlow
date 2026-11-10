@@ -47,11 +47,14 @@ def _pytest_markers(workflow):
     return match.group(1) if match else None
 
 
-def test_the_daily_refresh_runs_the_same_test_selection_as_ci():
+def test_the_daily_refresh_runs_cis_test_selection_less_the_trending_tests():
     """A bare `pytest -q` also ran the eval suite, which CI deliberately
-    excludes, so the two disagreed about what a passing run means."""
+    excludes, so the two disagreed about what a passing run means. The one
+    difference now: the trending tier's tests, which CI and trending.yml run,
+    are left out, so one can never stop the core's data steps on a
+    forward-test day (docs/trending.md, section 12)."""
     assert _pytest_markers(CI) == "not eval and not integration"
-    assert _pytest_markers(DAILY_REFRESH) == _pytest_markers(CI)
+    assert _pytest_markers(DAILY_REFRESH) == f"{_pytest_markers(CI)} and not trending"
 
 
 LOCKED_INSTALL = "uv sync --locked --extra dev"
@@ -252,3 +255,147 @@ def test_make_trending_runs_one_trending_run_with_an_optional_cap():
     body = MAKEFILE.split("\ntrending:\n", 1)[1].split("\n\n", 1)[0]
     assert "python -m quantflow.pipelines.trending" in body
     assert "$(if $(CAP),--cap $(CAP),)" in body
+
+
+# ── The trending tier's workflow (docs/trending.md, section 12) ──────────────
+
+TRENDING = (WORKFLOWS / "trending.yml").read_text(encoding="utf-8")
+
+
+def _workflow_name(workflow):
+    match = re.search(r"^name: (.+)$", workflow, re.MULTILINE)
+    assert match, "no workflow name"
+    return match.group(1).strip()
+
+
+@pytest.mark.trending
+def test_trending_starts_when_the_daily_refresh_completes_or_by_hand():
+    """After the refresh, whatever its result, and never beside it; no
+    schedule of its own, so it stops when the refresh's schedule does."""
+    on = TRENDING.split("\non:\n", 1)[1].split("\n\n# ", 1)[0]
+    assert re.search(r"^  workflow_run:\n", on, re.MULTILINE)
+    workflows = re.search(r"^    workflows: \[\"([^\"]+)\"\]$", on, re.MULTILINE)
+    assert workflows and workflows.group(1) == _workflow_name(DAILY_REFRESH)
+    assert re.search(r"^    types: \[completed\]$", on, re.MULTILINE)
+    assert re.search(r"^    branches: \[main\]$", on, re.MULTILINE)
+    assert re.search(r"^  workflow_dispatch:$", on, re.MULTILINE)
+    for trigger in ("schedule:", "pull_request", "push:"):
+        assert trigger not in on, trigger
+
+
+@pytest.mark.trending
+def test_trending_has_its_own_timeout_and_concurrency_group():
+    assert re.search(r"^    timeout-minutes: 30$", TRENDING, re.MULTILINE)
+    group = re.search(r"^  group: (\S+)$", TRENDING, re.MULTILINE)
+    daily_group = re.search(r"^  group: (\S+)$", DAILY_REFRESH, re.MULTILINE)
+    assert group and daily_group and group.group(1) != daily_group.group(1)
+    assert "cancel-in-progress: false" in TRENDING
+    assert re.search(r"^permissions:\n  contents: read$", TRENDING, re.MULTILINE)
+
+
+@pytest.mark.trending
+def test_trending_installs_locked_runs_every_offline_test_then_the_tier():
+    positions = _step_order(
+        TRENDING,
+        LOCKED_INSTALL,
+        'uv run pytest -m "not eval and not integration"',
+        "uv run python -m quantflow.pipelines.trending",
+    )
+    assert positions == sorted(positions)
+    assert _pytest_markers(TRENDING) == _pytest_markers(CI)
+
+
+@pytest.mark.trending
+def test_trending_runs_no_core_stage_and_the_refresh_runs_no_trending_one():
+    for stage in (
+        "quantflow.ingestion.yfinance_fetcher",
+        "quantflow.ingestion.split_guard",
+        "quantflow.features.indicators",
+        "quantflow.features.anomalies",
+        "quantflow.features.sentiment",
+        "quantflow.pipelines.run_models",
+        "quantflow.pipelines.backtest",
+    ):
+        assert stage not in TRENDING, stage
+    assert "quantflow.pipelines.trending" not in DAILY_REFRESH
+    assert "continue-on-error" not in TRENDING
+
+
+@pytest.mark.trending
+def test_trending_caches_finbert_by_the_revision_the_code_pins():
+    from quantflow.features.sentiment import FINBERT_REVISION
+
+    assert f"key: finbert-${{{{ runner.os }}}}-{FINBERT_REVISION}" in TRENDING
+
+
+@pytest.mark.trending
+def test_trending_tracks_the_core_tickers_and_pins_what_config_pins():
+    """TRENDING_PINNED's default lives in config.py, .env.example and here;
+    the core list here matches the refresh's and .env.example's."""
+    from quantflow import config
+
+    tickers = re.search(r"^\s*TICKERS:\s*(\S+)", TRENDING, re.MULTILINE)
+    daily = re.search(r"^\s*TICKERS:\s*(\S+)", DAILY_REFRESH, re.MULTILINE)
+    assert tickers and daily and tickers.group(1) == daily.group(1)
+    pinned = re.search(r"^\s*TRENDING_PINNED:\s*(\S+)", TRENDING, re.MULTILINE)
+    assert pinned and pinned.group(1) == config.DEFAULT_TRENDING_PINNED
+
+
+def _trending_test_files():
+    tests = ROOT / "tests"
+    return sorted(
+        path
+        for path in tests.rglob("test_*.py")
+        if "pytest.mark.trending" in path.read_text(encoding="utf-8")
+        and path.name != "test_workflows.py"
+    )
+
+
+@pytest.mark.trending
+def test_no_trending_test_reads_the_tickers_from_config():
+    """CI sets two tickers and the daily refresh eight: a trending test that
+    read config.TICKERS could pass in one and fail in the other. Setting it
+    in a test (monkeypatch, by name) is fine; reading it is not."""
+    import ast
+
+    files = _trending_test_files()
+    assert len(files) >= 5, files
+    offenders = []
+    for path in files:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            reads = (
+                (isinstance(node, ast.Attribute) and node.attr == "TICKERS")
+                or (isinstance(node, ast.Name) and node.id == "TICKERS")
+                or (
+                    isinstance(node, ast.ImportFrom)
+                    and any(alias.name == "TICKERS" for alias in node.names)
+                )
+            )
+            if reads:
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == []
+
+
+@pytest.mark.trending
+def test_the_tickers_check_sees_a_read(tmp_path):
+    """Or the test above proves nothing."""
+    import ast
+
+    for source in (
+        "from quantflow.config import TICKERS\n",
+        "x = config.TICKERS\n",
+        "x = TICKERS\n",
+    ):
+        nodes = list(ast.walk(ast.parse(source)))
+        assert any(
+            (isinstance(n, ast.Attribute) and n.attr == "TICKERS")
+            or (isinstance(n, ast.Name) and n.id == "TICKERS")
+            or (isinstance(n, ast.ImportFrom) and n.names[0].name == "TICKERS")
+            for n in nodes
+        ), source
+    setting = 'monkeypatch.setattr(config, "TICKERS", ["AAPL"])\n'
+    assert not any(
+        isinstance(n, ast.Attribute | ast.Name)
+        and getattr(n, "attr", getattr(n, "id", "")) == "TICKERS"
+        for n in ast.walk(ast.parse(setting))
+    )
