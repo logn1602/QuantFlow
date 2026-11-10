@@ -230,11 +230,13 @@ the rules of 4.2. Every candidate gets a `tickers` row (first and last seen), ac
 not; a pinned symbol always has one.
 
 What this does in practice: the four lists carry about 70 to 80 distinct symbols after
-dedupe (an estimate from the 2026-11-09 check; Phase 6 measures it), so on a normal day
-the cap fills from today's lists, and the active set is today's 15 best-ranked names, at
-most 5 of them new. The grace for absent symbols matters only when the lists are
-short. Churn among the top movers is high, so the new-symbol limit is the one that
-binds (section 9 plans on it).
+dedupe (measured in Phase 6: 71 candidates on the 2026-11-10 capture, 72 to 74 in that
+day's runs), so on a normal day the cap fills from today's lists, and the active set is
+today's 15 best-ranked names, at most 5 of them new. The grace for absent symbols
+matters only when the lists are short. Churn among the top movers is high, so the
+new-symbol limit is the one that binds (section 9 plans on it): from an empty start the
+cap fills over about three runs, and a full-size run on 2026-11-10 had 64 of its 72
+candidates new.
 
 Sessions, not runs: each fetch is dated by the session its lists describe, the latest
 New York session that had opened at fetch time (today's from 09:30 New York on a
@@ -602,7 +604,22 @@ included) and about 90 bytes on the wire (a 4,418-row read was 0.40 MB); an arti
 ticker a day (August to October). Assumed: 15 discovered symbols plus SPCX active, 250
 runs a year, and new symbols at the cap of 5 a run, since churn keeps it binding (4.3).
 Phase 6 measures the real figures on a local copy through the byte-counting proxy, as
-Phase 4 did.
+Phase 4 did: they are under the estimates (below).
+
+### Measured (Phase 6, 2026-11-10)
+
+On a throwaway Postgres 17 loaded with the 2026-11-06 snapshot and the tier's own runs,
+through a proxy counting every byte the server sends:
+- a full-size run (cap 15; 72 candidates; 9 active: the pinned symbol, 3 known and 5
+  new, the limit binding): **14.5 KB** read in all, against "under 0.1 MB";
+- the tab: the table 2.2 KB for 9 active symbols (about 4 KB at 16, against 20 to 30
+  KB), the list line 0.5 KB, one symbol's bars 11.4 KB for 127 rows (about 22 KB at
+  250, as estimated).
+
+Growth in that run, per row with its indexes (8 KB pages make figures on tables this
+small rough): prices about 125 B (the estimate below used `raw_prices`' 246 B), articles
+about 614 B (494 B), snapshots about 83 B (160 B). Through the table below, that is
+about 50 to 60 MB in the first year, under its 65 to 85 MB.
 
 ### Storage, first year
 
