@@ -1,0 +1,311 @@
+{
+ "finance": {
+  "result": [
+   {
+    "count": 25,
+    "jobTimestamp": 1794337462345,
+    "startInterval": 202611101800,
+    "quotes": [
+     {
+      "symbol": "NVDA",
+      "shortName": "NVIDIA Corporation",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 167.37,
+      "regularMarketChangePercent": -6.32451,
+      "regularMarketVolume": 345875618,
+      "marketCap": 4041483223040,
+      "firstTradeDateMilliseconds": 917015400000,
+      "trendingScore": 50.80065512670604
+     },
+     {
+      "symbol": "MSFT",
+      "shortName": "Microsoft Corporation",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 532.49,
+      "regularMarketChangePercent": -2.327672,
+      "regularMarketVolume": 16676433,
+      "marketCap": 3954374082560,
+      "firstTradeDateMilliseconds": 511108200000,
+      "trendingScore": 45.71314847037526
+     },
+     {
+      "symbol": "TTWO",
+      "shortName": "Take-Two Interactive Software, ",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 224.125,
+      "regularMarketChangePercent": 8.064131,
+      "regularMarketVolume": 6374973,
+      "marketCap": 41906991104,
+      "firstTradeDateMilliseconds": 861111000000,
+      "trendingScore": 34.36745567750217
+     },
+     {
+      "symbol": "LCID",
+      "shortName": "Lucid Group, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 3.756,
+      "regularMarketChangePercent": 4.3333373,
+      "regularMarketVolume": 25194538,
+      "marketCap": 1480127616,
+      "firstTradeDateMilliseconds": 1600435800000,
+      "trendingScore": 31.860835815571043
+     },
+     {
+      "symbol": "NOW",
+      "shortName": "ServiceNow, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NYQ",
+      "regularMarketPrice": 97.9,
+      "regularMarketChangePercent": -4.7294674,
+      "regularMarketVolume": 12853602,
+      "marketCap": 101612077056,
+      "firstTradeDateMilliseconds": 1340976600000,
+      "trendingScore": 26.73540740385294
+     },
+     {
+      "symbol": "^TNX",
+      "shortName": "CBOE Interest Rate 10 Year T No",
+      "quoteType": "INDEX",
+      "exchange": "CGI",
+      "regularMarketPrice": 4.981,
+      "regularMarketChangePercent": 2.4054298,
+      "regularMarketVolume": 0,
+      "firstTradeDateMilliseconds": -252326400000,
+      "trendingScore": 25.08373566969487
+     },
+     {
+      "symbol": "ANTH.PVT",
+      "shortName": "Anthropic",
+      "quoteType": "PRIVATE_COMPANY",
+      "exchange": "PVT",
+      "regularMarketPrice": 589.01,
+      "regularMarketChangePercent": 0.0,
+      "firstTradeDateMilliseconds": 1672756200000,
+      "trendingScore": 24.347163781662655
+     },
+     {
+      "symbol": "CRWV",
+      "shortName": "CoreWeave, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 47.3,
+      "regularMarketChangePercent": -3.4299722,
+      "regularMarketVolume": 40191348,
+      "marketCap": 26087680000,
+      "firstTradeDateMilliseconds": 1743168600000,
+      "trendingScore": 24.166904398346496
+     },
+     {
+      "symbol": "AAON",
+      "shortName": "AAON, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 75.13,
+      "regularMarketChangePercent": 19.500555,
+      "regularMarketVolume": 3625503,
+      "marketCap": 6194741760,
+      "firstTradeDateMilliseconds": 724516200000,
+      "trendingScore": 23.921754983628794
+     },
+     {
+      "symbol": "ASTS",
+      "shortName": "AST SpaceMobile, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 33.15,
+      "regularMarketChangePercent": -10.138244,
+      "regularMarketVolume": 19736820,
+      "marketCap": 12900902912,
+      "firstTradeDateMilliseconds": 1572615000000,
+      "trendingScore": 22.97758667378849
+     },
+     {
+      "symbol": "PEPG",
+      "shortName": "PepGen Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 4.5284,
+      "regularMarketChangePercent": 89.78836,
+      "regularMarketVolume": 98488185,
+      "marketCap": 313225888,
+      "firstTradeDateMilliseconds": 1651843800000,
+      "trendingScore": 22.832812801628943
+     },
+     {
+      "symbol": "HIMS",
+      "shortName": "Hims & Hers Health, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NYQ",
+      "regularMarketPrice": 18.815,
+      "regularMarketChangePercent": -17.981691,
+      "regularMarketVolume": 48735361,
+      "marketCap": 4389791744,
+      "firstTradeDateMilliseconds": 1568381400000,
+      "trendingScore": 22.429627125711562
+     },
+     {
+      "symbol": "GEV",
+      "shortName": "GE Vernova Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NYQ",
+      "regularMarketPrice": 783.35,
+      "regularMarketChangePercent": -5.545379,
+      "regularMarketVolume": 5099148,
+      "marketCap": 207334785024,
+      "firstTradeDateMilliseconds": 1711546200000,
+      "trendingScore": 21.54769743010757
+     },
+     {
+      "symbol": "CHTR",
+      "shortName": "Charter Communications, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 133.47,
+      "regularMarketChangePercent": 10.123767,
+      "regularMarketVolume": 2774314,
+      "marketCap": 23898011648,
+      "firstTradeDateMilliseconds": 1262701800000,
+      "trendingScore": 20.86044131869729
+     },
+     {
+      "symbol": "UPST",
+      "shortName": "Upstart Holdings, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 20.015,
+      "regularMarketChangePercent": -10.044947,
+      "regularMarketVolume": 6071523,
+      "marketCap": 1979656704,
+      "firstTradeDateMilliseconds": 1608129000000,
+      "trendingScore": 17.760524732322732
+     },
+     {
+      "symbol": "EQPT",
+      "shortName": "EquipmentShare.com Inc",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 13.0,
+      "regularMarketChangePercent": -19.802586,
+      "regularMarketVolume": 6083721,
+      "marketCap": 3293887488,
+      "firstTradeDateMilliseconds": 1769178600000,
+      "trendingScore": 15.958305566164094
+     },
+     {
+      "symbol": "ACAD",
+      "shortName": "ACADIA Pharmaceuticals Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 17.96,
+      "regularMarketChangePercent": 8.848479,
+      "regularMarketVolume": 4589291,
+      "marketCap": 3104008192,
+      "firstTradeDateMilliseconds": 1085664600000,
+      "trendingScore": 15.597218842771637
+     },
+     {
+      "symbol": "ZETA",
+      "shortName": "Zeta Global Holdings Corp.",
+      "quoteType": "EQUITY",
+      "exchange": "NYQ",
+      "regularMarketPrice": 34.47,
+      "regularMarketChangePercent": 6.323267,
+      "regularMarketVolume": 8583171,
+      "marketCap": 8591909888,
+      "firstTradeDateMilliseconds": 1623331800000,
+      "trendingScore": 15.442748878352512
+     },
+     {
+      "symbol": "CRSP",
+      "shortName": "CRISPR Therapeutics AG",
+      "quoteType": "EQUITY",
+      "exchange": "NGM",
+      "regularMarketPrice": 45.19,
+      "regularMarketChangePercent": -9.692251,
+      "regularMarketVolume": 2504977,
+      "marketCap": 4383466496,
+      "firstTradeDateMilliseconds": 1476883800000,
+      "trendingScore": 14.87335736487147
+     },
+     {
+      "symbol": "MARA",
+      "shortName": "MARA Holdings, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NCM",
+      "regularMarketPrice": 7.0945,
+      "regularMarketChangePercent": 6.8448825,
+      "regularMarketVolume": 53410156,
+      "marketCap": 2740600320,
+      "firstTradeDateMilliseconds": 1336138200000,
+      "trendingScore": 14.60031468166852
+     },
+     {
+      "symbol": "CVNA",
+      "shortName": "Carvana Co.",
+      "quoteType": "EQUITY",
+      "exchange": "NYQ",
+      "regularMarketPrice": 71.54,
+      "regularMarketChangePercent": -6.1893535,
+      "regularMarketVolume": 8615200,
+      "marketCap": 106731110400,
+      "firstTradeDateMilliseconds": 1493386200000,
+      "trendingScore": 14.023541587270769
+     },
+     {
+      "symbol": "CSQR",
+      "shortName": "Csquare, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NYQ",
+      "regularMarketPrice": 17.85,
+      "regularMarketChangePercent": 16.895874,
+      "regularMarketVolume": 4767177,
+      "marketCap": 2974416640,
+      "firstTradeDateMilliseconds": 1784208600000,
+      "trendingScore": 13.680161427498843
+     },
+     {
+      "symbol": "LEGN",
+      "shortName": "Legend Biotech Corporation",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 20.06,
+      "regularMarketChangePercent": -17.41458,
+      "regularMarketVolume": 3933580,
+      "marketCap": 3901437440,
+      "firstTradeDateMilliseconds": 1591363800000,
+      "trendingScore": 13.641498482372995
+     },
+     {
+      "symbol": "SE",
+      "shortName": "Sea Limited",
+      "quoteType": "EQUITY",
+      "exchange": "NYQ",
+      "regularMarketPrice": 75.87,
+      "regularMarketChangePercent": -2.6808574,
+      "regularMarketVolume": 14668880,
+      "marketCap": 46469206016,
+      "firstTradeDateMilliseconds": 1508506200000,
+      "trendingScore": 13.140573424838255
+     },
+     {
+      "symbol": "MU",
+      "shortName": "Micron Technology, Inc.",
+      "quoteType": "EQUITY",
+      "exchange": "NMS",
+      "regularMarketPrice": 713.0624,
+      "regularMarketChangePercent": -2.7399094,
+      "regularMarketVolume": 21802757,
+      "marketCap": 806775357440,
+      "firstTradeDateMilliseconds": 454944600000,
+      "trendingScore": 12.4569579453917
+     }
+    ]
+   }
+  ],
+  "error": null
+ }
+}

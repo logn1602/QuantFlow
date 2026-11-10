@@ -1,0 +1,283 @@
+{
+ "id": "437465ef-980e-4d8c-a860-de7cbfbab373",
+ "count": 25,
+ "start": 0,
+ "total": 201,
+ "quotes": [
+  {
+   "symbol": "NVDA",
+   "shortName": "NVIDIA Corporation",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 167.0805,
+   "regularMarketChangePercent": -6.486535,
+   "regularMarketVolume": 345697762,
+   "marketCap": 4034492891136,
+   "firstTradeDateMilliseconds": 917015400000
+  },
+  {
+   "symbol": "INTC",
+   "shortName": "Intel Corporation",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 57.6516,
+   "regularMarketChangePercent": -2.8943896,
+   "regularMarketVolume": 74863674,
+   "marketCap": 306418253824,
+   "firstTradeDateMilliseconds": 322151400000
+  },
+  {
+   "symbol": "SPCX",
+   "shortName": "Space Exploration Technologies ",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 141.297,
+   "regularMarketChangePercent": -0.544132,
+   "regularMarketVolume": 65420171,
+   "marketCap": 1918963548160,
+   "firstTradeDateMilliseconds": 1781271000000
+  },
+  {
+   "symbol": "GRAB",
+   "shortName": "Grab Holdings Limited",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 3.325,
+   "regularMarketChangePercent": -3.3381717,
+   "regularMarketVolume": 61084534,
+   "marketCap": 13423025152,
+   "firstTradeDateMilliseconds": 1606833000000
+  },
+  {
+   "symbol": "IREN",
+   "shortName": "IREN LIMITED",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 19.3199,
+   "regularMarketChangePercent": -9.764492,
+   "regularMarketVolume": 55191334,
+   "marketCap": 8198542336,
+   "firstTradeDateMilliseconds": 1637159400000
+  },
+  {
+   "symbol": "MARA",
+   "shortName": "MARA Holdings, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NCM",
+   "regularMarketPrice": 7.0945,
+   "regularMarketChangePercent": 6.8448825,
+   "regularMarketVolume": 53409755,
+   "marketCap": 2740600320,
+   "firstTradeDateMilliseconds": 1336138200000
+  },
+  {
+   "symbol": "TTD",
+   "shortName": "The Trade Desk, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NGM",
+   "regularMarketPrice": 15.355,
+   "regularMarketChangePercent": 2.8466125,
+   "regularMarketVolume": 51495042,
+   "marketCap": 7259768832,
+   "firstTradeDateMilliseconds": 1474464600000
+  },
+  {
+   "symbol": "AAL",
+   "shortName": "American Airlines Group, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 14.005,
+   "regularMarketChangePercent": -1.0946308,
+   "regularMarketVolume": 49155083,
+   "marketCap": 9279971328,
+   "firstTradeDateMilliseconds": 1127827800000
+  },
+  {
+   "symbol": "HIMS",
+   "shortName": "Hims & Hers Health, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 18.815,
+   "regularMarketChangePercent": -17.981691,
+   "regularMarketVolume": 48734986,
+   "marketCap": 4389791744,
+   "firstTradeDateMilliseconds": 1568381400000
+  },
+  {
+   "symbol": "NOK",
+   "shortName": "Nokia Corporation Sponsored",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 8.225,
+   "regularMarketChangePercent": 0.5504529,
+   "regularMarketVolume": 47325415,
+   "marketCap": 46544748544,
+   "firstTradeDateMilliseconds": 773069400000
+  },
+  {
+   "symbol": "CRWV",
+   "shortName": "CoreWeave, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 47.295,
+   "regularMarketChangePercent": -3.4401824,
+   "regularMarketVolume": 40107245,
+   "marketCap": 26084921344,
+   "firstTradeDateMilliseconds": 1743168600000
+  },
+  {
+   "symbol": "AMD",
+   "shortName": "Advanced Micro Devices, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 515.46,
+   "regularMarketChangePercent": 1.3527932,
+   "regularMarketVolume": 39574812,
+   "marketCap": 845399457792,
+   "firstTradeDateMilliseconds": 322151400000
+  },
+  {
+   "symbol": "SOFI",
+   "shortName": "SoFi Technologies, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 16.125,
+   "regularMarketChangePercent": -3.7324352,
+   "regularMarketVolume": 38019927,
+   "marketCap": 20927676416,
+   "firstTradeDateMilliseconds": 1609770600000
+  },
+  {
+   "symbol": "WULF",
+   "shortName": "TeraWulf Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NCM",
+   "regularMarketPrice": 12.345,
+   "regularMarketChangePercent": -0.28271282,
+   "regularMarketVolume": 36572926,
+   "marketCap": 6191284224,
+   "firstTradeDateMilliseconds": 765552600000
+  },
+  {
+   "symbol": "SMCI",
+   "shortName": "Super Micro Computer, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 27.52,
+   "regularMarketChangePercent": -3.7762234,
+   "regularMarketVolume": 36309065,
+   "marketCap": 18141937664,
+   "firstTradeDateMilliseconds": 1175175000000
+  },
+  {
+   "symbol": "NU",
+   "shortName": "Nu Holdings Ltd.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 11.935,
+   "regularMarketChangePercent": -3.4385052,
+   "regularMarketVolume": 35183204,
+   "marketCap": 57654272000,
+   "firstTradeDateMilliseconds": 1639060200000
+  },
+  {
+   "symbol": "VALE",
+   "shortName": "VALE S.A.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 11.61,
+   "regularMarketChangePercent": -3.0075238,
+   "regularMarketVolume": 32831420,
+   "marketCap": 49409417216,
+   "firstTradeDateMilliseconds": 1016721000000
+  },
+  {
+   "symbol": "ONDS",
+   "shortName": "Ondas Inc",
+   "quoteType": "EQUITY",
+   "exchange": "NCM",
+   "regularMarketPrice": 5.53,
+   "regularMarketChangePercent": -7.3700542,
+   "regularMarketVolume": 32336878,
+   "marketCap": 3220134144,
+   "firstTradeDateMilliseconds": 1607092200000
+  },
+  {
+   "symbol": "ACHR",
+   "shortName": "Archer Aviation Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 4.635,
+   "regularMarketChangePercent": -3.6382477,
+   "regularMarketVolume": 32033314,
+   "marketCap": 3569074432,
+   "firstTradeDateMilliseconds": 1608301800000
+  },
+  {
+   "symbol": "STLA",
+   "shortName": "Stellantis N.V.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 4.265,
+   "regularMarketChangePercent": -3.506792,
+   "regularMarketVolume": 31115583,
+   "marketCap": 12388103168,
+   "firstTradeDateMilliseconds": 1276090200000
+  },
+  {
+   "symbol": "BBD",
+   "shortName": "Banco Bradesco Sa",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 2.57,
+   "regularMarketChangePercent": -2.2813756,
+   "regularMarketVolume": 29895503,
+   "marketCap": 28721199104,
+   "firstTradeDateMilliseconds": 1028295000000
+  },
+  {
+   "symbol": "NIO",
+   "shortName": "NIO Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 3.25,
+   "regularMarketChangePercent": -4.6920843,
+   "regularMarketVolume": 28573167,
+   "marketCap": 8143417856,
+   "firstTradeDateMilliseconds": 1536759000000
+  },
+  {
+   "symbol": "CDE",
+   "shortName": "Coeur Mining, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 15.334,
+   "regularMarketChangePercent": -6.7837887,
+   "regularMarketVolume": 28000295,
+   "marketCap": 15669867520,
+   "firstTradeDateMilliseconds": 322151400000
+  },
+  {
+   "symbol": "CIFR",
+   "shortName": "Cipher Digital Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 6.3843,
+   "regularMarketChangePercent": -6.2504544,
+   "regularMarketVolume": 27495956,
+   "marketCap": 2913571840,
+   "firstTradeDateMilliseconds": 1603200600000
+  },
+  {
+   "symbol": "BTG",
+   "shortName": "B2Gold Corp",
+   "quoteType": "EQUITY",
+   "exchange": "ASE",
+   "regularMarketPrice": 5.32,
+   "regularMarketChangePercent": -6.338022,
+   "regularMarketVolume": 27111678,
+   "marketCap": 7007613952,
+   "firstTradeDateMilliseconds": 1214314200000
+  }
+ ]
+}

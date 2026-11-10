@@ -1,0 +1,15 @@
+# Trending tier: symbols Yahoo has reused, with the date the current holder
+# listed.
+#
+# Yahoo can serve one symbol's history across two holders: a fund that closed
+# and the company that took its symbol later, say. The trending tier drops every
+# bar of a symbol listed here dated before its date, logs how many it dropped,
+# and counts the symbol's history from that date for promotion eligibility
+# (docs/trending.md, sections 5 and 8). One line per symbol:
+#
+#   SYMBOL:YYYY-MM-DD  # the reason, required
+#
+# Read by the same parser as split_jump_acknowledged.txt, so the same rules
+# hold: a reason after a #, no date in the future, no line repeated.
+
+SPCX:2026-06-12  # the symbol was a Tuttle Capital ETF's before this listing

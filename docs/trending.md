@@ -84,6 +84,7 @@ class TrendingItem:
     price: float | None  # for the minimum price (section 4)
     quote_type: str | None  # "EQUITY", "ETF", ...
     short_name: str | None  # cleaned, at most 100 characters
+    first_trade_date: date | None  # Yahoo's, for eligibility (section 8)
     fetched_at: datetime  # UTC
 
 
@@ -103,7 +104,10 @@ class TrendingSource(Protocol):
 ```
 
 `TrendingItem` holds the brief's fields plus `price`, which the minimum-price filter
-needs. The brief's `fetch() -> list[TrendingItem]` becomes one `ListFetch` per list, so
+needs, and `first_trade_date`, which `tickers` keeps for eligibility (Yahoo's
+`firstTradeDateMilliseconds`, as the New York date). A value the tables cannot hold
+(a percentage change of 100,000 or more, a negative or oversized volume) is read as
+missing. The brief's `fetch() -> list[TrendingItem]` becomes one `ListFetch` per list, so
 the run can record each list's outcome (T8). A source never raises: these are
 unofficial endpoints, so any failure (network, an HTTP status, a malformed body, a field
 of the wrong type) logs a warning and becomes that list's `error`, a short text, with no
