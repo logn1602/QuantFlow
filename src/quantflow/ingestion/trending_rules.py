@@ -484,7 +484,11 @@ def choose_active(
         history = (stored.get(symbol) or {}).get("first_bar_date")
         if symbol not in was_active and _missing(history):
             if len(new) >= settings.max_new_per_run:
-                waiting.append(symbol)
+                # Waiting only if the cap had a place for it: with churn,
+                # most candidates are new, and naming every one past the
+                # limit, ranks far past the cap included, said nothing.
+                if len(chosen) + len(waiting) < settings.max_active:
+                    waiting.append(symbol)
                 return
             new.append(symbol)
         chosen.append(symbol)

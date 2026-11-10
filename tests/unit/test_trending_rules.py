@@ -328,6 +328,18 @@ def test_at_most_five_new_symbols_join_and_the_rest_wait_without_a_place():
     assert chosen.active == ("SPCX", "N0", "N1", "N2", "N3", "N4", "H1", "H2")
 
 
+def test_only_new_symbols_the_cap_had_room_for_are_waiting():
+    """Found measuring a full-size run (2026-11-10): with most candidates new,
+    as churn makes them, every new symbol past the limit was listed as
+    waiting, 64 of 72, ranks far past the cap included, although no limit
+    would have let those in. A symbol waits only if a place was left for it."""
+    symbols = [f"N{i:02d}" for i in range(30)]
+    chosen = _choose(_candidates(symbols), [])
+    assert chosen.new == tuple(symbols[:5])
+    assert chosen.waiting == tuple(symbols[5:15])  # the cap's 10 other places
+    assert chosen.active == ("SPCX", *symbols[:5])
+
+
 def test_pinned_symbols_are_outside_the_new_symbol_limit_too():
     chosen = _choose(
         _candidates(["D1", "D2"]),
