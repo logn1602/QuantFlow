@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard
+from urllib.parse import quote
 
 import pandas as pd
 
@@ -226,6 +227,24 @@ def settings(core: list[str] | tuple[str, ...]) -> TrendingSettings:
             minimum=1,
         ),
     )
+
+
+# ── News (7.5) ────────────────────────────────────────────────────────────────
+
+# Yahoo's per-symbol RSS feed: the form every core feed in
+# features.sentiment.RSS_FEEDS takes, which a test keeps equal, so a trending
+# symbol's feed is the same kind of feed.
+RSS_FEED_TEMPLATE = (
+    "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+)
+
+
+def rss_feed(symbol: str) -> str:
+    """A symbol's RSS feed URL, built from a validated symbol only and
+    URL-encoded (4.1)."""
+    if not valid_symbol(symbol):
+        raise ValueError(f"not a symbol: {shown(symbol)}")
+    return RSS_FEED_TEMPLATE.format(symbol=quote(symbol, safe=""))
 
 
 # ── Sessions (4.3) ────────────────────────────────────────────────────────────

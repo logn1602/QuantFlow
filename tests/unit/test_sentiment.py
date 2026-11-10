@@ -165,3 +165,75 @@ def test_every_rss_feed_is_specific_to_its_ticker():
     for ticker, feeds in sentiment.RSS_FEEDS.items():
         for url in feeds:
             assert f"s={ticker}&" in url, f"{ticker}: not a per-symbol feed: {url}"
+
+
+# ── The core's path, unchanged by the trending tier's two parameters ──────────
+# docs/trending.md, section 7.5: fetch_rss gained feeds and save_sentiment
+# table, both optional. Without them the core reads RSS_FEEDS and writes
+# news_sentiment exactly as before. Not marked trending: these guard the core,
+# so the daily refresh's test step runs them.
+
+
+def _feed(*titles):
+    """What feedparser.parse returns for a feed holding these headlines,
+    published an hour ago."""
+    import time
+
+    import feedparser
+
+    published = time.gmtime(time.time() - 3600)
+    return feedparser.FeedParserDict(
+        entries=[
+            feedparser.FeedParserDict(
+                title=title, link=f"https://example.com/{n}", published_parsed=published
+            )
+            for n, title in enumerate(titles)
+        ]
+    )
+
+
+@pytest.fixture
+def parsed(monkeypatch):
+    """Records each URL fetch_rss hands feedparser, and serves one headline."""
+    urls = []
+
+    def parse(url):
+        urls.append(url)
+        return _feed(f"headline from {url}")
+
+    monkeypatch.setattr(sentiment.feedparser, "parse", parse)
+    return urls
+
+
+def test_fetch_rss_without_feeds_reads_the_tickers_rss_feeds_entry(parsed):
+    articles = sentiment.fetch_rss("AAPL")
+    assert parsed == sentiment.RSS_FEEDS["AAPL"]
+    assert [a["source"] for a in articles] == ["rss"]
+    assert articles[0]["headline"] == f"headline from {sentiment.RSS_FEEDS['AAPL'][0]}"
+
+
+def test_fetch_rss_without_feeds_reads_nothing_for_a_ticker_with_none(parsed):
+    assert sentiment.fetch_rss("NOTCORE") == []
+    assert parsed == []
+
+
+def test_fetch_rss_reads_the_same_articles_with_its_own_feeds_passed(parsed):
+    default = sentiment.fetch_rss("MSFT")
+    explicit = sentiment.fetch_rss("MSFT", feeds=sentiment.RSS_FEEDS["MSFT"])
+    assert [a["headline"] for a in default] == [a["headline"] for a in explicit]
+
+
+def test_save_sentiment_writes_news_sentiment_by_default(fake_db):
+    assert sentiment.save_sentiment([_article("a"), _article("b")], "AAPL") == 2
+    assert len(fake_db.tables["news_sentiment"]) == 2
+    assert fake_db.inserts("trending_news") == []
+
+
+def test_the_sentiment_writer_refuses_any_other_table(fake_db):
+    from quantflow.db.sentiment import insert_sentiment
+
+    row = {"ticker": "AAPL", "headline": "x", "published_at": PUBLISHED}
+    for table in ("raw_prices", "news_sentiment; DROP TABLE x", ""):
+        with pytest.raises(ValueError, match="not a sentiment table"):
+            insert_sentiment([row], table=table)
+    assert fake_db.statements == []

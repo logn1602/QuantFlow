@@ -211,13 +211,17 @@ def analyze_batch(headlines: list[str]) -> list[dict | None]:
 # ── News fetchers ─────────────────────────────────────────────────────────────
 
 
-def fetch_rss(ticker: str) -> list[dict]:
+def fetch_rss(ticker: str, feeds: list[str] | None = None) -> list[dict]:
     """
     Fetch headlines from Yahoo Finance RSS for a ticker.
     Completely free, no API key needed.
     Returns list of {headline, url, published_at, source} dicts.
+
+    feeds: the feed URLs to read. None, the default and the core's path,
+    reads the ticker's RSS_FEEDS entry. The trending tier passes the feed it
+    builds for a symbol not in RSS_FEEDS (docs/trending.md, section 7.5).
     """
-    feeds = RSS_FEEDS.get(ticker, [])
+    feeds = RSS_FEEDS.get(ticker, []) if feeds is None else feeds
     articles = []
     cutoff = datetime.now(UTC) - timedelta(days=7)
 
@@ -329,13 +333,18 @@ def _clean_text(value: str | None, limit: int) -> str:
     return cleaned.encode("utf-8", "replace").decode("utf-8")[:limit]
 
 
-def save_sentiment(articles: list[dict], ticker: str) -> int:
+def save_sentiment(
+    articles: list[dict], ticker: str, table: str = "news_sentiment"
+) -> int:
     """
     Save analyzed articles to news_sentiment table.
     Returns rows actually written: headlines already stored are skipped and
     not counted, and any other write error raises. An article whose headline
     is empty once cleaned (no title, or only NUL bytes) is not news, and is
     skipped with a log line.
+
+    table: news_sentiment by default, the core's; the trending tier passes
+    trending_news, its own twin of it (docs/trending.md, section 7.5).
 
     RSS and NewsAPI can return the same headline at the same time, so one
     batch can carry a key twice. ON CONFLICT DO NOTHING writes it once and
@@ -366,7 +375,7 @@ def save_sentiment(articles: list[dict], ticker: str) -> int:
 
     if empty:
         logger.info(f"  {ticker}: skipped {empty} articles with no headline text")
-    return insert_sentiment(rows)
+    return insert_sentiment(rows, table=table)
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────

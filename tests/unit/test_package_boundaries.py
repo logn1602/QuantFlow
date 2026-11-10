@@ -63,3 +63,53 @@ def test_the_check_sees_a_lazy_import(tmp_path):
         encoding="utf-8",
     )
     assert any(_is_models(module) for module in _imports(probe))
+
+
+# ── The trending tier (docs/trending.md, section 13) ──────────────────────────
+# Kept apart from the core by construction: no core module imports a trending
+# one, so nothing the core or the evaluation runs can reach the tier's code,
+# and the tier never imports the models or the evaluation. The dashboard's app
+# is the one core file allowed in: it shows the Trending tab.
+
+SRC = EVALUATION.parent
+TRENDING_MODULES = {
+    "quantflow.ingestion.trending_sources",
+    "quantflow.ingestion.trending_rules",
+    "quantflow.db.trending",
+    "quantflow.pipelines.trending",
+    "quantflow.dashboard.trending_view",
+}
+ALLOWED_IN = {"quantflow.dashboard.app"}
+
+
+def _module_name(path: Path) -> str:
+    return "quantflow." + ".".join(path.relative_to(SRC).with_suffix("").parts)
+
+
+def _is_trending(module: str) -> bool:
+    return any(module == m or module.startswith(m + ".") for m in TRENDING_MODULES)
+
+
+def test_no_core_module_imports_the_trending_tier():
+    offenders = [
+        f"{_module_name(path)} imports {module}"
+        for path in sorted(SRC.rglob("*.py"))
+        if _module_name(path) not in TRENDING_MODULES | ALLOWED_IN
+        for module in _imports(path)
+        if _is_trending(module)
+    ]
+    assert offenders == []
+
+
+def test_the_trending_tier_never_imports_the_models_or_the_evaluation():
+    files = [
+        path for path in SRC.rglob("*.py") if _module_name(path) in TRENDING_MODULES
+    ]
+    assert files, "found no trending modules to check"
+    offenders = [
+        f"{_module_name(path)} imports {module}"
+        for path in files
+        for module in _imports(path)
+        if _is_models(module) or module.startswith("quantflow.evaluation")
+    ]
+    assert offenders == []
