@@ -24,9 +24,10 @@ Offline unit support:
                           when it is edited. A test that needs entries writes
                           its own file (see test_split_jump_check.py).
   fake_db                 an in-memory stand-in that records every statement
-                          and applies INSERT ... ON CONFLICT DO NOTHING the way
-                          Postgres does, so a write path can be checked for what
-                          it reports against what it actually wrote.
+                          and applies INSERT ... ON CONFLICT DO NOTHING, and an
+                          upsert's DO UPDATE SET, the way Postgres does, so a
+                          write path can be checked for what it reports against
+                          what it actually wrote.
   read_tables             canned pd.read_sql results by table name, for code
                           that reads through pandas.
   price_bars              raw_prices rows in the two shapes yfinance stores:
@@ -38,13 +39,21 @@ Integration support (tests/integration, a disposable local Postgres):
   --pg-url                the database to use; nothing runs without it.
   is_local_pg_url         the check that it can only reach this machine.
   install_engine          routes every get_engine call to the test's engine.
+  pg_url                  --pg-url after those checks, or a skip without it.
+  pg                      a schema of the test's own, created from the schema
+                          files the write paths use (SCHEMA_FILES), installed
+                          as every get_engine and dropped after the test.
+  schema_engine           an engine on a given schema with session settings of
+                          its own (a New York TimeZone, say).
 """
 
 import copy
 import re
 import sys
+import uuid
 from collections import defaultdict
 from contextlib import contextmanager
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -61,7 +70,17 @@ CONFLICT_KEYS = {
     # sql/schema.sql's key. The live table predates it and has none yet (see
     # sql/migrations/001_dedupe_anomalies.sql), so nothing conflicts there.
     "anomalies": ("ticker", "ts"),
+    # sql/schema_trending.sql.
+    "tickers": ("symbol",),
+    "trending_prices": ("ticker", "ts"),
+    "trending_snapshots": ("snapshot_ts", "symbol", "source", "list_name"),
+    "trending_fetches": ("fetched_at", "source", "list_name"),
+    "trending_news": ("ticker", "headline", "published_at"),
 }
+
+# ON CONFLICT ... DO UPDATE SET <column> = excluded.<column>, as SQLAlchemy
+# compiles an upsert.
+_UPDATED_COLUMN = re.compile(r"(\w+) = excluded\.(\w+)")
 
 # A multi-row Core INSERT binds row i's columns as "<column>_m<i>".
 _MULTI_ROW_PARAM = re.compile(r"^(?P<column>.+)_m(?P<row>\d+)$")
@@ -139,10 +158,27 @@ class FakeDatabase:
         key_cols = CONFLICT_KEYS.get(table, ())
         stored = {tuple(r.get(c) for c in key_cols) for r in self.tables[table]}
         skip_conflicts = "ON CONFLICT" in sql.upper()
+        # An upsert overwrites the SET columns of the stored row and, as in
+        # Postgres, counts it.
+        update = sql.upper().partition(" DO UPDATE SET ")
+        updated = [
+            target
+            for target, source in _UPDATED_COLUMN.findall(sql[len(update[0]) :])
+            if target == source
+        ]
         written = 0
         for row in rows:
             key = tuple(row.get(c) for c in key_cols)
             if key_cols and key in stored:
+                if updated:
+                    existing = next(
+                        r
+                        for r in self.tables[table]
+                        if tuple(r.get(c) for c in key_cols) == key
+                    )
+                    existing.update({column: row[column] for column in updated})
+                    written += 1
+                    continue
                 if skip_conflicts:
                     continue
                 raise IntegrityError(sql, row, Exception("duplicate key value"))
@@ -268,6 +304,71 @@ def install_engine(monkeypatch):
         _replace_get_engine(monkeypatch, lambda: engine)
 
     return install
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# The tables the write paths touch. schema_roles.sql is left out: it creates
+# cluster-wide roles, which a per-test schema cannot contain.
+SCHEMA_FILES = ("schema.sql", "schema_sentiment.sql", "schema_trending.sql")
+
+
+def _schema_engine(url, schema, **settings):
+    """An engine whose sessions use the test schema. The lock timeout makes a
+    stuck test fail rather than hang the suite."""
+    from sqlalchemy import create_engine
+
+    options = {"search_path": schema, "lock_timeout": "15s"} | settings
+    return create_engine(
+        url,
+        connect_args={"options": " ".join(f"-c{k}={v}" for k, v in options.items())},
+    )
+
+
+@pytest.fixture
+def schema_engine():
+    """_schema_engine, for a test that needs a second session's settings."""
+    return _schema_engine
+
+
+@pytest.fixture
+def pg_url(request, monkeypatch):
+    """The disposable database's URL, after the local-only checks."""
+    url = request.config.getoption("--pg-url")
+    if not url:
+        pytest.skip("needs --pg-url pointing at a disposable local Postgres")
+    if not _is_local_pg_url(url):
+        pytest.fail("--pg-url must be a local database, never the live one")
+    # Whatever .env's DB_HOST is, code that judges the database's locality
+    # (db.readonly) sees this one: a read it took for the live database
+    # would log in as the read-only role on an engine of its own, around
+    # the test engine installed by pg.
+    from quantflow import config
+
+    monkeypatch.setattr(config, "DB_HOST", "127.0.0.1")
+    return url
+
+
+@pytest.fixture
+def pg(pg_url, install_engine):
+    from sqlalchemy import create_engine
+
+    schema = f"qf_test_{uuid.uuid4().hex[:8]}"
+    admin = create_engine(pg_url)
+    with admin.begin() as conn:
+        conn.exec_driver_sql(f"CREATE SCHEMA {schema}")
+    engine = _schema_engine(pg_url, schema)
+    with engine.begin() as conn:
+        for name in SCHEMA_FILES:
+            conn.exec_driver_sql((ROOT / "sql" / name).read_text(encoding="utf-8"))
+    install_engine(engine)
+
+    yield engine
+
+    engine.dispose()
+    with admin.begin() as conn:
+        conn.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
+    admin.dispose()
 
 
 @pytest.fixture(autouse=True)

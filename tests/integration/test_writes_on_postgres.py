@@ -21,20 +21,18 @@ Needs a disposable local Postgres, never the live database:
 
     uv run pytest -m integration --pg-url postgresql://user@127.0.0.1:5432/scratch
 
-Each test gets its own schema, dropped after, holding the tables from
-sql/schema.sql and sql/schema_sentiment.sql: the ones these tests write. The
-other schema files are not needed, and schema_roles.sql creates cluster-wide
-roles that a per-test schema cannot contain.
+Each test gets its own schema, dropped after, holding the tables the write
+paths touch (the pg fixture, tests/conftest.py). The trending
+tier's tables are tested in test_trending_on_postgres.py.
 """
 
 import datetime as dt
-import uuid
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.exc import DataError
 
 from quantflow.db import prices
@@ -49,49 +47,6 @@ from quantflow.ingestion import backfill, yfinance_fetcher
 pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def _schema_engine(url, schema, **settings):
-    """An engine whose sessions use the test schema. The lock timeout makes a
-    stuck test fail rather than hang the suite."""
-    options = {"search_path": schema, "lock_timeout": "15s"} | settings
-    return create_engine(
-        url,
-        connect_args={"options": " ".join(f"-c{k}={v}" for k, v in options.items())},
-    )
-
-
-@pytest.fixture
-def pg(request, install_engine, is_local_pg_url, monkeypatch):
-    url = request.config.getoption("--pg-url")
-    if not url:
-        pytest.skip("needs --pg-url pointing at a disposable local Postgres")
-    if not is_local_pg_url(url):
-        pytest.fail("--pg-url must be a local database, never the live one")
-    # Whatever .env's DB_HOST is, code that judges the database's locality
-    # (db.readonly) sees this one: a read it took for the live database
-    # would log in as the read-only role on an engine of its own, around
-    # the test engine installed below.
-    from quantflow import config
-
-    monkeypatch.setattr(config, "DB_HOST", "127.0.0.1")
-
-    schema = f"qf_test_{uuid.uuid4().hex[:8]}"
-    admin = create_engine(url)
-    with admin.begin() as conn:
-        conn.exec_driver_sql(f"CREATE SCHEMA {schema}")
-    engine = _schema_engine(url, schema)
-    with engine.begin() as conn:
-        for name in ("schema.sql", "schema_sentiment.sql"):
-            conn.exec_driver_sql((ROOT / "sql" / name).read_text(encoding="utf-8"))
-    install_engine(engine)
-
-    yield engine
-
-    engine.dispose()
-    with admin.begin() as conn:
-        conn.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
-    admin.dispose()
 
 
 def _bars(days, ticker="AAPL"):
@@ -277,7 +232,9 @@ def test_daily_bars_on_the_types_the_driver_returns(pg):
     assert list(daily["y"]) == [1.0, 102.5]
 
 
-def test_features_line_up_with_prices_in_a_new_york_session(pg, install_engine):
+def test_features_line_up_with_prices_in_a_new_york_session(
+    pg, install_engine, schema_engine
+):
     """The features are built in process (decision D4): article times come
     back from the driver in the session's TimeZone and must still be cut in
     UTC (decision D7), and the indicator and anomaly tables, written for the
@@ -314,7 +271,7 @@ def test_features_line_up_with_prices_in_a_new_york_session(pg, install_engine):
 
     with pg.connect() as conn:
         schema = conn.exec_driver_sql("SELECT current_schema()").scalar_one()
-    new_york = _schema_engine(pg.url, schema, timezone="America/New_York")
+    new_york = schema_engine(pg.url, schema, timezone="America/New_York")
     install_engine(new_york)
     try:
         features = load_features("AAPL")
@@ -471,7 +428,7 @@ def test_the_diagnostics_run_read_only_on_postgres(pg, monkeypatch, tmp_path):
 
 
 def test_the_free_tier_usage_queries_run_read_only_on_postgres(
-    pg, monkeypatch, tmp_path, install_engine
+    pg, monkeypatch, tmp_path, install_engine, schema_engine
 ):
     """free_tier_usage.sql through the same runner (--sql): all four queries
     run, daily bars and 15-min bars are counted apart, and nothing is written.
@@ -493,7 +450,7 @@ def test_the_free_tier_usage_queries_run_read_only_on_postgres(
     sql = ROOT / "scripts" / "diagnostics" / "free_tier_usage.sql"
     with pg.connect() as conn:
         schema = conn.exec_driver_sql("SELECT current_schema()").scalar_one()
-    new_york = _schema_engine(pg.url, schema, timezone="America/New_York")
+    new_york = schema_engine(pg.url, schema, timezone="America/New_York")
     install_engine(new_york)
     try:
         assert diagnostics.main(["--sql", str(sql), "--live", "--out", str(out)]) == 0
@@ -617,7 +574,9 @@ def _story(n, ticker, published, inserted=None, **columns):
     return row | columns
 
 
-def test_the_news_sums_the_live_run_reads_are_the_evaluations(pg, install_engine):
+def test_the_news_sums_the_live_run_reads_are_the_evaluations(
+    pg, install_engine, schema_engine
+):
     """The live run reads the news summed per day in SQL (load_news); the
     evaluation sums the article rows in Python (news_days). Same sums, at
     every edge the rules have, in a New York session, and so the same
@@ -661,7 +620,7 @@ def test_the_news_sums_the_live_run_reads_are_the_evaluations(pg, install_engine
 
     with pg.connect() as conn:
         schema = conn.exec_driver_sql("SELECT current_schema()").scalar_one()
-    new_york = _schema_engine(pg.url, schema, timezone="America/New_York")
+    new_york = schema_engine(pg.url, schema, timezone="America/New_York")
     install_engine(new_york)
     try:
         read = load_news()
