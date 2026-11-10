@@ -104,17 +104,18 @@ class TrendingSource(Protocol):
 ```
 
 `TrendingItem` holds the brief's fields plus `price`, which the minimum-price filter
-needs, and `first_trade_date`, which `tickers` keeps for eligibility (Yahoo's
-`firstTradeDateMilliseconds`, as the New York date). A value the tables cannot hold
-(a percentage change of 100,000 or more, a negative or oversized volume) is read as
-missing. The brief's `fetch() -> list[TrendingItem]` becomes one `ListFetch` per list, so
-the run can record each list's outcome (T8). A source never raises: these are
-unofficial endpoints, so any failure (network, an HTTP status, a malformed body, a field
-of the wrong type) logs a warning and becomes that list's `error`, a short text, with no
-items; the source's other lists still count. An item whose symbol fails validation is
-dropped and logged; the rest of the list is kept. A list that answered with items none
-of which has a valid symbol counts as failed, not as empty: that is what a renamed field
-in Yahoo's format would look like. A list that answered with no items at all succeeded.
+needs, and `first_trade_date` (Yahoo's `firstTradeDateMilliseconds`, as the New York
+date), from which `tickers` keeps eligibility's start (section 6). A value the tables
+cannot hold (a percentage change of 100,000 or more, a negative or oversized volume) is
+read as missing. The brief's `fetch() -> list[TrendingItem]` becomes one `ListFetch`
+per list, so the run can record each list's outcome (T8). A source never raises: these
+are unofficial endpoints, so any failure (network, an HTTP status, a malformed body, a
+field of the wrong type) logs a warning and becomes that list's `error`, a short text,
+with no items; the source's other lists still count. An item whose symbol fails
+validation is dropped and logged; the rest of the list is kept. A list that answered
+with items none of which has a valid symbol counts as failed, not as empty: that is what
+a renamed field in Yahoo's format would look like. A list that answered with no items at
+all succeeded.
 
 ### Yahoo's predefined screeners (implemented first)
 
@@ -231,8 +232,9 @@ not; a pinned symbol always has one.
 What this does in practice: the four lists carry about 70 to 80 distinct symbols after
 dedupe (an estimate from the 2026-11-09 check; Phase 6 measures it), so on a normal day
 the cap fills from today's lists, and the active set is today's 15 best-ranked names, at
-most 5 of them new. The grace for absent symbols matters only when the lists are short. Churn among the top
-movers is high, so the new-symbol limit is the one that binds (section 9 plans on it).
+most 5 of them new. The grace for absent symbols matters only when the lists are
+short. Churn among the top movers is high, so the new-symbol limit is the one that
+binds (section 9 plans on it).
 
 Sessions, not runs: each fetch is dated by the session its lists describe, the latest
 New York session that had opened at fetch time (today's from 09:30 New York on a
@@ -384,8 +386,11 @@ CREATE INDEX IF NOT EXISTS idx_trending_news_ticker_ts
   config, so there is no second copy of it to drift. The brief's columns, plus
   `quote_type` (the EQUITY filter's input, and the SPCX check), `first_bar_date` (the
   first fetch's log line, kept; also the replacement's guard, 7.2), `first_trade_date`
-  (Yahoo's first trading date, for eligibility, section 8) and the summary the tab shows.
-  `tier` becomes `'core'` for a promoted symbol once it is in `TICKERS` (section 8).
+  (where eligibility counts history from, section 8: Yahoo's first trading date, or the
+  symbol's listing date when later) and the summary the tab shows. The run stores the
+  later date because the deployed dashboard runs the installed package, which does
+  not carry `config/trending_listing_dates.txt` (Known problem 13). `tier` becomes
+  `'core'` for a promoted symbol once it is in `TICKERS` (section 8).
 - `trending_snapshots` keeps every item fetched (after symbol validation, before the
   other rules), so any day's choice can be explained afterwards. "Days trending" is the
   number of distinct `session_date`s with an entry for the symbol, one grouped query.
@@ -554,8 +559,9 @@ gap from its `first_bar_date`, with no new 6-month download.
 it has been on the lists on at least `TRENDING_PROMOTION_MIN_DAYS` distinct sessions
 (default 20, about a month) or is pinned, **and** has at least
 `PROMOTION_MIN_HISTORY_DAYS` trading days of history (proposed default 504, two years).
-History counts from the later of Yahoo's `first_trade_date` and the symbol's date in
-the listing-date file, since Yahoo's metadata can still be a former holder's (SPCX).
+History counts from the later of Yahoo's first trade date and the symbol's date in
+the listing-date file, since Yahoo's metadata can still be a former holder's (SPCX);
+the run stores that later date as `first_trade_date` (section 6).
 
 Why 504, and the trade-off:
 - The core's models need history: Prophet's yearly seasonality is on only from about two

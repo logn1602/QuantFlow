@@ -562,6 +562,7 @@ def ticker_rows(
     stored: Mapping[str, Mapping[str, Any]],
     *,
     now: dt.datetime,
+    listing: Mapping[str, dt.date] | None = None,
 ) -> list[dict[str, Any]]:
     """The tickers rows the selection writes: one for every candidate (seen
     in this run), every pinned symbol and every stored symbol active or
@@ -569,7 +570,14 @@ def ticker_rows(
     row keeps its first_seen, its history and its summary; its name, quote
     type and first trade date follow today's item where there is one.
     last_seen moves to now for a symbol seen or pinned, and stays put for
-    the rest, so absence counts from the last sighting."""
+    the rest, so absence counts from the last sighting.
+
+    first_trade_date is where the symbol's history counts from for
+    eligibility (section 8): Yahoo's first trade date, or the symbol's date
+    in the listing-date file (listing) when that is later, since Yahoo's
+    metadata can be a former holder's. Stored that way, the dashboard needs
+    no copy of the file, which the deployed package does not carry."""
+    listing = listing or {}
     by_symbol = {c.symbol: c for c in found}
     active = set(selection.active)
     pinned = set(selection.pinned)
@@ -596,6 +604,11 @@ def ticker_rows(
                 value = getattr(meta, column)
                 if value is not None:
                     row[column] = value
+        if symbol in listing:
+            row["first_trade_date"] = history_start(
+                None if _missing(row["first_trade_date"]) else row["first_trade_date"],
+                listing[symbol],
+            )
         row["active"] = symbol in active
         row["pinned"] = symbol in pinned
         rows.append(row)

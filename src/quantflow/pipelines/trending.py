@@ -210,7 +210,7 @@ def summarize(
 
 
 def _select(
-    fetches, *, core, settings, now: pd.Timestamp, session: dt.date
+    fetches, *, core, settings, now: pd.Timestamp, session: dt.date, listing
 ) -> tuple[rules.Selection, dict[str, dict[str, Any]]]:
     """Steps 1 and 2: store the fetch, choose the active set, write tickers.
     Returns the selection and the tickers rows written, by symbol."""
@@ -233,7 +233,9 @@ def _select(
     selection = rules.choose_active(
         found, stored, settings=settings, complete=complete, counted=counted
     )
-    rows = rules.ticker_rows(selection, found, pinned_found, stored, now=now)
+    rows = rules.ticker_rows(
+        selection, found, pinned_found, stored, now=now, listing=listing
+    )
     db_trending.upsert_tickers(rows, db_trending.SELECTION_COLUMNS)
 
     for symbol, item in pinned_found.items():
@@ -351,7 +353,12 @@ def run(
     fetches = [fetch for source in sources for fetch in source.fetch()]
     result.failed_lists = [f.list_name for f in fetches if not f.succeeded]
     selection, rows = _select(
-        fetches, core=core, settings=settings, now=now, session=session
+        fetches,
+        core=core,
+        settings=settings,
+        now=now,
+        session=session,
+        listing=listing,
     )
     result.active = selection.active
     if not selection.active:

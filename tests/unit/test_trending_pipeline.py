@@ -282,6 +282,21 @@ def test_bars_before_a_listing_date_are_dropped_and_history_starts_there(world):
     assert _tickers(world)["SPCX"]["first_bar_date"] == dt.date(2026, 6, 12)
 
 
+def test_the_stored_first_trade_date_carries_a_later_listing_date(world):
+    """Eligibility counts history from the later of Yahoo's first trade date
+    and the listing date. The deployed dashboard has no copy of the listing
+    file, so the run stores that later date where the tab reads it."""
+    yahoo = FakeYahoo({"SPCX": _yahoo(DAYS), "HIMS": _yahoo(DAYS)})
+    _run(
+        _all_lists("HIMS"),  # HIMS's item: first trade 2015-03-02
+        yahoo,
+        listing={"SPCX": dt.date(2026, 6, 12), "HIMS": dt.date(2021, 1, 4)},
+    )
+    tickers = _tickers(world)
+    assert tickers["SPCX"]["first_trade_date"] == dt.date(2026, 6, 12)  # no item
+    assert tickers["HIMS"]["first_trade_date"] == dt.date(2021, 1, 4)
+
+
 def test_a_download_that_does_not_reach_back_keeps_the_stored_bars(world):
     yahoo = FakeYahoo({"HIMS": _yahoo(DAYS)})
     _run(_all_lists("HIMS"), yahoo, pinned=())

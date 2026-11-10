@@ -492,6 +492,29 @@ def test_a_pinned_symbols_item_names_its_row_even_through_no_rule():
     assert row["short_name"] == "Space Exploration Technologies"
 
 
+def test_first_trade_date_is_the_later_of_yahoos_and_the_listing_date():
+    selection = rules.choose_active(
+        [],
+        {},
+        settings=_settings(pinned=("SPCX", "OLDCO", "NEWCO")),
+        complete=True,
+        counted=COUNTED,
+    )
+    items = {
+        "SPCX": _item("SPCX", first_trade_date=dt.date(2010, 1, 4)),  # stale metadata
+        "OLDCO": _item("OLDCO", first_trade_date=dt.date(2001, 5, 1)),
+    }
+    listing = {"SPCX": dt.date(2026, 6, 12), "OLDCO": dt.date(1999, 1, 4),
+               "NEWCO": dt.date(2025, 3, 3)}  # fmt: skip
+    rows = {
+        row["symbol"]: row
+        for row in rules.ticker_rows(selection, [], items, {}, now=NOW, listing=listing)
+    }
+    assert rows["SPCX"]["first_trade_date"] == dt.date(2026, 6, 12)
+    assert rows["OLDCO"]["first_trade_date"] == dt.date(2001, 5, 1)  # Yahoo's later
+    assert rows["NEWCO"]["first_trade_date"] == dt.date(2025, 3, 3)  # no item at all
+
+
 def test_the_rules_and_the_database_module_name_the_same_tickers_columns():
     assert rules.TICKER_COLUMNS == db_trending.TICKER_COLUMNS
 

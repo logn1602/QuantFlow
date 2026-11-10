@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS tickers (
     active            BOOLEAN         NOT NULL DEFAULT TRUE,
     pinned            BOOLEAN         NOT NULL DEFAULT FALSE,
     first_bar_date    DATE,                       -- its first stored bar's date
-    first_trade_date  DATE,                       -- Yahoo's, for eligibility
+    first_trade_date  DATE,                       -- Yahoo's, or a later listing date
     promoted_at       TIMESTAMPTZ,                -- set by hand only (section 8)
     -- What the Trending tab's table shows, from the last run (section 7.4).
     summary_session   DATE,
