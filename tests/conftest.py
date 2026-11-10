@@ -24,10 +24,10 @@ Offline unit support:
                           when it is edited. A test that needs entries writes
                           its own file (see test_split_jump_check.py).
   fake_db                 an in-memory stand-in that records every statement
-                          and applies INSERT ... ON CONFLICT DO NOTHING, and an
-                          upsert's DO UPDATE SET, the way Postgres does, so a
-                          write path can be checked for what it reports against
-                          what it actually wrote.
+                          and applies INSERT ... ON CONFLICT DO NOTHING, an
+                          upsert's DO UPDATE SET and a keyed UPDATE the way
+                          Postgres does, so a write path can be checked for
+                          what it reports against what it actually wrote.
   read_tables             canned pd.read_sql results by table name, for code
                           that reads through pandas.
   price_bars              raw_prices rows in the two shapes yfinance stores:
@@ -146,6 +146,8 @@ class FakeDatabase:
             return self._insert(sql, rows)
         if verb == "DELETE":
             return self._delete(sql, rows)
+        if verb == "UPDATE":
+            return self._update(sql, rows)
         return FakeResult(0)
 
     def _insert(self, sql, rows):
@@ -186,6 +188,25 @@ class FakeDatabase:
             self.tables[table].append(dict(row))
             written += 1
         return FakeResult(written)
+
+    def _update(self, sql, rows):
+        """UPDATE <table> SET <column> = :<param>, ... WHERE <key> = :<param>,
+        the one form the write paths send; anything else fails the test."""
+        match = re.fullmatch(
+            r"\s*UPDATE\s+(\w+)\s+SET\s+(.+?)\s+WHERE\s+(\w+)\s*=\s*:(\w+)\s*",
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        assert match, f"the fake database cannot apply: {sql}"
+        table, assignments, key, key_param = match.groups()
+        pairs = re.findall(r"(\w+)\s*=\s*:(\w+)", assignments)
+        changed = 0
+        for params in rows:
+            for row in self.tables[table]:
+                if row.get(key) == params[key_param]:
+                    row.update({column: params[param] for column, param in pairs})
+                    changed += 1
+        return FakeResult(changed)
 
     def _delete(self, sql, rows):
         match = re.search(r"DELETE FROM\s+(\w+)", sql, re.IGNORECASE)

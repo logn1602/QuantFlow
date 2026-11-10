@@ -12,6 +12,8 @@ YAML dependency.
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 DAILY_REFRESH = (WORKFLOWS / "daily_refresh.yml").read_text(encoding="utf-8")
@@ -227,3 +229,26 @@ def test_the_audit_workflow_audits_uv_lock_weekly_and_on_lock_changes():
     assert "continue-on-error" not in audit
     assert "secrets." not in audit
     assert re.search(r"^permissions:\n  contents: read$", audit, re.MULTILINE)
+
+
+def _make_targets():
+    phony = re.search(r"^\.PHONY:(.+)$", MAKEFILE, re.MULTILINE)
+    assert phony, "no .PHONY line in the Makefile"
+    return phony.group(1).split()
+
+
+def test_make_help_lists_every_target():
+    """make help is the list people read; a target missing from it is a
+    target nobody finds."""
+    helped = set(re.findall(r'@echo "  make (\S+)', MAKEFILE))
+    targets = set(_make_targets()) - {"help"}
+    assert targets <= helped, sorted(targets - helped)
+    for target in targets:
+        assert re.search(rf"^{re.escape(target)}:", MAKEFILE, re.MULTILINE), target
+
+
+@pytest.mark.trending
+def test_make_trending_runs_one_trending_run_with_an_optional_cap():
+    body = MAKEFILE.split("\ntrending:\n", 1)[1].split("\n\n", 1)[0]
+    assert "python -m quantflow.pipelines.trending" in body
+    assert "$(if $(CAP),--cap $(CAP),)" in body
