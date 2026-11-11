@@ -2,7 +2,7 @@
 # Run any pipeline stage with a single command.
 # Usage: make <target>
 
-.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest evaluate dashboard scheduler test eval all clean clean-dry
+.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest evaluate trending dashboard scheduler test eval all clean clean-dry
 
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
@@ -21,6 +21,7 @@ help:
 	@echo "  make sentiment    Fetch + analyze news sentiment"
 	@echo "  make backtest     Run strategy backtest (run models first)"
 	@echo "  make evaluate     Rolling-origin evaluation, validation dates (SNAPSHOT=dir)"
+	@echo "  make trending     One trending run, on .env's database (CAP=n: see below)"
 	@echo "  make dashboard    Launch Streamlit dashboard"
 	@echo "  make scheduler    Start the live data scheduler"
 	@echo "  make test         Run the offline test suite (no DB needed)"
@@ -44,6 +45,7 @@ setup:
 	psql -U postgres -d stock_pipeline -f sql/schema_sentiment.sql
 	psql -U postgres -d stock_pipeline -f sql/schema_backtest.sql
 	psql -U postgres -d stock_pipeline -f sql/schema_metrics.sql
+	psql -U postgres -d stock_pipeline -f sql/schema_trending.sql
 	@echo "Database tables created."
 
 # ── Pipeline stages ───────────────────────────────────────────────────────────
@@ -81,6 +83,15 @@ evaluate:
 
 sentiment:
 	python -m quantflow.features.sentiment
+
+# The trending tier (docs/trending.md): discovery and analytics only, in its
+# own tables, never forecast or backtested. Writes to the database .env names,
+# as every target here does. CAP=3 tracks at most 3 discovered symbols, for a
+# local check: a run like any other, so the active symbols past the cap are
+# deactivated until a run without it.
+CAP ?=
+trending:
+	python -m quantflow.pipelines.trending $(if $(CAP),--cap $(CAP),)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # Offline only: no database, no network, no model training.

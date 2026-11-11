@@ -85,6 +85,42 @@ SPLIT_JUMP_ACKNOWLEDGED_FILE = (
     Path(__file__).resolve().parents[2] / "config" / "split_jump_acknowledged.txt"
 )
 
+# ── Trending tier ─────────────────────────────────────────────────────────────
+# docs/trending.md, section 11. Each is kept as the raw text and parsed by
+# quantflow.ingestion.trending_rules.settings() when the tier runs, never at
+# import, for SPLIT_GUARD_THRESHOLD's reason: a typo must not take the
+# dashboard down. A blank value takes the default below.
+#
+# TRENDING_PINNED's default is also written in .env.example and trending.yml;
+# tests/unit/test_trending_config.py (.env.example) and test_workflows.py
+# (trending.yml) fail if the three drift apart.
+DEFAULT_TRENDING_PINNED = "SPCX"
+DEFAULT_TRENDING_LISTS = "trending_tickers,most_actives,day_gainers,day_losers"
+DEFAULT_TRENDING_MAX_ACTIVE = 15
+DEFAULT_TRENDING_MAX_NEW_PER_RUN = 5
+DEFAULT_TRENDING_INACTIVE_AFTER_DAYS = 5
+DEFAULT_TRENDING_MIN_PRICE = 5.0
+DEFAULT_TRENDING_PROMOTION_MIN_DAYS = 20
+DEFAULT_PROMOTION_MIN_HISTORY_DAYS = 504
+
+TRENDING_PINNED = os.getenv("TRENDING_PINNED", "")
+TRENDING_LISTS = os.getenv("TRENDING_LISTS", "")
+TRENDING_MAX_ACTIVE = os.getenv("TRENDING_MAX_ACTIVE", "")
+TRENDING_MAX_NEW_PER_RUN = os.getenv("TRENDING_MAX_NEW_PER_RUN", "")
+TRENDING_INACTIVE_AFTER_DAYS = os.getenv("TRENDING_INACTIVE_AFTER_DAYS", "")
+TRENDING_MIN_PRICE = os.getenv("TRENDING_MIN_PRICE", "")
+# No default: blank leaves the market-cap floor off.
+TRENDING_MIN_MARKET_CAP = os.getenv("TRENDING_MIN_MARKET_CAP", "")
+TRENDING_PROMOTION_MIN_DAYS = os.getenv("TRENDING_PROMOTION_MIN_DAYS", "")
+PROMOTION_MIN_HISTORY_DAYS = os.getenv("PROMOTION_MIN_HISTORY_DAYS", "")
+
+# Symbols Yahoo reuses: a trending symbol's bars before its date here belong to
+# a former holder (docs/trending.md, section 5). Committed, in the format of
+# split_jump_acknowledged.txt and read by the same parser, for the same reason.
+TRENDING_LISTING_DATES_FILE = (
+    Path(__file__).resolve().parents[2] / "config" / "trending_listing_dates.txt"
+)
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # Anchored to the working directory, not to this file. Under the old flat

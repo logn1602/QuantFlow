@@ -1,0 +1,283 @@
+{
+ "id": "ec5bebb9-b7b2-4474-9e5c-3e258b61cbe6",
+ "count": 25,
+ "start": 0,
+ "total": 67,
+ "quotes": [
+  {
+   "symbol": "AAON",
+   "shortName": "AAON, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 75.14,
+   "regularMarketChangePercent": 19.516462,
+   "regularMarketVolume": 3625350,
+   "marketCap": 6195566592,
+   "firstTradeDateMilliseconds": 724516200000
+  },
+  {
+   "symbol": "CSQR",
+   "shortName": "Csquare, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 17.85,
+   "regularMarketChangePercent": 16.895874,
+   "regularMarketVolume": 4767143,
+   "marketCap": 2974416640,
+   "firstTradeDateMilliseconds": 1784208600000
+  },
+  {
+   "symbol": "CHTR",
+   "shortName": "Charter Communications, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 133.48,
+   "regularMarketChangePercent": 10.128669,
+   "regularMarketVolume": 2772786,
+   "marketCap": 23899799552,
+   "firstTradeDateMilliseconds": 1262701800000
+  },
+  {
+   "symbol": "ACAD",
+   "shortName": "ACADIA Pharmaceuticals Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 17.96,
+   "regularMarketChangePercent": 8.848479,
+   "regularMarketVolume": 4589286,
+   "marketCap": 3104008192,
+   "firstTradeDateMilliseconds": 1085664600000
+  },
+  {
+   "symbol": "TTWO",
+   "shortName": "Take-Two Interactive Software, ",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 224.125,
+   "regularMarketChangePercent": 8.064131,
+   "regularMarketVolume": 6374847,
+   "marketCap": 41906991104,
+   "firstTradeDateMilliseconds": 861111000000
+  },
+  {
+   "symbol": "EMBJ",
+   "shortName": "Embraer S.A.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 82.9,
+   "regularMarketChangePercent": 7.564554,
+   "regularMarketVolume": 2875339,
+   "marketCap": 14752742400,
+   "firstTradeDateMilliseconds": 964186200000
+  },
+  {
+   "symbol": "TNGX",
+   "shortName": "Tango Therapeutics, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NGM",
+   "regularMarketPrice": 24.425,
+   "regularMarketChangePercent": 7.4098477,
+   "regularMarketVolume": 2853646,
+   "marketCap": 4138942464,
+   "firstTradeDateMilliseconds": 1599139800000
+  },
+  {
+   "symbol": "MBX",
+   "shortName": "MBX Biosciences, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 58.01,
+   "regularMarketChangePercent": 7.30669,
+   "regularMarketVolume": 726534,
+   "marketCap": 2793767168,
+   "firstTradeDateMilliseconds": 1726234200000
+  },
+  {
+   "symbol": "MARA",
+   "shortName": "MARA Holdings, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NCM",
+   "regularMarketPrice": 7.0945,
+   "regularMarketChangePercent": 6.8448825,
+   "regularMarketVolume": 53410137,
+   "marketCap": 2740600320,
+   "firstTradeDateMilliseconds": 1336138200000
+  },
+  {
+   "symbol": "MRCY",
+   "shortName": "Mercury Systems Inc",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 84.98,
+   "regularMarketChangePercent": 6.7319775,
+   "regularMarketVolume": 638083,
+   "marketCap": 5172187648,
+   "firstTradeDateMilliseconds": 886170600000
+  },
+  {
+   "symbol": "ZETA",
+   "shortName": "Zeta Global Holdings Corp.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 34.47,
+   "regularMarketChangePercent": 6.323267,
+   "regularMarketVolume": 8583025,
+   "marketCap": 8591909888,
+   "firstTradeDateMilliseconds": 1623331800000
+  },
+  {
+   "symbol": "PRCH",
+   "shortName": "Porch Group, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NCM",
+   "regularMarketPrice": 21.8,
+   "regularMarketChangePercent": 5.6201544,
+   "regularMarketVolume": 2366631,
+   "marketCap": 2492434944,
+   "firstTradeDateMilliseconds": 1578925800000
+  },
+  {
+   "symbol": "GRDN",
+   "shortName": "Guardian Pharmacy Services, Inc",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 49.82,
+   "regularMarketChangePercent": 5.954911,
+   "regularMarketVolume": 751206,
+   "marketCap": 3156292352,
+   "firstTradeDateMilliseconds": 1727357400000
+  },
+  {
+   "symbol": "LKNCY",
+   "shortName": "Luckin Coffee Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "OID",
+   "regularMarketPrice": 36.7,
+   "regularMarketChangePercent": 5.581135,
+   "regularMarketVolume": 455940,
+   "marketCap": 10506793984,
+   "firstTradeDateMilliseconds": 1558099800000
+  },
+  {
+   "symbol": "SKWD",
+   "shortName": "Skyward Specialty Insurance Gro",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 62.995,
+   "regularMarketChangePercent": 5.3428087,
+   "regularMarketVolume": 194862,
+   "marketCap": 2797825024,
+   "firstTradeDateMilliseconds": 1673620200000
+  },
+  {
+   "symbol": "RRC",
+   "shortName": "Range Resources Corporation",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 51.37,
+   "regularMarketChangePercent": 5.15865,
+   "regularMarketVolume": 1810424,
+   "marketCap": 12004697088,
+   "firstTradeDateMilliseconds": 330269400000
+  },
+  {
+   "symbol": "AMG",
+   "shortName": "Affiliated Managers Group, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 402.685,
+   "regularMarketChangePercent": 5.0985265,
+   "regularMarketVolume": 465922,
+   "marketCap": 10413406208,
+   "firstTradeDateMilliseconds": 880122600000
+  },
+  {
+   "symbol": "LQDA",
+   "shortName": "Liquidia Corporation",
+   "quoteType": "EQUITY",
+   "exchange": "NCM",
+   "regularMarketPrice": 50.58,
+   "regularMarketChangePercent": 5.6611724,
+   "regularMarketVolume": 1857548,
+   "marketCap": 4527359488,
+   "firstTradeDateMilliseconds": 1532611800000
+  },
+  {
+   "symbol": "TDW",
+   "shortName": "Tidewater Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 74.7,
+   "regularMarketChangePercent": 5.1224313,
+   "regularMarketVolume": 710062,
+   "marketCap": 3716790272,
+   "firstTradeDateMilliseconds": 322151400000
+  },
+  {
+   "symbol": "CXW",
+   "shortName": "CoreCivic, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 31.275,
+   "regularMarketChangePercent": 4.8441157,
+   "regularMarketVolume": 1176564,
+   "marketCap": 2705227520,
+   "firstTradeDateMilliseconds": 868973400000
+  },
+  {
+   "symbol": "AXSM",
+   "shortName": "Axsome Therapeutics, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NGM",
+   "regularMarketPrice": 140.585,
+   "regularMarketChangePercent": 4.945506,
+   "regularMarketVolume": 790063,
+   "marketCap": 7394768896,
+   "firstTradeDateMilliseconds": 1447943400000
+  },
+  {
+   "symbol": "CLF",
+   "shortName": "Cleveland-Cliffs Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 12.8175,
+   "regularMarketChangePercent": 4.5473075,
+   "regularMarketVolume": 8581852,
+   "marketCap": 7313473024,
+   "firstTradeDateMilliseconds": 99153000000
+  },
+  {
+   "symbol": "EQT",
+   "shortName": "EQT Corporation",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 52.12,
+   "regularMarketChangePercent": 4.4279685,
+   "regularMarketVolume": 4909504,
+   "marketCap": 32603635712,
+   "firstTradeDateMilliseconds": 322151400000
+  },
+  {
+   "symbol": "INGM",
+   "shortName": "Ingram Micro Holding Corporatio",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 27.39,
+   "regularMarketChangePercent": 4.462243,
+   "regularMarketVolume": 1335685,
+   "marketCap": 6273691648,
+   "firstTradeDateMilliseconds": 1729776600000
+  },
+  {
+   "symbol": "GPN",
+   "shortName": "Global Payments Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 102.08,
+   "regularMarketChangePercent": 4.408311,
+   "regularMarketVolume": 2075534,
+   "marketCap": 27014023168,
+   "firstTradeDateMilliseconds": 979655400000
+  }
+ ]
+}

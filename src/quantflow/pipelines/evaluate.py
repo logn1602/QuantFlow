@@ -39,7 +39,7 @@ from quantflow.config import TICKERS
 from quantflow.dashboard import accuracy
 from quantflow.db.prices import classify_bars, daily_bars
 from quantflow.db.readonly import live_refusal, masked, read_only_connection
-from quantflow.db.snapshot import read_snapshot_tables
+from quantflow.db.snapshot import SNAPSHOT_TABLES, read_snapshot_tables
 from quantflow.evaluation import decision, metrics, publish, report
 from quantflow.evaluation.rolling_origin import (
     MAX_FAILURE_SHARE,
@@ -85,9 +85,10 @@ RUNS_ROOT = Path("eval_runs")
 
 
 def export_snapshot(as_of, tickers: list[str], root: Path = SNAPSHOT_ROOT) -> Path:
-    """Read the database once, read-only, and write the snapshot for as_of."""
+    """Read the database once, read-only, and write the snapshot for as_of.
+    A table it reads that shows no row stops it (db.readonly.require_rows)."""
     as_of = pd.Timestamp(as_of).normalize()
-    with read_only_connection() as conn:
+    with read_only_connection(expect_rows=SNAPSHOT_TABLES) as conn:
         tables = read_snapshot_tables(conn, tickers, as_of)
     raw = tables["raw_bars"]
     prices, built = {}, {}

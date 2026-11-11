@@ -179,6 +179,7 @@ addopts            = "-q --strict-markers"
 markers = [
     "eval: end-to-end evaluation runs; slow, excluded from the default CI run",
     "integration: needs a disposable local Postgres (--pg-url) or the network; excluded from the default CI run",
+    "trending: the trending tier's tests; CI runs them, the daily refresh's test step leaves them out (docs/trending.md, section 12)",
 ]
 
 

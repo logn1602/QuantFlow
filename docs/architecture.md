@@ -284,6 +284,12 @@ the database reaches 500 MB in roughly ten years. The anomaly and indicator tabl
 replaced every run, so their files hold dead rows (6.1 MB for 765 anomaly rows);
 autovacuum reuses that space, so it does not grow without bound.
 
+**Measured by the owner (2026-11-11), Supabase's usage page:** database size 70 MB of
+500 MB. Supabase's figure and the 51 MB above (`pg_database_size`, 2026-11-09) may not
+measure the same thing, so the gap is not a growth rate on its own: the rows the core
+adds come to about 3.6 MB a month. The next `free_tier_usage.sql` run gives a
+like-for-like figure.
+
 ### Egress (estimated 2026-11-09)
 
 Measured on a local copy, not the live database: a throwaway Postgres loaded with the
@@ -307,6 +313,10 @@ with it, to about 1.6 GB by September 2027 (the
 news forward test's end). The fetch and sentiment steps, backups (one `pg_dump`, about
 the database's size) and the laptop scheduler (unused) add little. Supabase's usage
 page holds the measured monthly total; the owner checks it there.
+
+**Measured by the owner (2026-11-11), Supabase's usage page:** 0 of 5 GB egress in this
+billing cycle. The page rounds to whole gigabytes, so that means under 1 GB, consistent
+with the estimate of about 0.7 GB a month.
 
 **The dashboard.** Measured before Phase 4's caching: a first render for one ticker
 read 0.33 MB (329,727 bytes) and a repeat render a minute later 0.31 MB (306,574 bytes),

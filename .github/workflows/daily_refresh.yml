@@ -65,10 +65,12 @@ jobs:
 
       # Runs before any data step so a logic regression fails fast, before
       # touching the database. The suite is offline by design: no secrets,
-      # no DB, no network. Same selection as CI, which leaves the eval and
-      # integration suites out.
+      # no DB, no network. CI's selection, which leaves the eval and
+      # integration suites out, less the trending tier's tests: they run in
+      # CI and in trending.yml, so one can never stop the core's data steps
+      # (docs/trending.md, section 12).
       - name: Run tests
-        run: uv run pytest -m "not eval and not integration"
+        run: uv run pytest -m "not eval and not integration and not trending"
 
       - name: Fetch latest 15-min bars
         env:

@@ -10,9 +10,12 @@ settings.
 import importlib.util
 import re
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+
+from quantflow.db import readonly
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "diagnostics" / "run_1a_diagnostics.py"
@@ -185,6 +188,71 @@ def test_a_remote_database_is_refused_without_live(diagnostics, monkeypatch, tmp
     out = tmp_path / "results.md"
     assert diagnostics.main(["--out", str(out)]) == 2
     assert not out.exists()
+
+
+READONLY_ROWS_SQL = ROOT / "scripts" / "diagnostics" / "readonly_rows.sql"
+
+
+@pytest.mark.parametrize(
+    ("sql_file", "expected"),
+    [
+        (None, ["raw_prices"]),
+        (
+            FREE_TIER_SQL,
+            ["backtest_results", "model_metrics", "news_sentiment", "raw_prices"],
+        ),
+        (READONLY_ROWS_SQL, sorted(readonly.ROWS_EXPECTED)),
+    ],
+    ids=["1a", "free_tier", "readonly_rows"],
+)
+def test_a_run_expects_rows_in_the_core_tables_its_queries_read(
+    diagnostics, sql_file, expected
+):
+    assert diagnostics.tables_expected(sql_file or diagnostics.SQL_FILE) == expected
+
+
+def test_names_in_comments_strings_and_ctes_are_not_tables_read(diagnostics, tmp_path):
+    sql = tmp_path / "q.sql"
+    sql.write_text(
+        "-- @query q\n"
+        "-- FROM forecasts, in a comment\n"
+        "WITH bars AS (SELECT ts FROM raw_prices)\n"
+        "SELECT 'FROM anomalies' AS note, EXTRACT(HOUR FROM ts) AS h FROM bars\n",
+        encoding="utf-8",
+    )
+    assert diagnostics.tables_expected(sql) == ["raw_prices"]
+
+
+def test_a_table_found_empty_fails_the_run_before_any_query(
+    diagnostics, monkeypatch, tmp_path, capsys
+):
+    """The runner gives db.readonly the core tables its queries read: one
+    that shows no row stops the run with exit 1, and nothing is written."""
+    seen = []
+
+    @contextmanager
+    def nothing_visible(statement_timeout="120s", expect_rows=()):
+        seen.append(list(expect_rows))
+        raise readonly.EmptyTablesError("raw_prices: no row visible to the role")
+        yield
+
+    monkeypatch.setattr(diagnostics.config, "DB_HOST", "127.0.0.1")
+    monkeypatch.setattr(diagnostics, "read_only_connection", nothing_visible)
+    out = tmp_path / "results.md"
+    assert diagnostics.main(["--out", str(out)]) == 1
+    assert seen == [["raw_prices"]]
+    err = capsys.readouterr().err
+    assert "Failed: EmptyTablesError: raw_prices: no row visible" in err
+    assert not out.exists()
+
+
+def test_the_read_only_check_counts_every_core_table(diagnostics):
+    """readonly_rows.sql (sql/schema_roles.sql, step 9): one count per core
+    table, read as the role."""
+    (query,) = diagnostics.queries(READONLY_ROWS_SQL).values()
+    assert set(re.findall(r"FROM (\w+)", query)) == readonly.ROWS_EXPECTED | {
+        "alerts_log"
+    }
 
 
 def test_an_error_is_printed_with_the_connection_settings_masked(

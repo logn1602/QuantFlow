@@ -3,8 +3,12 @@
 Covers db.readonly with a fake engine: the transaction is made read-only
 first, checked, timed out, rolled back and disposed, whatever happens; and a
 non-local database is read only as the read-only role (sql/schema_roles.sql),
-never with the pipeline's credentials, which can write.
+never with the pipeline's credentials, which can write; and a table the
+caller expects rows in, found empty, stops the read (require_rows).
 """
+
+import re
+from pathlib import Path
 
 import pytest
 
@@ -21,11 +25,14 @@ def local_database(monkeypatch):
 
 
 class _Result:
-    def __init__(self, value):
-        self.value = value
+    def __init__(self, value, rows=()):
+        self.value, self.rows = value, list(rows)
 
     def scalar_one(self):
         return self.value
+
+    def all(self):
+        return self.rows
 
 
 class _Txn:
@@ -37,8 +44,8 @@ class _Txn:
 
 
 class _Conn:
-    def __init__(self, log, read_only):
-        self.log, self.read_only = log, read_only
+    def __init__(self, log, read_only, tables):
+        self.log, self.read_only, self.tables = log, read_only, tables
 
     def __enter__(self):
         return self
@@ -51,16 +58,26 @@ class _Conn:
 
     def exec_driver_sql(self, sql):
         self.log.append(sql)
-        return _Result(self.read_only if sql.startswith("SHOW") else None)
+        if sql.startswith("SHOW"):
+            return _Result(self.read_only)
+        if "row_security_active" in sql:
+            # require_rows' one query: per table, whether a row is visible
+            # and whether row-level security applies to the role there.
+            names = re.findall(r"SELECT '(\w+)'", sql)
+            return _Result(None, [(name, *self.tables[name]) for name in names])
+        if sql == "SELECT current_user":
+            return _Result("quantflow_readonly")
+        return _Result(None)
 
 
 class _Engine:
-    def __init__(self, read_only="on"):
+    def __init__(self, read_only="on", tables=None):
         self.log: list[str] = []
         self.read_only = read_only
+        self.tables = tables or {}
 
     def connect(self):
-        return _Conn(self.log, self.read_only)
+        return _Conn(self.log, self.read_only, self.tables)
 
     def dispose(self):
         self.log.append("DISPOSE")
@@ -94,6 +111,93 @@ def test_an_error_inside_still_rolls_back(monkeypatch):
     with pytest.raises(ValueError), readonly.read_only_connection():
         raise ValueError("boom")
     assert engine.log[-2:] == ["ROLLBACK", "DISPOSE"]
+
+
+# ── Tables that always hold rows (require_rows) ───────────────────────────────
+
+
+def test_a_table_found_empty_where_rows_are_expected_stops_the_read(monkeypatch):
+    """Row-level security with no policy for a role shows it every row
+    hidden, and no error: quantflow_readonly saw every core table of the
+    live database empty (2026-11-11). A read that expects rows stops before
+    its caller reads anything, and says why."""
+    engine = _Engine(tables={"raw_prices": (False, True), "anomalies": (True, True)})
+    monkeypatch.setattr(readonly, "get_engine", lambda: engine)
+    with (
+        pytest.raises(readonly.EmptyTablesError) as raised,
+        readonly.read_only_connection(expect_rows=["raw_prices", "anomalies"]),
+    ):
+        pytest.fail("the body must not run")
+    message = str(raised.value)
+    assert message.startswith("raw_prices: no row visible to quantflow_readonly")
+    assert "row-level security" in message.lower()
+    assert "sql/schema_roles.sql, step 7" in message
+    assert "anomalies" not in message
+    check = next(i for i, sql in enumerate(engine.log) if "row_security_active" in sql)
+    assert check > engine.log.index("SHOW transaction_read_only")
+    assert engine.log[-2:] == ["ROLLBACK", "DISPOSE"]
+
+
+def test_an_empty_table_with_no_row_level_security_is_called_empty(monkeypatch):
+    engine = _Engine(tables={"forecasts": (False, False)})
+    monkeypatch.setattr(readonly, "get_engine", lambda: engine)
+    with (
+        pytest.raises(
+            readonly.EmptyTablesError,
+            match=r"^forecasts: empty, with no row-level security in the way",
+        ),
+        readonly.read_only_connection(expect_rows=["forecasts"]),
+    ):
+        pytest.fail("the body must not run")
+
+
+def test_tables_that_show_rows_let_the_read_go_on(monkeypatch):
+    engine = _Engine(
+        tables={"raw_prices": (True, True), "news_sentiment": (True, False)}
+    )
+    monkeypatch.setattr(readonly, "get_engine", lambda: engine)
+    expected = ["raw_prices", "news_sentiment"]
+    with readonly.read_only_connection(expect_rows=expected) as conn:
+        conn.exec_driver_sql("SELECT 1")
+    assert engine.log[-3:] == ["SELECT 1", "ROLLBACK", "DISPOSE"]
+
+
+def test_no_tables_expected_means_no_check(monkeypatch):
+    engine = _Engine()
+    monkeypatch.setattr(readonly, "get_engine", lambda: engine)
+    with readonly.read_only_connection():
+        pass
+    assert not any("row_security_active" in sql for sql in engine.log)
+
+
+def test_only_plain_table_names_reach_the_check(monkeypatch):
+    engine = _Engine()
+    monkeypatch.setattr(readonly, "get_engine", lambda: engine)
+    with (
+        pytest.raises(ValueError, match="not a plain table name"),
+        readonly.read_only_connection(expect_rows=["raw_prices; DROP TABLE x"]),
+    ):
+        pytest.fail("the body must not run")
+    assert not any("DROP" in sql for sql in engine.log)
+
+
+CORE_SCHEMAS = (
+    "schema.sql",
+    "schema_sentiment.sql",
+    "schema_metrics.sql",
+    "schema_backtest.sql",
+)
+
+
+def test_the_tables_expected_to_hold_rows_are_the_core_ones_less_alerts_log():
+    """Every core table a daily refresh fills; alerts_log holds a row only
+    once an alert fires. A new core table fails this until it is placed."""
+    sql = Path(__file__).resolve().parents[2] / "sql"
+    core = set()
+    for name in CORE_SCHEMAS:
+        text = (sql / name).read_text(encoding="utf-8")
+        core |= set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", text))
+    assert core - {"alerts_log"} == readonly.ROWS_EXPECTED
 
 
 def test_only_this_machine_counts_as_local(monkeypatch):

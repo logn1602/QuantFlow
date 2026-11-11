@@ -2,7 +2,7 @@
 
 For the code that reads the shared live database without the pipeline
 around it: the diagnostics in scripts/diagnostics/ and the evaluation's
-snapshot export. Four safeguards, the same for both:
+snapshot export. Five safeguards, the same for both:
 
   - live_refusal: callers refuse a non-local database, before connecting,
     unless told otherwise (their --live flag) and the read-only role is
@@ -14,13 +14,20 @@ snapshot export. Four safeguards, the same for both:
   - read_only_connection: one REPEATABLE READ, READ ONLY transaction,
     checked with transaction_read_only before anything runs, with a
     statement timeout, rolled back at the end;
+  - require_rows: a table the caller reads that always holds rows, found
+    empty, stops the read before the caller runs anything. Row-level
+    security with no policy for a role hides every row from it and raises
+    no error: read as quantflow_readonly, every core table of the live
+    database looked empty (2026-11-11), which a report or a snapshot would
+    have carried as data;
   - masked: errors are printed with the connection settings replaced.
 
 A local database (a throwaway cluster, the integration tests') is read with
 the configured credentials, as before.
 """
 
-from collections.abc import Iterator
+import re
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 
 from quantflow import config
@@ -34,8 +41,32 @@ NO_ROLE = (
 )
 
 
+# The core tables every daily refresh fills. Found empty by a read, they are
+# most likely hidden from its role, not empty: row-level security with no
+# SELECT policy for the role (sql/schema_roles.sql, step 7). Not alerts_log,
+# which holds a row only once an alert fires, nor the trending tables, empty
+# until the tier's first run.
+ROWS_EXPECTED = frozenset(
+    {
+        "raw_prices",
+        "technical_indicators",
+        "anomalies",
+        "forecasts",
+        "news_sentiment",
+        "model_metrics",
+        "backtest_results",
+    }
+)
+
+_TABLE_NAME = re.compile(r"[a-z_][a-z0-9_]*")
+
+
 class NoReadOnlyRoleError(RuntimeError):
     """A non-local database, and no read-only role to read it as."""
+
+
+class EmptyTablesError(RuntimeError):
+    """A table the read expects rows in shows its role none."""
 
 
 def is_local_database() -> bool:
@@ -83,14 +114,64 @@ def _engine():
     return engine_as(config.DB_READONLY_USER, config.DB_READONLY_PASSWORD)
 
 
+def require_rows(conn, tables: Iterable[str]) -> None:
+    """Raise EmptyTablesError unless each of tables shows conn a row.
+
+    One query, which also asks whether row-level security applies to the
+    role on each table, so the error says which it is: rows hidden by a
+    missing policy, or a table that is empty.
+    """
+    names = sorted(set(tables))
+    if not names:
+        return
+    odd = [name for name in names if not _TABLE_NAME.fullmatch(name)]
+    if odd:
+        raise ValueError(f"not a plain table name: {odd}")
+    query = " UNION ALL ".join(
+        f"SELECT '{name}', EXISTS (SELECT 1 FROM {name}), row_security_active('{name}')"
+        for name in names
+    )
+    empty = [
+        (name, secured)
+        for name, seen, secured in conn.exec_driver_sql(query).all()
+        if not seen
+    ]
+    if not empty:
+        return
+    role = conn.exec_driver_sql("SELECT current_user").scalar_one()
+    hidden = [name for name, secured in empty if secured]
+    bare = [name for name, secured in empty if not secured]
+    reasons = []
+    if hidden:
+        reasons.append(
+            f"{', '.join(hidden)}: no row visible to {role}. Row-level security "
+            "applies to the role there, and without a SELECT policy for it every "
+            "row is hidden (sql/schema_roles.sql, step 7)"
+        )
+    if bare:
+        reasons.append(
+            f"{', '.join(bare)}: empty, with no row-level security in the way: "
+            "is this the database .env should point at?"
+        )
+    raise EmptyTablesError(
+        "; ".join(reasons) + ". Stopped before reading on: these tables always "
+        "hold rows, and a read without them would report their absence as data."
+    )
+
+
 @contextmanager
-def read_only_connection(statement_timeout: str = "120s") -> Iterator:
+def read_only_connection(
+    statement_timeout: str = "120s", expect_rows: Iterable[str] = ()
+) -> Iterator:
     """A connection inside one read-only snapshot transaction.
 
     The transaction's first statement makes it REPEATABLE READ, READ ONLY:
     every read sees the same snapshot, and Postgres rejects any write. It is
     rolled back at the end, and the engine disposed. A non-local database is
     read as the read-only role, or not at all (NoReadOnlyRoleError).
+    expect_rows: tables the caller reads that always hold rows; one that
+    shows none stops the read before the caller's first query
+    (require_rows, in the same snapshot).
     """
     engine = _engine()
     try:
@@ -110,6 +191,7 @@ def read_only_connection(statement_timeout: str = "120s") -> Iterator:
                 conn.exec_driver_sql(
                     f"SET LOCAL statement_timeout = '{statement_timeout}'"
                 )
+                require_rows(conn, expect_rows)
                 yield conn
             finally:
                 txn.rollback()

@@ -77,3 +77,37 @@ def test_an_engine_for_another_role_is_refused_too():
     for module in (connection, readonly):
         with pytest.raises(RuntimeError, match="offline"):
             module.engine_as("quantflow_readonly", "pw")
+
+
+# Port 9 (discard) on this machine: before the guard, refused at once, so
+# these never wait on, or send anything to, a real host.
+LOCAL_CLOSED_PORT = "http://127.0.0.1:9/"
+
+
+def test_a_urllib_request_is_refused():
+    """feedparser reads every feed through urllib, not requests: the RSS
+    fetchers, the trending tier's included, were free to reach Yahoo from a
+    unit test that forgot to fake them."""
+    import urllib.request
+
+    error = _error_from(lambda: urllib.request.urlopen(LOCAL_CLOSED_PORT, timeout=1))
+    assert "tests are offline" in str(error)
+
+
+def test_a_feed_read_through_feedparser_is_refused():
+    """Unguarded, feedparser keeps a failed fetch in its result and raises
+    nothing; the refusal it lets through."""
+    import feedparser
+
+    error = _error_from(lambda: feedparser.parse(LOCAL_CLOSED_PORT + "feed"))
+    assert "tests are offline" in str(error)
+
+
+def test_an_httpx_request_is_refused():
+    """huggingface_hub, which loads FinBERT, sends its requests through
+    httpx."""
+    import httpx
+
+    with httpx.Client() as client:
+        error = _error_from(lambda: client.get(LOCAL_CLOSED_PORT, timeout=1))
+    assert "tests are offline" in str(error)

@@ -1,0 +1,283 @@
+{
+ "id": "8ecefa87-a8b0-434a-9b39-e061a0baef9b",
+ "count": 25,
+ "start": 0,
+ "total": 354,
+ "quotes": [
+  {
+   "symbol": "EQPT",
+   "shortName": "EquipmentShare.com Inc",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 13.0,
+   "regularMarketChangePercent": -19.802586,
+   "regularMarketVolume": 6083641,
+   "marketCap": 3293887488,
+   "firstTradeDateMilliseconds": 1769178600000
+  },
+  {
+   "symbol": "HIMS",
+   "shortName": "Hims & Hers Health, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 18.815,
+   "regularMarketChangePercent": -17.981691,
+   "regularMarketVolume": 48735101,
+   "marketCap": 4389791744,
+   "firstTradeDateMilliseconds": 1568381400000
+  },
+  {
+   "symbol": "LEGN",
+   "shortName": "Legend Biotech Corporation",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 20.06,
+   "regularMarketChangePercent": -17.41458,
+   "regularMarketVolume": 3933580,
+   "marketCap": 3901437440,
+   "firstTradeDateMilliseconds": 1591363800000
+  },
+  {
+   "symbol": "NOVT",
+   "shortName": "Novanta Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 124.17,
+   "regularMarketChangePercent": -14.940402,
+   "regularMarketVolume": 1042655,
+   "marketCap": 4695832064,
+   "firstTradeDateMilliseconds": 922285800000
+  },
+  {
+   "symbol": "QLYS",
+   "shortName": "Qualys, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 175.595,
+   "regularMarketChangePercent": -13.26929,
+   "regularMarketVolume": 1006135,
+   "marketCap": 6074708992,
+   "firstTradeDateMilliseconds": 1348839000000
+  },
+  {
+   "symbol": "PS",
+   "shortName": "Pershing Square Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 45.2,
+   "regularMarketChangePercent": -12.993262,
+   "regularMarketVolume": 755912,
+   "marketCap": 18080000000,
+   "firstTradeDateMilliseconds": 1777469400000
+  },
+  {
+   "symbol": "RUN",
+   "shortName": "Sunrun Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 8.5986,
+   "regularMarketChangePercent": -11.718679,
+   "regularMarketVolume": 9443192,
+   "marketCap": 2080523008,
+   "firstTradeDateMilliseconds": 1438781400000
+  },
+  {
+   "symbol": "LINE",
+   "shortName": "Lineage, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 35.225,
+   "regularMarketChangePercent": -11.182555,
+   "regularMarketVolume": 2320397,
+   "marketCap": 8832592896,
+   "firstTradeDateMilliseconds": 1721914200000
+  },
+  {
+   "symbol": "USAR",
+   "shortName": "USA Rare Earth, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NGM",
+   "regularMarketPrice": 7.8,
+   "regularMarketChangePercent": -10.952653,
+   "regularMarketVolume": 18386313,
+   "marketCap": 2925597440,
+   "firstTradeDateMilliseconds": 1689600600000
+  },
+  {
+   "symbol": "ASTS",
+   "shortName": "AST SpaceMobile, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 33.15,
+   "regularMarketChangePercent": -10.138244,
+   "regularMarketVolume": 19736795,
+   "marketCap": 12900902912,
+   "firstTradeDateMilliseconds": 1572615000000
+  },
+  {
+   "symbol": "QBTS",
+   "shortName": "D-Wave Quantum Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 10.31,
+   "regularMarketChangePercent": -10.1133375,
+   "regularMarketVolume": 20847325,
+   "marketCap": 3913950720,
+   "firstTradeDateMilliseconds": 1607697000000
+  },
+  {
+   "symbol": "AXTI",
+   "shortName": "AXT Inc",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 38.64,
+   "regularMarketChangePercent": -9.951062,
+   "regularMarketVolume": 7221114,
+   "marketCap": 2533748992,
+   "firstTradeDateMilliseconds": 895757400000
+  },
+  {
+   "symbol": "CRSP",
+   "shortName": "CRISPR Therapeutics AG",
+   "quoteType": "EQUITY",
+   "exchange": "NGM",
+   "regularMarketPrice": 45.19,
+   "regularMarketChangePercent": -9.692251,
+   "regularMarketVolume": 2504876,
+   "marketCap": 4383466496,
+   "firstTradeDateMilliseconds": 1476883800000
+  },
+  {
+   "symbol": "IREN",
+   "shortName": "IREN LIMITED",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 19.315,
+   "regularMarketChangePercent": -9.785145,
+   "regularMarketVolume": 55192043,
+   "marketCap": 8196463104,
+   "firstTradeDateMilliseconds": 1637159400000
+  },
+  {
+   "symbol": "NG",
+   "shortName": "Novagold Resources Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "ASE",
+   "regularMarketPrice": 6.235,
+   "regularMarketChangePercent": -9.375,
+   "regularMarketVolume": 2777043,
+   "marketCap": 2736017920,
+   "firstTradeDateMilliseconds": 1070548200000
+  },
+  {
+   "symbol": "FA",
+   "shortName": "First Advantage Corporation",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 21.465,
+   "regularMarketChangePercent": -8.739067,
+   "regularMarketVolume": 7090645,
+   "marketCap": 3691341824,
+   "firstTradeDateMilliseconds": 1624455000000
+  },
+  {
+   "symbol": "BEAM",
+   "shortName": "Beam Therapeutics Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 24.75,
+   "regularMarketChangePercent": -8.401186,
+   "regularMarketVolume": 2300890,
+   "marketCap": 2561517312,
+   "firstTradeDateMilliseconds": 1580999400000
+  },
+  {
+   "symbol": "PPTA",
+   "shortName": "Perpetua Resources Corp.",
+   "quoteType": "EQUITY",
+   "exchange": "NCM",
+   "regularMarketPrice": 19.4,
+   "regularMarketChangePercent": -8.317582,
+   "regularMarketVolume": 885582,
+   "marketCap": 2426858496,
+   "firstTradeDateMilliseconds": 1613658600000
+  },
+  {
+   "symbol": "DPC",
+   "shortName": "DPC Holdings PLC",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 29.98,
+   "regularMarketChangePercent": -8.402078,
+   "regularMarketVolume": 838955,
+   "marketCap": 4478802944,
+   "firstTradeDateMilliseconds": 1782394200000
+  },
+  {
+   "symbol": "IONS",
+   "shortName": "Ionis Pharmaceuticals, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 28.44,
+   "regularMarketChangePercent": -8.258062,
+   "regularMarketVolume": 4768307,
+   "marketCap": 4726282240,
+   "firstTradeDateMilliseconds": 674487000000
+  },
+  {
+   "symbol": "LIF",
+   "shortName": "Life360, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NMS",
+   "regularMarketPrice": 41.375,
+   "regularMarketChangePercent": -8.096403,
+   "regularMarketVolume": 1897400,
+   "marketCap": 3371250176,
+   "firstTradeDateMilliseconds": 1717680600000
+  },
+  {
+   "symbol": "GFL",
+   "shortName": "GFL Environmental Inc. Subordin",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 42.2075,
+   "regularMarketChangePercent": -8.004143,
+   "regularMarketVolume": 17616886,
+   "marketCap": 15232278528,
+   "firstTradeDateMilliseconds": 1583245800000
+  },
+  {
+   "symbol": "AAOI",
+   "shortName": "Applied Optoelectronics, Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NGM",
+   "regularMarketPrice": 47.995,
+   "regularMarketChangePercent": -7.879078,
+   "regularMarketVolume": 10478484,
+   "marketCap": 4356541440,
+   "firstTradeDateMilliseconds": 1380202200000
+  },
+  {
+   "symbol": "ALM",
+   "shortName": "Almonty Industries Inc.",
+   "quoteType": "EQUITY",
+   "exchange": "NCM",
+   "regularMarketPrice": 8.095,
+   "regularMarketChangePercent": -7.749281,
+   "regularMarketVolume": 2818074,
+   "marketCap": 2335251712,
+   "firstTradeDateMilliseconds": 1371475800000
+  },
+  {
+   "symbol": "HL",
+   "shortName": "Hecla Mining Company",
+   "quoteType": "EQUITY",
+   "exchange": "NYQ",
+   "regularMarketPrice": 14.205,
+   "regularMarketChangePercent": -7.8195972,
+   "regularMarketVolume": 18868691,
+   "marketCap": 9542597632,
+   "firstTradeDateMilliseconds": 322151400000
+  }
+ ]
+}

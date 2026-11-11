@@ -251,6 +251,37 @@ def test_export_live_is_refused_without_the_read_only_role(
     assert "DB_READONLY_USER" in capsys.readouterr().err
 
 
+def test_export_stops_when_a_table_the_snapshot_reads_shows_no_row(
+    monkeypatch, tmp_path, capsys
+):
+    """Every table the snapshot reads goes to db.readonly.require_rows: with
+    row-level security and no policy for the read-only role, each showed it
+    no row, and the export would have written a snapshot without data."""
+    from contextlib import contextmanager
+
+    import quantflow.config as config
+    from quantflow.db import readonly
+    from quantflow.db.snapshot import SNAPSHOT_TABLES
+
+    seen = []
+
+    @contextmanager
+    def nothing_visible(statement_timeout="120s", expect_rows=()):
+        seen.append(tuple(expect_rows))
+        raise readonly.EmptyTablesError("anomalies: no row visible to the role")
+        yield
+
+    monkeypatch.setattr(config, "DB_HOST", "127.0.0.1")
+    monkeypatch.setattr(evaluate, "read_only_connection", nothing_visible)
+    code = evaluate.main(["export", "--as-of", "2026-11-06", "--out", str(tmp_path)])
+
+    assert code == 1
+    assert seen == [SNAPSHOT_TABLES]
+    assert "Failed: EmptyTablesError: anomalies" in capsys.readouterr().err
+    assert not any(tmp_path.iterdir())
+    assert set(SNAPSHOT_TABLES) <= readonly.ROWS_EXPECTED
+
+
 def _compare(tmp_path, incumbent="a", candidate="b", models="drift"):
     return evaluate.main(
         ["compare", "--incumbent", str(tmp_path / "runs" / incumbent),

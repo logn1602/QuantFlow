@@ -14,9 +14,11 @@ Offline unit support:
                           of reaching the live Supabase instance that .env
                           points at.
   _no_network (autouse)   makes yf.download, yf.Ticker, every other yfinance
-                          request and every requests call raise, so a test
-                          that forgets to fake Yahoo, Alpha Vantage or NewsAPI
-                          never reaches them.
+                          request, every requests call, every urllib request
+                          (feedparser's) and every httpx request
+                          (huggingface_hub's) raise, so a test that forgets to
+                          fake Yahoo, its RSS feeds, Alpha Vantage, NewsAPI or
+                          the FinBERT download never reaches them.
   _no_committed_acknowledgements (autouse)
                           points config.SPLIT_JUMP_ACKNOWLEDGED_FILE at an
                           empty list, so no test depends on what
@@ -24,9 +26,10 @@ Offline unit support:
                           when it is edited. A test that needs entries writes
                           its own file (see test_split_jump_check.py).
   fake_db                 an in-memory stand-in that records every statement
-                          and applies INSERT ... ON CONFLICT DO NOTHING the way
-                          Postgres does, so a write path can be checked for what
-                          it reports against what it actually wrote.
+                          and applies INSERT ... ON CONFLICT DO NOTHING, an
+                          upsert's DO UPDATE SET and a keyed UPDATE the way
+                          Postgres does, so a write path can be checked for
+                          what it reports against what it actually wrote.
   read_tables             canned pd.read_sql results by table name, for code
                           that reads through pandas.
   price_bars              raw_prices rows in the two shapes yfinance stores:
@@ -38,13 +41,24 @@ Integration support (tests/integration, a disposable local Postgres):
   --pg-url                the database to use; nothing runs without it.
   is_local_pg_url         the check that it can only reach this machine.
   install_engine          routes every get_engine call to the test's engine.
+  pg_url                  --pg-url after those checks, or a skip without it.
+  pg                      a schema of the test's own, created from the schema
+                          files the write paths use (SCHEMA_FILES), installed
+                          as every get_engine and dropped after the test.
+  schema_engine           an engine on a given schema with session settings of
+                          its own (a New York TimeZone, say).
+  scratch_schema          a context manager: an empty schema of the test's own
+                          and an engine on it, dropped after (pg builds on it).
 """
 
 import copy
+import functools
 import re
 import sys
+import uuid
 from collections import defaultdict
 from contextlib import contextmanager
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -61,7 +75,17 @@ CONFLICT_KEYS = {
     # sql/schema.sql's key. The live table predates it and has none yet (see
     # sql/migrations/001_dedupe_anomalies.sql), so nothing conflicts there.
     "anomalies": ("ticker", "ts"),
+    # sql/schema_trending.sql.
+    "tickers": ("symbol",),
+    "trending_prices": ("ticker", "ts"),
+    "trending_snapshots": ("snapshot_ts", "symbol", "source", "list_name"),
+    "trending_fetches": ("fetched_at", "source", "list_name"),
+    "trending_news": ("ticker", "headline", "published_at"),
 }
+
+# ON CONFLICT ... DO UPDATE SET <column> = excluded.<column>, as SQLAlchemy
+# compiles an upsert.
+_UPDATED_COLUMN = re.compile(r"(\w+) = excluded\.(\w+)")
 
 # A multi-row Core INSERT binds row i's columns as "<column>_m<i>".
 _MULTI_ROW_PARAM = re.compile(r"^(?P<column>.+)_m(?P<row>\d+)$")
@@ -127,6 +151,8 @@ class FakeDatabase:
             return self._insert(sql, rows)
         if verb == "DELETE":
             return self._delete(sql, rows)
+        if verb == "UPDATE":
+            return self._update(sql, rows)
         return FakeResult(0)
 
     def _insert(self, sql, rows):
@@ -139,10 +165,27 @@ class FakeDatabase:
         key_cols = CONFLICT_KEYS.get(table, ())
         stored = {tuple(r.get(c) for c in key_cols) for r in self.tables[table]}
         skip_conflicts = "ON CONFLICT" in sql.upper()
+        # An upsert overwrites the SET columns of the stored row and, as in
+        # Postgres, counts it.
+        update = sql.upper().partition(" DO UPDATE SET ")
+        updated = [
+            target
+            for target, source in _UPDATED_COLUMN.findall(sql[len(update[0]) :])
+            if target == source
+        ]
         written = 0
         for row in rows:
             key = tuple(row.get(c) for c in key_cols)
             if key_cols and key in stored:
+                if updated:
+                    existing = next(
+                        r
+                        for r in self.tables[table]
+                        if tuple(r.get(c) for c in key_cols) == key
+                    )
+                    existing.update({column: row[column] for column in updated})
+                    written += 1
+                    continue
                 if skip_conflicts:
                     continue
                 raise IntegrityError(sql, row, Exception("duplicate key value"))
@@ -150,6 +193,25 @@ class FakeDatabase:
             self.tables[table].append(dict(row))
             written += 1
         return FakeResult(written)
+
+    def _update(self, sql, rows):
+        """UPDATE <table> SET <column> = :<param>, ... WHERE <key> = :<param>,
+        the one form the write paths send; anything else fails the test."""
+        match = re.fullmatch(
+            r"\s*UPDATE\s+(\w+)\s+SET\s+(.+?)\s+WHERE\s+(\w+)\s*=\s*:(\w+)\s*",
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        assert match, f"the fake database cannot apply: {sql}"
+        table, assignments, key, key_param = match.groups()
+        pairs = re.findall(r"(\w+)\s*=\s*:(\w+)", assignments)
+        changed = 0
+        for params in rows:
+            for row in self.tables[table]:
+                if row.get(key) == params[key_param]:
+                    row.update({column: params[param] for column, param in pairs})
+                    changed += 1
+        return FakeResult(changed)
 
     def _delete(self, sql, rows):
         match = re.search(r"DELETE FROM\s+(\w+)", sql, re.IGNORECASE)
@@ -270,6 +332,86 @@ def install_engine(monkeypatch):
     return install
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+# The tables the write paths touch. schema_roles.sql is left out: it creates
+# cluster-wide roles, which a per-test schema cannot contain.
+SCHEMA_FILES = ("schema.sql", "schema_sentiment.sql", "schema_trending.sql")
+
+
+def _schema_engine(url, schema, **settings):
+    """An engine whose sessions use the test schema. The lock timeout makes a
+    stuck test fail rather than hang the suite."""
+    from sqlalchemy import create_engine
+
+    options = {"search_path": schema, "lock_timeout": "15s"} | settings
+    return create_engine(
+        url,
+        connect_args={"options": " ".join(f"-c{k}={v}" for k, v in options.items())},
+    )
+
+
+@pytest.fixture
+def schema_engine():
+    """_schema_engine, for a test that needs a second session's settings."""
+    return _schema_engine
+
+
+@pytest.fixture
+def pg_url(request, monkeypatch):
+    """The disposable database's URL, after the local-only checks."""
+    url = request.config.getoption("--pg-url")
+    if not url:
+        pytest.skip("needs --pg-url pointing at a disposable local Postgres")
+    if not _is_local_pg_url(url):
+        pytest.fail("--pg-url must be a local database, never the live one")
+    # Whatever .env's DB_HOST is, code that judges the database's locality
+    # (db.readonly) sees this one: a read it took for the live database
+    # would log in as the read-only role on an engine of its own, around
+    # the test engine installed by pg.
+    from quantflow import config
+
+    monkeypatch.setattr(config, "DB_HOST", "127.0.0.1")
+    return url
+
+
+@contextmanager
+def _scratch_schema(url, prefix="qf_scratch", **settings):
+    """An empty schema of its own on url and an engine on it (with
+    _schema_engine's settings), dropped with everything in it after."""
+    from sqlalchemy import create_engine
+
+    schema = f"{prefix}_{uuid.uuid4().hex[:8]}"
+    admin = create_engine(url)
+    with admin.begin() as conn:
+        conn.exec_driver_sql(f"CREATE SCHEMA {schema}")
+    engine = _schema_engine(url, schema, **settings)
+    try:
+        yield engine, schema
+    finally:
+        engine.dispose()
+        with admin.begin() as conn:
+            conn.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
+        admin.dispose()
+
+
+@pytest.fixture
+def scratch_schema(pg_url):
+    """_scratch_schema on the disposable database: with scratch_schema() as
+    (engine, schema): ..."""
+    return functools.partial(_scratch_schema, pg_url)
+
+
+@pytest.fixture
+def pg(pg_url, install_engine):
+    with _scratch_schema(pg_url, "qf_test") as (engine, _):
+        with engine.begin() as conn:
+            for name in SCHEMA_FILES:
+                conn.exec_driver_sql((ROOT / "sql" / name).read_text(encoding="utf-8"))
+        install_engine(engine)
+        yield engine
+
+
 @pytest.fixture(autouse=True)
 def _no_database(monkeypatch):
     def refuse(*args, **kwargs):
@@ -290,6 +432,9 @@ def _no_database(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
+    import urllib.request
+
+    import httpx
     import requests
     import yfinance
     import yfinance.data
@@ -307,6 +452,12 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(yfinance, "Ticker", refuse)
     monkeypatch.setattr(yfinance.data.YfData, "_make_request", refuse)
     monkeypatch.setattr(requests.Session, "request", refuse)
+    # feedparser reads every feed through urllib, whose requests all go
+    # through OpenerDirector.open (urlopen included); huggingface_hub sends
+    # its own through httpx, whose requests all go through send.
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", refuse)
+    monkeypatch.setattr(httpx.Client, "send", refuse)
+    monkeypatch.setattr(httpx.AsyncClient, "send", refuse)
 
 
 @pytest.fixture(scope="session")
