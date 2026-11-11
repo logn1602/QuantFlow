@@ -24,7 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 
 from quantflow.db.prices import PRICE_COLUMNS
-from quantflow.features.trending_analytics import analyse
+from quantflow.features.trending_analytics import WINDOW_BARS, analyse
 from quantflow.ingestion import trending_rules as rules
 
 CAPTION = "Discovery only: not forecast or backtested."
@@ -90,10 +90,11 @@ LISTS_QUERY = text("""
     GROUP BY list_name
 """)
 
-# The chart's bars: about a year of sessions. A symbol's history grows a bar
-# a day for as long as it is tracked, and the chart needs its last year, not
-# all of it.
-CHART_BARS = 260
+# The chart's bars: the window the run's summary analyses too
+# (trending_analytics.WINDOW_BARS, about a year), so the table's flag count
+# and the chart's flags agree, and no more is read: a symbol's history grows a
+# bar a day for as long as it is tracked.
+CHART_BARS = WINDOW_BARS
 
 # The latest CHART_BARS bars, oldest first, as the candles are drawn.
 BARS_QUERY = text("""

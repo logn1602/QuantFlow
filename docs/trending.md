@@ -538,8 +538,10 @@ what the tab's table shows: the session, the last close, RSI(14), the number of 
 flags in the last 10 trading days, and the latest big move. The full indicator and flag
 series are computed again when a visitor opens a symbol's chart (section 10), from its
 latest rows in `trending_prices`, by the same helper
-(`features/trending_analytics.analyse`), so the run and the tab cannot compute them
-differently. Nothing is written to `technical_indicators` or
+(`features/trending_analytics.analyse`) on the same window, its latest 260 dates, so the
+run and the tab cannot compute them differently. The window matters: the IQR detector
+sets its fences from quantiles over its whole input, so the run's summary over a longer
+history counted flags the chart did not draw (the Red Team pass, 2026-11-10). Nothing is written to `technical_indicators` or
 `anomalies`, and the stages' `run` functions are not called: they read and write the
 core's tables.
 
