@@ -1,0 +1,21 @@
+# Keeps the workflows' actions current. Every action is pinned to a full
+# commit SHA, with its release in a trailing comment (actions/checkout@<sha>
+# # v4.4.0): a tag can be moved to other code, a commit cannot. Dependabot
+# reads the comment, and its pull request updates the SHA and the comment
+# together, so a new release reaches a workflow only through a reviewed
+# change, checked by CI like any other.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # A release is proposed once it is a week old: time for a compromised
+    # release to be found and pulled before it is offered here.
+    cooldown:
+      default-days: 7
+    # One pull request a week for every action, not one each.
+    groups:
+      actions:
+        patterns:
+          - "*"
