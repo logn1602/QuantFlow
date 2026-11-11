@@ -6,8 +6,10 @@ function here touches a table the core or the evaluation reads, and no core
 module reads these.
 
 Each write that must land whole is one transaction:
-  - a fetch's snapshots with each list's outcome (save_fetch), so the two
-    never disagree;
+  - a fetch's snapshots, each list's outcome and the selection made from
+    them (save_run), so the three never disagree: a fetch stored without
+    the tickers rows would count its session towards absence for symbols
+    whose last_seen never moved;
   - a symbol's price replacement with its first_bar_date (replace_prices),
     so a reader finds its old bars or its new ones, never none, as the
     forecasts since PR #19.
@@ -26,6 +28,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from quantflow.db.batch import CHUNK_ROWS, frame_to_rows, insert_rows
 from quantflow.db.connection import get_engine
+
+# The tier's tables, as sql/migrations/002_trending.sql creates them.
+TRENDING_TABLES = (
+    "tickers",
+    "trending_prices",
+    "trending_snapshots",
+    "trending_fetches",
+    "trending_news",
+)
 
 SNAPSHOT_COLUMNS = (
     "snapshot_ts",
@@ -84,15 +95,41 @@ SUMMARY_COLUMNS = (
     "recent_flags",
     "big_move_date",
 )
-PRICE_COLUMNS = ("ticker", "ts", "open", "high", "low", "close", "volume")
+# A trending_prices row, as the run builds it (not db.prices.PRICE_COLUMNS,
+# the OHLCV columns a frame of bars carries).
+PRICE_ROW_COLUMNS = ("ticker", "ts", "open", "high", "low", "close", "volume")
 
 
-def save_fetch(
-    snapshot_rows: list[dict[str, Any]], fetch_rows: list[dict[str, Any]]
-) -> tuple[int, int]:
-    """Store one fetch: every item's snapshot row and every list's outcome,
-    in one transaction. Returns (snapshot rows, outcome rows) written; a row
-    already stored for the same key is skipped and not counted."""
+def missing_tables() -> list[str]:
+    """The tier's tables not there yet, in TRENDING_TABLES order: all of
+    them until the owner runs sql/migrations/002_trending.sql."""
+    query = text("""
+        SELECT name
+        FROM unnest(CAST(:names AS text[])) WITH ORDINALITY AS t(name, place)
+        WHERE to_regclass(name) IS NULL
+        ORDER BY place
+    """)
+    with get_engine().connect() as conn:
+        return list(
+            conn.execute(query, {"names": list(TRENDING_TABLES)}).scalars().all()
+        )
+
+
+def save_run(
+    snapshot_rows: list[dict[str, Any]],
+    fetch_rows: list[dict[str, Any]],
+    ticker_rows: list[dict[str, Any]] | None = None,
+    update: Sequence[str] = (),
+) -> tuple[int, int, int]:
+    """Store one run's fetch and the selection made from it, in one
+    transaction: every item's snapshot row, every list's outcome and the
+    tickers rows (upserted as upsert_tickers does, update the columns a
+    stored row takes). Returns (snapshot rows, outcome rows, tickers rows)
+    written; a snapshot or outcome already stored for the same key is
+    skipped and not counted. The tickers rows are checked before anything
+    is sent."""
+    ticker_rows = ticker_rows or []
+    _check_ticker_rows(ticker_rows, update)
     with get_engine().begin() as conn:
         snapshots = insert_rows(
             conn,
@@ -106,20 +143,14 @@ def save_fetch(
             fetch_rows,
             skip_conflicts=("fetched_at", "source", "list_name"),
         )
-    return snapshots, outcomes
+        tickers = _upsert(conn, ticker_rows, update)
+    return snapshots, outcomes, tickers
 
 
-def upsert_tickers(rows: list[dict[str, Any]], update: Sequence[str]) -> int:
-    """Insert tickers rows, or overwrite the update columns of those already
-    stored, in one transaction; returns rows inserted or updated.
-
-    Every row carries the same columns, first_seen and last_seen among them
-    (NOT NULL, checked even for a row that will update). A symbol given twice
-    is refused before anything is sent: one INSERT ... ON CONFLICT DO UPDATE
-    cannot change a row twice.
-    """
+def _check_ticker_rows(rows: list[dict[str, Any]], update: Sequence[str]) -> None:
+    """upsert_tickers' rules, checked before anything is sent."""
     if not rows:
-        return 0
+        return
     columns = list(rows[0])
     unknown = set(columns) - set(TICKER_COLUMNS)
     if unknown:
@@ -135,17 +166,36 @@ def upsert_tickers(rows: list[dict[str, Any]], update: Sequence[str]) -> int:
     if len(set(symbols)) != len(symbols):
         raise ValueError("a symbol is given twice")
 
-    target = table("tickers", *(column(name) for name in columns))
+
+def _upsert(conn, rows: list[dict[str, Any]], update: Sequence[str]) -> int:
+    if not rows:
+        return 0
+    target = table("tickers", *(column(name) for name in rows[0]))
     written = 0
-    with get_engine().begin() as conn:
-        for start in range(0, len(rows), CHUNK_ROWS):
-            stmt = pg_insert(target).values(rows[start : start + CHUNK_ROWS])
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["symbol"],
-                set_={name: stmt.excluded[name] for name in update},
-            )
-            written += conn.execute(stmt).rowcount
+    for start in range(0, len(rows), CHUNK_ROWS):
+        stmt = pg_insert(target).values(rows[start : start + CHUNK_ROWS])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["symbol"],
+            set_={name: stmt.excluded[name] for name in update},
+        )
+        written += conn.execute(stmt).rowcount
     return written
+
+
+def upsert_tickers(rows: list[dict[str, Any]], update: Sequence[str]) -> int:
+    """Insert tickers rows, or overwrite the update columns of those already
+    stored, in one transaction; returns rows inserted or updated.
+
+    Every row carries the same columns, first_seen and last_seen among them
+    (NOT NULL, checked even for a row that will update). A symbol given twice
+    is refused before anything is sent: one INSERT ... ON CONFLICT DO UPDATE
+    cannot change a row twice.
+    """
+    _check_ticker_rows(rows, update)
+    if not rows:
+        return 0
+    with get_engine().begin() as conn:
+        return _upsert(conn, rows, update)
 
 
 _DELETE_PRICES = text("DELETE FROM trending_prices WHERE ticker = ANY(:tickers)")

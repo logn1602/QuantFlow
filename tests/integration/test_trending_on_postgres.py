@@ -246,8 +246,8 @@ def test_a_fetch_is_stored_on_real_types_and_counted_once(pg):
         _outcome(T0, dt.date(2026, 11, 10), "most_actives", True),
         _outcome(T0, dt.date(2026, 11, 10), "day_gainers", False),
     ]
-    assert trending.save_fetch(snapshots, outcomes) == (3, 2)
-    assert trending.save_fetch(snapshots, outcomes) == (0, 0)
+    assert trending.save_run(snapshots, outcomes) == (3, 2, 0)
+    assert trending.save_run(snapshots, outcomes) == (0, 0, 0)
     with pg.connect() as conn:
         stored = pd.read_sql(
             text("SELECT * FROM trending_snapshots ORDER BY list_name, rank"), conn
@@ -340,7 +340,7 @@ def test_only_sessions_with_a_fetch_where_every_list_answered_count(pg):
         *[_outcome(T0 - pd.Timedelta(days=1), nov[9], n, True) for n in ("a", "b")],
         *[_outcome(T0, nov[9], n, True) for n in ("a", "b")],
     ]
-    trending.save_fetch([], outcomes)
+    trending.save_run([], outcomes)
     assert trending.counted_sessions(5) == [nov[9], nov[6], nov[4]]
     assert trending.counted_sessions(2) == [nov[9], nov[6]]
 
@@ -485,7 +485,7 @@ def _seed_the_tab(pg):
         _outcome(T0, day[T0], "day_losers", True),
         _outcome(T0, day[T0], "most_actives", False),
     ]
-    trending.save_fetch(snapshots, outcomes)
+    trending.save_run(snapshots, outcomes)
     trending.upsert_tickers(
         [
             _ticker("HIMS", short_name="Hims & Hers"),

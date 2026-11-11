@@ -12,6 +12,7 @@ is validated before it reaches the database, a URL or a log line (4.1).
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import re
 import unicodedata
@@ -399,6 +400,39 @@ def candidates(
     )
 
 
+def offering_nobody(
+    fetches: Iterable[ListFetch], *, core: Iterable[str], settings: TrendingSettings
+) -> list[ListFetch]:
+    """fetches, with each list that answered with items and offered not one
+    candidate read as failed, with why (adversarial F1, T8).
+
+    What a changed field value looks like: quoteType "STOCK" for "EQUITY",
+    say. Every item would be dropped by rule 2 or a floor, the list would
+    count as answered, and everyone on it would look absent. Failed, it
+    deactivates nobody and the run ends red. A list whose items include a
+    pinned symbol or a core ticker is not failed: those are dropped by
+    choice, and a short list of them alone can be real."""
+    core = set(core)
+    checked = []
+    for fetch in fetches:
+        reasons: dict[str, int] = {}
+        for item in fetch.items:
+            reason = rejection(item, core=core, settings=settings)
+            if item.symbol in settings.pinned or reason in (None, "a core ticker"):
+                reasons = {}
+                break
+            reasons[reason] = reasons.get(reason, 0) + 1
+        if not fetch.succeeded or not reasons:
+            checked.append(fetch)
+            continue
+        error = f"none of its {len(fetch.items)} items passed the rules: " + ", ".join(
+            f"{n} {reason}" for reason, n in sorted(reasons.items())
+        )
+        logger.warning(f"Trending list {fetch.list_name} answered but {error}")
+        checked.append(dataclasses.replace(fetch, items=(), error=error))
+    return checked
+
+
 def pinned_items(
     fetches: Iterable[ListFetch], settings: TrendingSettings
 ) -> dict[str, TrendingItem]:
@@ -431,6 +465,18 @@ class Selection:
     kept_absent: tuple[str, ...]  # active before, on no list that answered, kept
     deactivated: tuple[str, ...]
     complete: bool  # every list answered: the session counts (T8)
+
+
+def counted_with(
+    counted: Sequence[dt.date], session: dt.date, *, complete: bool, limit: int
+) -> list[dt.date]:
+    """The latest counted sessions, newest first, at most limit, once this
+    fetch is stored: the ones stored before it (db.trending.counted_sessions)
+    and this fetch's session if every list answered (T8). Computed rather
+    than read after the store, so the fetch and the selection made from it
+    can be stored in one transaction."""
+    days = set(counted) | ({session} if complete else set())
+    return sorted(days, reverse=True)[:limit]
 
 
 def absences(last_seen: Any, counted: Sequence[dt.date]) -> int:
@@ -475,9 +521,8 @@ def choose_active(
     A core ticker (core) active before leaves the tier either way: rule 3
     keeps it off the candidates, and it must not stay on as absent.
 
-    counted is the latest counted sessions, newest first, as
-    db.trending.counted_sessions reads them after this run's fetch is stored,
-    so this run's session is among them when complete.
+    counted is the latest counted sessions, newest first, this run's own
+    among them when complete (counted_with).
     """
     pinned = tuple(settings.pinned)
     core = set(core)

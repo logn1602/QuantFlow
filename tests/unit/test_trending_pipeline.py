@@ -14,10 +14,13 @@ are never called.
 
 import dataclasses
 import datetime as dt
+import re
+import socket
 
 import numpy as np
 import pandas as pd
 import pytest
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from quantflow.db import trending as db_trending
 from quantflow.features import anomalies, indicators, sentiment
@@ -221,9 +224,14 @@ def _tickers(db):
 
 
 def _no_core_writes(db):
+    """No row in a core table, and no statement of any kind naming one: an
+    UPDATE or a TRUNCATE is as much a write as an INSERT."""
     for table in CORE_TABLES:
         assert db.tables[table] == [], table
-        assert db.inserts(table) == [] and db.deletes(table) == [], table
+        named = [
+            sql for sql, _ in db.statements if re.search(rf"\b{table}\b", sql, re.I)
+        ]
+        assert named == [], table
 
 
 # ── A full run ────────────────────────────────────────────────────────────────
@@ -297,15 +305,33 @@ def test_the_stored_first_trade_date_carries_a_later_listing_date(world):
     assert tickers["HIMS"]["first_trade_date"] == dt.date(2021, 1, 4)
 
 
+def _bars_of(db, symbol):
+    return [r for r in db.tables["trending_prices"] if r["ticker"] == symbol]
+
+
 def test_a_download_that_does_not_reach_back_keeps_the_stored_bars(world):
-    yahoo = FakeYahoo({"HIMS": _yahoo(DAYS)})
-    _run(_all_lists("HIMS"), yahoo, pinned=())
-    before = list(world.tables["trending_prices"])
+    yahoo = FakeYahoo({"SPCX": _yahoo(DAYS), "HIMS": _yahoo(DAYS)})
+    _run(_all_lists("HIMS"), yahoo)
+    before = _bars_of(world, "HIMS")
 
     yahoo.frames["HIMS"] = _yahoo(DAYS[40:])  # Yahoo lost its first 40 days
-    result = _run(_all_lists("HIMS"), yahoo, pinned=(), now=NOW + pd.Timedelta(days=1))
+    result = _run(_all_lists("HIMS"), yahoo, now=NOW + pd.Timedelta(days=1))
     assert result.prices_skipped == ["HIMS"] and result.exit_code == 0
-    assert world.tables["trending_prices"] == before
+    assert _bars_of(world, "HIMS") == before
+
+
+def test_a_download_that_ends_early_keeps_the_stored_bars(world):
+    """Adversarial F3: a download missing its last days would shorten the
+    history at its end, and the summary would go back in time."""
+    yahoo = FakeYahoo({"SPCX": _yahoo(DAYS), "HIMS": _yahoo(DAYS)})
+    _run(_all_lists("HIMS"), yahoo)
+    before = _bars_of(world, "HIMS")
+
+    yahoo.frames["HIMS"] = _yahoo(DAYS[:-5])  # Yahoo lost its last five days
+    result = _run(_all_lists("HIMS"), yahoo, now=NOW + pd.Timedelta(days=1))
+    assert result.prices_skipped == ["HIMS"] and result.exit_code == 0
+    assert _bars_of(world, "HIMS") == before
+    assert _tickers(world)["HIMS"]["summary_session"] == SESSION
 
 
 def test_a_price_too_large_to_store_skips_the_symbol(world):
@@ -317,6 +343,38 @@ def test_a_price_too_large_to_store_skips_the_symbol(world):
 
 
 # ── Failures (section 14) ─────────────────────────────────────────────────────
+
+
+def test_a_list_that_offers_nobody_is_read_as_failed(world):
+    """Its items all dropped by the rules (a changed quoteType): stored as
+    a failed list, so nobody is deactivated, and the run ends red."""
+    yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "A1", "A2", "A3", "B1")})
+    _run(_all_lists("A1", "A2", "A3"), yahoo, pinned=())
+
+    changed = ListFetch(
+        source="yahoo_screener",
+        list_name="most_actives",
+        items=tuple(
+            _item(s, "most_actives", n, quote_type="STOCK")
+            for n, s in enumerate(("A1", "A2", "A3"), 1)
+        ),
+    )
+    sources = [
+        FakeSource(
+            _answered("trending_tickers", "B1"),
+            changed,
+            _answered("day_gainers"),
+            _answered("day_losers"),
+        )
+    ]
+    result = _run(sources, yahoo, pinned=(), now=NOW + pd.Timedelta(days=1))
+    assert result.failed_lists == ["most_actives"] and result.exit_code == 1
+    outcome = [
+        r for r in world.tables["trending_fetches"] if r["list_name"] == "most_actives"
+    ][-1]
+    assert not outcome["succeeded"] and outcome["items"] == 0
+    assert outcome["error"] == "none of its 3 items passed the rules: 3 not EQUITY"
+    assert set(result.active) == {"A1", "A2", "A3"}  # kept: T8
 
 
 def test_a_failed_list_stores_the_others_runs_everything_and_ends_red(world):
@@ -402,6 +460,141 @@ def test_one_symbols_failed_download_or_news_is_a_warning_only(world, monkeypatc
     assert result.exit_code == 0
 
 
+def test_no_bars_replaced_for_any_active_symbol_ends_red(world):
+    """Adversarial F5: each skip is a warning, but a run in which not one
+    active symbol's bars were replaced did nothing a green run promises."""
+    result = _run(_all_lists("HIMS"), FakeYahoo({}))
+    assert result.prices_skipped == ["SPCX", "HIMS"] and result.prices_failed == []
+    assert result.failed_steps == ["prices"] and result.exit_code == 1
+
+
+def test_analytics_failing_for_one_symbol_warns_and_for_every_one_ends_red(
+    world, monkeypatch
+):
+    real = trending.summarize
+    broken = {"HIMS"}
+
+    def summarize(rows, symbol):
+        if symbol in broken:
+            raise ValueError("bad bars")
+        return real(rows, symbol)
+
+    monkeypatch.setattr(trending, "summarize", summarize)
+    yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")})
+    result = _run(_all_lists("HIMS"), yahoo)
+    assert result.analytics_failed == ["HIMS"] and result.analysed == ["SPCX"]
+    assert result.exit_code == 0
+    assert _tickers(world)["HIMS"]["summary_session"] is None
+
+    broken.add("SPCX")
+    result = _run(_all_lists("HIMS"), yahoo, now=NOW + pd.Timedelta(days=1))
+    assert result.failed_steps == ["analytics"] and result.exit_code == 1
+
+
+def test_news_failing_for_every_symbol_ends_red(world, monkeypatch):
+    def fetch_rss(symbol, feeds=None):
+        raise RuntimeError("feeds down")
+
+    monkeypatch.setattr(sentiment, "fetch_rss", fetch_rss)
+    yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")})
+    result = _run(_all_lists("HIMS"), yahoo)
+    assert result.sentiment_failed == ["SPCX", "HIMS"]
+    assert result.failed_steps == ["sentiment"] and result.exit_code == 1
+
+
+def test_a_failed_news_write_ends_red_and_the_next_symbol_still_runs(
+    world, monkeypatch
+):
+    """A feed or the model failing for a symbol is a warning; the database
+    refusing the write is a fault, as a failed price replacement is."""
+    real = sentiment.save_sentiment
+
+    def save_sentiment(articles, symbol, table="news_sentiment"):
+        if symbol == "SPCX":
+            raise OperationalError("INSERT", {}, Exception("connection lost"))
+        return real(articles, symbol, table=table)
+
+    monkeypatch.setattr(sentiment, "save_sentiment", save_sentiment)
+    yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")})
+    result = _run(_all_lists("HIMS"), yahoo)
+    assert result.news_failed == ["SPCX"] and result.exit_code == 1
+    assert {r["ticker"] for r in world.tables["trending_news"]} == {"HIMS"}
+
+
+def test_a_failed_tickers_write_stores_no_fetch_either(world, monkeypatch):
+    real = world.execute
+
+    def failing(statement, params=None):
+        if str(statement).lstrip().startswith("INSERT INTO tickers"):
+            raise IntegrityError("INSERT", {}, Exception("boom"))
+        return real(statement, params)
+
+    monkeypatch.setattr(world, "execute", failing)
+    with pytest.raises(IntegrityError):
+        _run(_all_lists("HIMS"), FakeYahoo({}))
+    assert world.tables["trending_fetches"] == []
+    assert world.tables["trending_snapshots"] == []
+
+
+def test_a_symbol_absent_for_five_counted_sessions_goes_on_the_fifth(world):
+    """Across runs, as the database keeps them: A1 is on the lists on the
+    first session only; it is kept while absent from fewer than
+    TRENDING_INACTIVE_AFTER_DAYS (5) counted sessions, and goes on the
+    fifth."""
+    days = ["2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-16"]
+    yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("A1", "B1")})
+    _run(_all_lists("A1"), yahoo, pinned=())
+    for day in days[1:]:
+        result = _run(
+            _all_lists("B1"),
+            yahoo,
+            pinned=(),
+            now=pd.Timestamp(f"{day} 23:10", tz="UTC"),
+        )
+        assert "A1" in result.active, day  # absent from 1 to 4 sessions
+    result = _run(
+        _all_lists("B1"),
+        yahoo,
+        pinned=(),
+        now=pd.Timestamp("2026-11-17 23:10", tz="UTC"),
+    )
+    assert result.active == ("B1",)
+    assert not _tickers(world)["A1"]["active"]
+
+
+def test_a_pinned_symbol_that_is_not_an_equity_is_warned_about(world, caplog):
+    sources = [
+        FakeSource(
+            ListFetch(
+                source="yahoo_screener",
+                list_name="most_actives",
+                items=(_item("SPCX", "most_actives", 1, quote_type="ETF"),),
+            ),
+            _answered("trending_tickers", "HIMS"),
+        )
+    ]
+    _run(sources, FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")}))
+    assert any(
+        "Pinned SPCX has quote type ETF" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_the_feeds_are_read_with_a_socket_timeout_put_back_after(world, monkeypatch):
+    """feedparser has no timeout: it reads through urllib, which waits as long
+    as the socket default allows, forever unless one is set."""
+    seen = []
+
+    def fetch_rss(symbol, feeds=None):
+        seen.append(socket.getdefaulttimeout())
+        return []
+
+    monkeypatch.setattr(sentiment, "fetch_rss", fetch_rss)
+    before = socket.getdefaulttimeout()
+    _run(_all_lists("HIMS"), FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")}))
+    assert seen == [trending.RSS_TIMEOUT_SECONDS] * 2
+    assert socket.getdefaulttimeout() == before
+
+
 def test_finbert_unavailable_ends_red_after_prices_and_analytics(world, monkeypatch):
     monkeypatch.setattr(sentiment, "get_finbert", lambda: None)
     result = _run(_all_lists("HIMS"), FakeYahoo({"HIMS": _yahoo(DAYS)}))
@@ -447,26 +640,70 @@ def test_too_short_a_history_has_no_rsi_but_still_a_summary():
 
 # ── The command ───────────────────────────────────────────────────────────────
 
+SETTING_NAMES = (
+    "TRENDING_PINNED",
+    "TRENDING_LISTS",
+    "TRENDING_MAX_ACTIVE",
+    "TRENDING_MAX_NEW_PER_RUN",
+    "TRENDING_INACTIVE_AFTER_DAYS",
+    "TRENDING_MIN_PRICE",
+    "TRENDING_MIN_MARKET_CAP",
+    "TRENDING_PROMOTION_MIN_DAYS",
+    "PROMOTION_MIN_HISTORY_DAYS",
+)
 
-def test_a_bad_setting_exits_1_before_anything_runs(monkeypatch, capsys):
+
+@pytest.fixture
+def command(monkeypatch):
+    """main() as the workflow runs it, offline: blank trending settings, so
+    no test depends on the developer's .env; a password, so the config
+    check passes; and every table there."""
+    for name in SETTING_NAMES:
+        monkeypatch.setattr(trending.config, name, "")
     monkeypatch.setattr(trending.config, "DB_PASSWORD", "x")
     monkeypatch.setattr(trending.config, "TICKERS", ["AAPL"])
-    monkeypatch.setattr(trending.config, "TRENDING_MAX_ACTIVE", "lots")
-    monkeypatch.setattr(trending, "run", lambda **kw: pytest.fail("ran"))
+    monkeypatch.setattr(db_trending, "missing_tables", lambda: [])
+    return monkeypatch
+
+
+def test_every_trending_setting_is_blanked_by_the_command_fixture():
+    from quantflow import config
+
+    named = {
+        name
+        for name in vars(config)
+        if (name.startswith("TRENDING_") or name.startswith("PROMOTION_"))
+        and not name.endswith("_FILE")
+    }
+    assert named == set(SETTING_NAMES)
+
+
+def test_a_bad_setting_exits_1_before_anything_runs(command, capsys):
+    command.setattr(trending.config, "TRENDING_MAX_ACTIVE", "lots")
+    command.setattr(trending, "run", lambda **kw: pytest.fail("ran"))
     assert trending.main([]) == 1
     assert "TRENDING_MAX_ACTIVE" in capsys.readouterr().err
 
 
-def test_the_cap_flag_limits_the_discovered_symbols(monkeypatch):
+def test_missing_tables_stop_the_run_naming_the_migration(command, capsys):
+    """Before the owner runs 002_trending.sql: one clear line, not a
+    traceback from the first INSERT after every list was fetched."""
+    command.setattr(db_trending, "missing_tables", lambda: ["tickers", "trending_news"])
+    command.setattr(trending, "run", lambda **kw: pytest.fail("ran"))
+    assert trending.main([]) == 1
+    err = capsys.readouterr().err
+    assert "tickers, trending_news" in err
+    assert "sql/migrations/002_trending.sql" in err
+
+
+def test_the_cap_flag_limits_the_discovered_symbols(command):
     seen = {}
 
     def fake_run(**kwargs):
         seen.update(kwargs)
         return trending.RunResult(session=SESSION)
 
-    monkeypatch.setattr(trending.config, "DB_PASSWORD", "x")
-    monkeypatch.setattr(trending.config, "TICKERS", ["AAPL"])
-    monkeypatch.setattr(trending, "run", fake_run)
+    command.setattr(trending, "run", fake_run)
     assert trending.main(["--cap", "3"]) == 0
     assert seen["settings"].max_active == 3
     assert seen["core"] == ["AAPL"]

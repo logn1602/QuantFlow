@@ -69,13 +69,13 @@ def _bars(ticker, days, close=10.0):
     ]
 
 
-# ── save_fetch ────────────────────────────────────────────────────────────────
+# ── save_run ──────────────────────────────────────────────────────────────────
 
 
 def test_a_fetch_stores_its_snapshots_and_outcomes_and_counts_them(fake_db):
     snapshots = [_snapshot("SPCX"), _snapshot("HIMS", rank=2)]
     outcomes = [_outcome("most_actives", items=2), _outcome("day_gainers", False, 0)]
-    assert trending.save_fetch(snapshots, outcomes) == (2, 2)
+    assert trending.save_run(snapshots, outcomes) == (2, 2, 0)
     assert len(fake_db.tables["trending_snapshots"]) == 2
     assert [r["succeeded"] for r in fake_db.tables["trending_fetches"]] == [True, False]
     # One batched insert per table.
@@ -85,10 +85,10 @@ def test_a_fetch_stores_its_snapshots_and_outcomes_and_counts_them(fake_db):
 
 def test_a_snapshot_already_stored_is_skipped_and_not_counted(fake_db):
     fake_db.seed("trending_snapshots", [_snapshot("SPCX")])
-    written = trending.save_fetch(
+    written = trending.save_run(
         [_snapshot("SPCX"), _snapshot("HIMS")], [_outcome("most_actives")]
     )
-    assert written == (1, 1)
+    assert written == (1, 1, 0)
 
 
 def test_a_failed_outcome_insert_rolls_the_snapshots_back(fake_db, monkeypatch):
@@ -105,10 +105,56 @@ def test_a_failed_outcome_insert_rolls_the_snapshots_back(fake_db, monkeypatch):
 
     monkeypatch.setattr(trending, "insert_rows", failing)
     with pytest.raises(IntegrityError):
-        trending.save_fetch([_snapshot("SPCX")], [_outcome("most_actives")])
+        trending.save_run([_snapshot("SPCX")], [_outcome("most_actives")])
     assert calls == ["trending_snapshots", "trending_fetches"]
     assert fake_db.tables["trending_snapshots"] == []
     assert fake_db.rollbacks == 1
+
+
+def test_a_run_stores_its_fetch_and_its_tickers_rows_together(fake_db):
+    written = trending.save_run(
+        [_snapshot("SPCX")],
+        [_outcome("most_actives")],
+        [_ticker("SPCX"), _ticker("HIMS")],
+        trending.SELECTION_COLUMNS,
+    )
+    assert written == (1, 1, 2)
+    assert {r["symbol"] for r in fake_db.tables["tickers"]} == {"SPCX", "HIMS"}
+
+
+def test_a_failed_tickers_write_rolls_the_fetch_back(fake_db, monkeypatch):
+    """A fetch stored without the selection made from it would count its
+    session towards absence for symbols whose last_seen never moved: one
+    transaction, so neither lands without the other."""
+    real = fake_db.execute
+
+    def failing(statement, params=None):
+        if str(statement).lstrip().startswith("INSERT INTO tickers"):
+            raise IntegrityError("INSERT", {}, Exception("boom"))
+        return real(statement, params)
+
+    monkeypatch.setattr(fake_db, "execute", failing)
+    with pytest.raises(IntegrityError):
+        trending.save_run(
+            [_snapshot("SPCX")],
+            [_outcome("most_actives")],
+            [_ticker("SPCX")],
+            trending.SELECTION_COLUMNS,
+        )
+    assert fake_db.tables["trending_snapshots"] == []
+    assert fake_db.tables["trending_fetches"] == []
+    assert fake_db.rollbacks == 1
+
+
+def test_tickers_rows_are_checked_before_the_fetch_is_sent(fake_db):
+    with pytest.raises(ValueError, match="given twice"):
+        trending.save_run(
+            [_snapshot("SPCX")],
+            [_outcome("most_actives")],
+            [_ticker("SPCX"), _ticker("SPCX")],
+            trending.SELECTION_COLUMNS,
+        )
+    assert fake_db.statements == []
 
 
 # ── upsert_tickers ────────────────────────────────────────────────────────────

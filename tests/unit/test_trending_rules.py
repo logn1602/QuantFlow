@@ -275,6 +275,48 @@ def test_pinned_symbols_are_not_candidates_but_their_items_are_kept():
     assert found["SPCX"].list_name == "trending_tickers"
 
 
+def test_a_list_whose_every_item_fails_the_rules_is_read_as_failed():
+    """What a changed field value looks like (quoteType "STOCK" for
+    "EQUITY"): the list answers, every item is dropped, and everyone on it
+    would look absent. Read as failed, T8 keeps them (adversarial F1)."""
+    offered_nobody = _answered(
+        "most_actives",
+        _item("ZZA", rank=1, quote_type="STOCK"),
+        _item("ZZB", rank=2, quote_type="STOCK", price=1.0),
+    )
+    fine = _answered("day_gainers", _item("ZZC", "day_gainers"))
+    empty = _answered("day_losers")
+    failed = _failed("trending_tickers")
+    checked = rules.offering_nobody(
+        [offered_nobody, fine, empty, failed], core=CORE, settings=SETTINGS
+    )
+    assert checked[1:] == [fine, empty, failed]
+    assert checked[0].items == () and not checked[0].succeeded
+    assert checked[0].error == ("none of its 2 items passed the rules: 2 not EQUITY")
+
+
+def test_a_list_of_core_or_pinned_symbols_alone_is_no_failure():
+    core_only = _answered("most_actives", _item("NVDA"), _item("XX", quote_type="ETF"))
+    pinned = _answered("day_gainers", _item("SPCX", "day_gainers", quote_type="ETF"))
+    fetches = [core_only, pinned]
+    assert rules.offering_nobody(fetches, core=CORE, settings=SETTINGS) == fetches
+
+
+def test_this_fetchs_session_counts_when_every_list_answered():
+    prior = [dt.date(2026, 11, d) for d in (9, 6, 5, 4, 3)]
+    today = dt.date(2026, 11, 10)
+    assert rules.counted_with(prior, today, complete=True, limit=5) == [
+        today,
+        *prior[:4],
+    ]
+    assert rules.counted_with(prior, today, complete=False, limit=5) == prior
+    # A second complete fetch of a session already counted counts it once.
+    assert rules.counted_with([today, *prior], today, complete=True, limit=3) == [
+        today,
+        *prior[:2],
+    ]
+
+
 def test_a_failed_list_contributes_nothing():
     found = rules.candidates(
         [_failed("most_actives"), _answered("day_gainers", _item("G1", "day_gainers"))],

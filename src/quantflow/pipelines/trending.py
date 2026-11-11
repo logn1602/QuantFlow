@@ -1,15 +1,18 @@
 """pipelines/trending.py: one run of the trending tier (docs/trending.md, 7.1).
 
-  1. Fetch every list; store every item in trending_snapshots and each list's
-     outcome in trending_fetches, in one transaction.
-  2. Apply the rules and choose the active set; write tickers.
+  1. Fetch every list; a list that answered and offered nobody is read as
+     failed (rules.offering_nobody).
+  2. Apply the rules and choose the active set; store every item in
+     trending_snapshots, each list's outcome in trending_fetches and the
+     selection in tickers, in one transaction.
   3. Prices for every active symbol: its daily bars from Yahoo replace its
      rows in trending_prices, one transaction per symbol (7.2).
   4. Indicators and anomaly flags on those same bars, by the core's own
      functions: a summary on each symbol's tickers row (7.4).
   5. Sentiment: each symbol's RSS feed, FinBERT, trending_news (7.5).
-  6. Exit 1 if any list failed (T8) or a step failed, once 2 to 5 have run on
-     what the lists that answered returned.
+  6. Exit 1 if any list failed (T8), a write failed, or a step did nothing
+     for any active symbol, once 2 to 5 have run on what the lists that
+     answered returned.
 
 Discovery and analytics only: no forecast, ensemble or backtest, and no write
 to a table the core or the evaluation reads. The stages' run() functions are
@@ -19,6 +22,9 @@ ticker list into the core watchlist (tickers or TICKERS).
 Usage:
     python -m quantflow.pipelines.trending            # one run
     python -m quantflow.pipelines.trending --cap 3    # at most 3 discovered
+
+Either writes to the database config names. --cap is a run like any other:
+the active symbols past it are deactivated, until a run without it.
 """
 
 from __future__ import annotations
@@ -26,9 +32,11 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
+import socket
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,6 +66,10 @@ FIRST_SIGHT_PERIOD = "6mo"
 MAX_STORABLE_PRICE = 1e8
 # Between RSS fetches, as the core's sentiment stage does.
 RSS_PAUSE_SECONDS = 1.0
+# Each wait for a feed's data. feedparser has no timeout of its own: it reads
+# through urllib, which waits as long as the socket default allows, which is
+# forever unless one is set.
+RSS_TIMEOUT_SECONDS = 20
 
 
 @dataclass
@@ -74,14 +86,38 @@ class RunResult:
     analytics_failed: list[str] = field(default_factory=list)
     articles: dict[str, int] = field(default_factory=dict)
     sentiment_failed: list[str] = field(default_factory=list)
+    news_failed: list[str] = field(default_factory=list)
     finbert_failed: bool = False
 
     @property
+    def failed_steps(self) -> list[str]:
+        """The steps that did nothing for any active symbol: no bars
+        replaced, no summary made, no symbol's news read. Each symbol's
+        miss is a warning, but all of them is the step failing."""
+        if not self.active:
+            return []
+        steps = []
+        if not self.prices_replaced:
+            steps.append("prices")
+        elif not self.analysed:
+            steps.append("analytics")
+        if not self.finbert_failed and set(self.sentiment_failed) >= set(self.active):
+            steps.append("sentiment")
+        return steps
+
+    @property
     def exit_code(self) -> int:
-        """1 when any list failed (T8), a price replacement failed or FinBERT
-        could not load; a skipped download or one symbol's analytics or news
-        is a warning only (section 14)."""
-        failed = self.failed_lists or self.prices_failed or self.finbert_failed
+        """1 when any list failed (T8), a write failed (a price replacement,
+        a symbol's news), FinBERT could not load, or a step failed for every
+        active symbol; one symbol's skipped download, analytics or feed is a
+        warning only (section 14)."""
+        failed = (
+            self.failed_lists
+            or self.prices_failed
+            or self.news_failed
+            or self.finbert_failed
+            or self.failed_steps
+        )
         return 1 if failed else 0
 
 
@@ -97,7 +133,7 @@ def price_rows(bars: pd.DataFrame, symbol: str) -> list[dict[str, Any]]:
     core's fetcher (bars_to_rows: no row without a close, one per date, UTC)
     without its source column, which trending_prices does not have."""
     return [
-        {column: row[column] for column in db_trending.PRICE_COLUMNS}
+        {column: row[column] for column in db_trending.PRICE_ROW_COLUMNS}
         for row in bars_to_rows(bars, symbol)
     ]
 
@@ -124,10 +160,11 @@ def fetch_prices(
 ) -> list[dict[str, Any]] | None:
     """The symbol's daily bars from Yahoo, as trending_prices rows, or None
     when they must not replace the stored ones (logged): nothing came back,
-    the download does not reach back to the symbol's first_bar_date (a
-    partial answer must never shorten a history), or a price cannot be
-    stored. From first_bar_date, or six months back for a new symbol; bars
-    before a listing date dropped (section 5)."""
+    the download does not reach back to the symbol's first_bar_date or ends
+    before its stored summary_session (a partial answer must never shorten
+    a history, at either end), or a price cannot be stored. From
+    first_bar_date, or six months back for a new symbol; bars before a
+    listing date dropped (section 5)."""
     stored_first = row.get("first_bar_date")
     first: dt.date | None = None if rules.missing(stored_first) else stored_first
     if first is None:
@@ -155,6 +192,17 @@ def fetch_prices(
         logger.warning(
             f"{symbol}: the download starts {start}, after its first stored bar "
             f"{expected}; the stored bars stay rather than lose their start"
+        )
+        return None
+    end = max(pd.Timestamp(r["ts"]) for r in rows).date()
+    summary_session = row.get("summary_session")
+    stored_end = None
+    if not rules.missing(summary_session):
+        stored_end = pd.Timestamp(summary_session).date()
+    if stored_end is not None and end < stored_end:
+        logger.warning(
+            f"{symbol}: the download ends {end}, before its stored bars' "
+            f"{stored_end}; the stored bars stay rather than lose their end"
         )
         return None
     if not _storable(rows):
@@ -208,13 +256,9 @@ def summarize(
 def _select(
     fetches, *, core, settings, now: pd.Timestamp, session: dt.date, listing
 ) -> tuple[rules.Selection, dict[str, dict[str, Any]]]:
-    """Steps 1 and 2: store the fetch, choose the active set, write tickers.
-    Returns the selection and the tickers rows written, by symbol."""
-    snapshots, outcomes = db_trending.save_fetch(
-        rules.snapshot_rows(fetches, snapshot_ts=now, session=session),
-        rules.fetch_rows(fetches, snapshot_ts=now, session=session),
-    )
-    logger.info(f"Stored {snapshots} list items and {outcomes} list outcomes")
+    """Step 2: choose the active set, then store the fetch and the selection
+    together. Returns the selection and the tickers rows written, by
+    symbol."""
     complete = bool(fetches) and all(f.succeeded for f in fetches)
 
     found = rules.candidates(fetches, core=core, settings=settings)
@@ -225,7 +269,12 @@ def _select(
             [c.symbol for c in found] + list(settings.pinned)
         )
     }
-    counted = db_trending.counted_sessions(settings.inactive_after)
+    counted = rules.counted_with(
+        db_trending.counted_sessions(settings.inactive_after),
+        session,
+        complete=complete,
+        limit=settings.inactive_after,
+    )
     selection = rules.choose_active(
         found,
         stored,
@@ -237,7 +286,16 @@ def _select(
     rows = rules.ticker_rows(
         selection, found, pinned_found, stored, now=now, listing=listing
     )
-    db_trending.upsert_tickers(rows, db_trending.SELECTION_COLUMNS)
+    snapshots, outcomes, tickers = db_trending.save_run(
+        rules.snapshot_rows(fetches, snapshot_ts=now, session=session),
+        rules.fetch_rows(fetches, snapshot_ts=now, session=session),
+        rows,
+        db_trending.SELECTION_COLUMNS,
+    )
+    logger.info(
+        f"Stored {snapshots} list items, {outcomes} list outcomes and {tickers} "
+        f"tickers rows"
+    )
 
     for symbol, item in pinned_found.items():
         if item.quote_type != "EQUITY":
@@ -256,7 +314,7 @@ def _select(
             logger.info(f"  {label}: {', '.join(symbols)}")
     if not complete:
         logger.warning(
-            "A list failed: nobody deactivated, and this session does not count "
+            "A list failed: nobody deactivated, and this fetch does not count "
             "towards anyone's absence (T8)"
         )
     return selection, {row["symbol"]: row for row in rows}
@@ -308,27 +366,46 @@ def _prices_and_analytics(
         db_trending.upsert_tickers(summaries, db_trending.SUMMARY_COLUMNS)
 
 
+@contextmanager
+def _socket_timeout(seconds: float) -> Iterator[None]:
+    """The socket default timeout set for a block, and put back after."""
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(previous)
+
+
 def _news(selection, result: RunResult, *, pause: float) -> None:
-    """Step 5: RSS only (D18), FinBERT loaded once, trending_news."""
+    """Step 5: RSS only (D18), FinBERT loaded once, trending_news. A feed or
+    the model failing for a symbol is a warning; the write failing is a
+    fault, as a failed price replacement is."""
     if sentiment.get_finbert() is None:
         logger.error("FinBERT could not be loaded: no trending sentiment this run")
         result.finbert_failed = True
         return
     for symbol in selection.active:
         try:
-            articles = sentiment.fetch_rss(symbol, feeds=[rules.rss_feed(symbol)])
+            with _socket_timeout(RSS_TIMEOUT_SECONDS):
+                articles = sentiment.fetch_rss(symbol, feeds=[rules.rss_feed(symbol)])
             scores = sentiment.analyze_batch([a["headline"] for a in articles])
             scored = [
                 {**article, **score}
                 for article, score in zip(articles, scores, strict=True)
                 if score is not None
             ]
-            result.articles[symbol] = sentiment.save_sentiment(
-                scored, symbol, table="trending_news"
-            )
         except Exception as error:
             logger.warning(f"{symbol}: sentiment failed: {error}")
             result.sentiment_failed.append(symbol)
+        else:
+            try:
+                result.articles[symbol] = sentiment.save_sentiment(
+                    scored, symbol, table="trending_news"
+                )
+            except Exception as error:
+                logger.error(f"{symbol}: its news could not be stored: {error}")
+                result.news_failed.append(symbol)
         time.sleep(pause)
 
 
@@ -351,7 +428,11 @@ def run(
     result = RunResult(session=session)
     logger.info(f"Trending run for the {session} session")
 
-    fetches = [fetch for source in sources for fetch in source.fetch()]
+    fetches = rules.offering_nobody(
+        [fetch for source in sources for fetch in source.fetch()],
+        core=core,
+        settings=settings,
+    )
     result.failed_lists = [f.list_name for f in fetches if not f.succeeded]
     selection, rows = _select(
         fetches,
@@ -376,6 +457,8 @@ def run(
             f"Lists failed: {', '.join(result.failed_lists)}; the others were "
             f"stored and used, and the run ends red (T8)"
         )
+    for step in result.failed_steps:
+        logger.error(f"The {step} step did nothing for any active symbol: red")
     logger.info(
         f"Done: {len(result.prices_replaced)} symbols' bars replaced, "
         f"{len(result.prices_skipped)} skipped, {len(result.prices_failed)} failed; "
@@ -390,7 +473,9 @@ def main(argv: list[str] | None = None) -> int:
         "--cap",
         type=int,
         help="at most this many discovered symbols, for a local check "
-        "(default: TRENDING_MAX_ACTIVE)",
+        "(default: TRENDING_MAX_ACTIVE). Writes to the configured database "
+        "like any run: the active symbols past the cap are deactivated until "
+        "a run without it",
     )
     args = parser.parse_args(argv)
     if args.cap is not None and args.cap < 0:
@@ -406,6 +491,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.cap is not None:
         settings = dataclasses.replace(settings, max_active=args.cap)
+
+    missing = db_trending.missing_tables()
+    if missing:
+        message = (
+            f"the trending tables are not there yet ({', '.join(missing)}): "
+            f"run sql/migrations/002_trending.sql first"
+        )
+        logger.error(message)
+        print(f"TRENDING FAILED: {message}", file=sys.stderr)
+        return 1
 
     result = run(core=config.TICKERS, settings=settings, listing=listing)
     return result.exit_code
