@@ -3,9 +3,11 @@
 -- The trending tier's tables (docs/trending.md, section 6).
 -- Command: psql -U postgres -d stock_pipeline -f sql/schema_trending.sql
 --
--- The same statements as sql/migrations/002_trending.sql, which is what the
--- live database gets; tests/unit/test_trending_schema.py fails if the two
--- drift apart.
+-- The statements sql/migrations/002_trending.sql opens with, which is what
+-- the live database gets: the migration then adds the read-only role's
+-- policies and the revokes, which name roles a fresh database may not have
+-- (sql/schema_roles.sql, step 8, for a fresh install).
+-- tests/unit/test_trending_schema.py fails if they drift apart.
 --
 -- Kept apart from the core's tables by construction: nothing in the core or
 -- the evaluation reads these, and the trending tier writes nothing else.
@@ -104,3 +106,15 @@ CREATE TABLE IF NOT EXISTS trending_news (
 
 CREATE INDEX IF NOT EXISTS idx_trending_news_ticker_ts
     ON trending_news (ticker, published_at DESC);
+
+-- Row-level security on each table, as on the core's: postgres owns them and
+-- is not affected, so the tier writes as before, while any other role sees no
+-- row unless a policy lets it. The read-only role's policy names a role a
+-- fresh database may not have, so it is not here: sql/migrations/
+-- 002_trending.sql adds it on the live database, and sql/schema_roles.sql,
+-- step 8, on a fresh install.
+ALTER TABLE tickers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trending_prices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trending_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trending_fetches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trending_news ENABLE ROW LEVEL SECURITY;

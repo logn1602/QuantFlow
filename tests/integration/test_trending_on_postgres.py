@@ -3,12 +3,16 @@
 The trending tier's storage on real Postgres (docs/trending.md, sections 6
 and 7.2), what the unit suite can only fake:
 
-  - the migration runs twice, creating the five tables and nothing else,
-    and builds the same catalog as sql/schema_trending.sql in a schema of
-    its own (columns, defaults, constraints, indexes, sequences), a
-    comparison shown to catch each kind of difference;
-  - a role granted SELECT by default privileges, as the read-only role is
-    (sql/schema_roles.sql, step 4), reads every new table and writes none;
+  - the migration creates the five tables and nothing else, a second run
+    changes nothing, and it builds the same catalog as
+    sql/schema_trending.sql in a schema of its own (columns, defaults,
+    constraints, indexes, sequences, row-level security), a comparison
+    shown to catch each kind of difference;
+  - after it, the read-only role, granted SELECT by default privileges
+    (sql/schema_roles.sql, step 4), reads every row through its policy and
+    writes none; a role with the same SELECT and no policy sees no row; and
+    anon and authenticated, granted everything by Supabase's default
+    privileges, hold nothing;
   - trending_news has news_sentiment's columns and key;
   - a fetch, the tickers upsert and the reads on the types the driver
     returns; a run's fetch and tickers rows land together or not at all;
@@ -29,8 +33,9 @@ import uuid
 from pathlib import Path
 
 import pandas as pd
+import psycopg2.errors
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DataError, IntegrityError, ProgrammingError
 
 from quantflow.dashboard import trending_view
@@ -50,6 +55,31 @@ TABLES = (
     "trending_snapshots",
 )
 T0 = pd.Timestamp("2026-11-10 23:10", tz="UTC")
+
+# The roles the migration names: Supabase's anon and authenticated, and the
+# owner's quantflow_readonly (sql/schema_roles.sql). Roles are cluster-wide:
+# on the disposable cluster each is made once, with no login, and left for
+# the next run, which finds it.
+MIGRATION_ROLES = ("anon", "authenticated", "quantflow_readonly")
+
+
+@pytest.fixture
+def migration_roles(pg_url):
+    admin = create_engine(pg_url)
+    try:
+        with admin.begin() as conn:
+            existing = {
+                row[0]
+                for row in conn.execute(
+                    text("SELECT rolname FROM pg_roles WHERE rolname = ANY(:names)"),
+                    {"names": list(MIGRATION_ROLES)},
+                )
+            }
+            for role in MIGRATION_ROLES:
+                if role not in existing:
+                    conn.exec_driver_sql(f"CREATE ROLE {role} NOLOGIN")
+    finally:
+        admin.dispose()
 
 
 def _run_script(engine, path, script=None):
@@ -99,6 +129,13 @@ def _catalog(engine, schema):
             WHERE sequence_schema = :s
             ORDER BY sequence_name
         """,
+        "row_security": """
+            SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
+            FROM pg_class c
+            JOIN pg_namespace ns ON ns.oid = c.relnamespace
+            WHERE ns.nspname = :s AND c.relkind = 'r'
+            ORDER BY c.relname
+        """,
     }
 
     def plain(value):
@@ -112,6 +149,58 @@ def _catalog(engine, schema):
             ]
             for part, query in queries.items()
         }
+
+
+def _access(engine, schema):
+    """The schema's policies, and what anon, authenticated and
+    quantflow_readonly were granted on its tables and sequences."""
+    with engine.connect() as conn:
+        policies = conn.execute(
+            text("""
+                SELECT tablename, policyname, permissive, roles::text, cmd,
+                       qual, with_check
+                FROM pg_policies
+                WHERE schemaname = :s
+                ORDER BY tablename, policyname
+            """),
+            {"s": schema},
+        )
+        grants = conn.execute(
+            text("""
+                SELECT c.relname, r.rolname, acl.privilege_type
+                FROM pg_class c
+                JOIN pg_namespace ns ON ns.oid = c.relnamespace
+                CROSS JOIN LATERAL aclexplode(c.relacl) AS acl
+                JOIN pg_roles r ON r.oid = acl.grantee
+                WHERE ns.nspname = :s AND r.rolname = ANY(:roles)
+                ORDER BY 1, 2, 3
+            """),
+            {"s": schema, "roles": list(MIGRATION_ROLES)},
+        )
+        return {
+            "policies": [tuple(row) for row in policies],
+            "grants": [tuple(row) for row in grants],
+        }
+
+
+def _one_row_each(engine):
+    """A row in each of the five tables, written as their owner."""
+    with engine.begin() as conn:
+        for statement in (
+            "INSERT INTO tickers (symbol, first_seen, last_seen) "
+            "VALUES ('SPCX', now(), now())",
+            "INSERT INTO trending_prices (ticker, ts, close) "
+            "VALUES ('SPCX', '2026-11-10 00:00+00', 1)",
+            "INSERT INTO trending_snapshots (snapshot_ts, session_date, symbol, "
+            "source, list_name, rank) VALUES (now(), '2026-11-10', 'SPCX', "
+            "'yahoo_screener', 'most_actives', 1)",
+            "INSERT INTO trending_fetches (fetched_at, session_date, source, "
+            "list_name, succeeded, items) VALUES (now(), '2026-11-10', "
+            "'yahoo_screener', 'most_actives', true, 1)",
+            "INSERT INTO trending_news (ticker, source, published_at, headline, "
+            "sentiment) VALUES ('SPCX', 'rss', now(), 'a headline', 'neutral')",
+        ):
+            conn.exec_driver_sql(statement)
 
 
 def _tables(engine, schema):
@@ -161,17 +250,24 @@ def _unique_keys(engine, schema, table_name):
 # ── The migration ─────────────────────────────────────────────────────────────
 
 
-def test_the_migration_runs_twice_and_creates_the_five_tables(scratch_schema):
+@pytest.mark.usefixtures("migration_roles")
+def test_the_migration_creates_the_five_tables_and_a_second_run_changes_nothing(
+    scratch_schema,
+):
+    """A policy has no IF NOT EXISTS: a second run stops at its first CREATE
+    POLICY, and being one transaction, leaves everything as it was."""
     assert set(TABLES) == set(trending.TRENDING_TABLES)
     with scratch_schema() as (engine, schema):
         _run_script(engine, MIGRATION)
         assert _tables(engine, schema) == TABLES
-        first = _catalog(engine, schema)
+        first = _catalog(engine, schema), _access(engine, schema)
 
-        _run_script(engine, MIGRATION)  # idempotent: nothing changes
-        assert _catalog(engine, schema) == first
+        with pytest.raises(psycopg2.errors.DuplicateObject, match="already exists"):
+            _run_script(engine, MIGRATION)
+        assert (_catalog(engine, schema), _access(engine, schema)) == first
 
 
+@pytest.mark.usefixtures("migration_roles")
 def test_the_migration_and_the_schema_file_build_the_same_catalog(scratch_schema):
     """Each in a schema of its own: run in one, the second script's CREATE
     ... IF NOT EXISTS would skip every table and compare nothing."""
@@ -210,8 +306,14 @@ def test_the_migration_and_the_schema_file_build_the_same_catalog(scratch_schema
             "indexes",
         ),
         ("BIGSERIAL PRIMARY KEY", "SERIAL PRIMARY KEY", "sequences"),
+        (
+            "ALTER TABLE trending_news ENABLE ROW LEVEL SECURITY;",
+            "",
+            "row_security",
+        ),
     ],
 )
+@pytest.mark.usefixtures("migration_roles")
 def test_the_catalog_comparison_sees_each_kind_of_difference(
     scratch_schema, old, new, part
 ):
@@ -228,46 +330,94 @@ def test_the_catalog_comparison_sees_each_kind_of_difference(
         assert _catalog(migrated, one)[part] != _catalog(drifted, other)[part]
 
 
-def test_a_role_with_default_select_reads_every_new_table_and_writes_none(
+@pytest.mark.usefixtures("migration_roles")
+def test_only_the_read_only_role_reads_the_rows_and_the_api_roles_hold_nothing(
     scratch_schema,
 ):
-    """The read-only role reads tables postgres creates after it through its
-    default privileges (sql/schema_roles.sql, step 4), so the dashboard needs
-    no grant after the migration. Modelled here on the test schema."""
-    role = f"qf_ro_{uuid.uuid4().hex[:8]}"
+    """After the migration, modelled on the test schema as the live database
+    has it: quantflow_readonly, granted SELECT by default privileges
+    (sql/schema_roles.sql, step 4), reads every row through its policy, so
+    the dashboard needs no grant, and writes none. A role granted the same
+    SELECT but no policy sees no row, and no error: how every core table
+    looked to quantflow_readonly before step 7. Supabase's default
+    privileges grant anon and authenticated everything; the revokes leave
+    them nothing."""
+    other = f"qf_nopolicy_{uuid.uuid4().hex[:8]}"
+    readers = f"quantflow_readonly, {other}"
     with scratch_schema() as (engine, schema):
         with engine.begin() as conn:
-            conn.exec_driver_sql(f"CREATE ROLE {role} NOLOGIN")
-            conn.exec_driver_sql(f"GRANT USAGE ON SCHEMA {schema} TO {role}")
+            conn.exec_driver_sql(f"CREATE ROLE {other} NOLOGIN")
+            conn.exec_driver_sql(
+                f"GRANT USAGE ON SCHEMA {schema} TO {readers}, anon, authenticated"
+            )
             conn.exec_driver_sql(
                 f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
-                f"GRANT SELECT ON TABLES TO {role}"
+                f"GRANT SELECT ON TABLES TO {readers}"
             )
+            for kind in ("TABLES", "SEQUENCES"):
+                conn.exec_driver_sql(
+                    f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
+                    f"GRANT ALL ON {kind} TO anon, authenticated"
+                )
         try:
             _run_script(engine, MIGRATION)
+            _one_row_each(engine)
             with engine.connect() as conn:
-                conn.exec_driver_sql(f"SET ROLE {role}")
+                conn.exec_driver_sql("SET ROLE quantflow_readonly")
                 for name in TABLES:
                     count = conn.exec_driver_sql(f"SELECT count(*) FROM {name}")
-                    assert count.scalar_one() == 0
+                    assert count.scalar_one() == 1, name
                 # The Trending tab's reads, as the dashboard runs them.
-                assert trending_view.load_table(conn).empty
-                assert trending_view.load_list_status(conn).empty
-                assert trending_view.load_bars(conn, "SPCX").empty
+                assert len(trending_view.load_table(conn)) == 1
+                assert len(trending_view.load_list_status(conn)) == 1
+                assert len(trending_view.load_bars(conn, "SPCX")) == 1
                 with pytest.raises(ProgrammingError, match="permission denied"):
                     conn.exec_driver_sql(
                         "INSERT INTO trending_fetches VALUES "
                         "(now(), current_date, 's', 'l', true, 0, null)"
                     )
                 conn.rollback()
+                conn.exec_driver_sql(f"SET ROLE {other}")
+                for name in TABLES:
+                    count = conn.exec_driver_sql(f"SELECT count(*) FROM {name}")
+                    assert count.scalar_one() == 0, name
+                conn.rollback()
+            access = _access(engine, schema)
+            # Of the three roles, only the read-only one holds anything: SELECT.
+            assert access["grants"] == [
+                (name, "quantflow_readonly", "SELECT") for name in sorted(TABLES)
+            ]
+            assert access["policies"] == [
+                (name, "quantflow_readonly_read", "PERMISSIVE",
+                 "{quantflow_readonly}", "SELECT", "true", None)
+                for name in sorted(TABLES)
+            ]  # fmt: skip
+            with engine.connect() as conn:
+                for role in ("anon", "authenticated"):
+                    held = conn.execute(
+                        text("""
+                            SELECT has_table_privilege(:r, 'tickers',
+                                       'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')
+                                OR has_table_privilege(:r, 'trending_news',
+                                       'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')
+                                OR has_sequence_privilege(:r,
+                                       'trending_news_id_seq', 'USAGE, SELECT, UPDATE')
+                        """),
+                        {"r": role},
+                    ).scalar_one()
+                    assert held is False, role
         finally:
             with engine.begin() as conn:
                 conn.exec_driver_sql(
                     f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
-                    f"REVOKE SELECT ON TABLES FROM {role}"
+                    f"REVOKE ALL ON TABLES FROM {readers}, anon, authenticated"
                 )
-                conn.exec_driver_sql(f"DROP OWNED BY {role}")
-                conn.exec_driver_sql(f"DROP ROLE {role}")
+                conn.exec_driver_sql(
+                    f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
+                    f"REVOKE ALL ON SEQUENCES FROM anon, authenticated"
+                )
+                conn.exec_driver_sql(f"DROP OWNED BY {other}")
+                conn.exec_driver_sql(f"DROP ROLE {other}")
 
 
 def test_trending_news_has_news_sentiments_columns_and_key(pg):
@@ -374,6 +524,7 @@ def test_a_runs_fetch_and_tickers_rows_land_together_or_not_at_all(pg):
     assert written == (1, 1, 1)
 
 
+@pytest.mark.usefixtures("migration_roles")
 def test_missing_tables_names_the_tables_not_there_yet(scratch_schema, install_engine):
     with scratch_schema() as (engine, _):
         install_engine(engine)

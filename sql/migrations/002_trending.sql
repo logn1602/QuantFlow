@@ -4,8 +4,14 @@
 -- What it does
 --   Creates the trending tier's five tables (docs/trending.md, section 6):
 --   tickers, trending_prices, trending_snapshots, trending_fetches and
---   trending_news, with their keys and indexes. Nothing else: no core table
---   is read, changed or dropped.
+--   trending_news, with their keys and indexes. Switches row-level security
+--   on for each, as the core's tables have it, and gives quantflow_readonly
+--   a policy to read every row, FOR SELECT only, as on the core's
+--   (sql/schema_roles.sql, step 7). Takes every privilege on them from
+--   Supabase's anon and authenticated roles, which Supabase's default
+--   privileges grant everything on a new table, and which only its Data
+--   API uses: QuantFlow never does. Nothing else: no core table is read,
+--   changed or dropped.
 --
 -- Frozen once applied
 --   Once the live database has run it, this file does not change: a later
@@ -13,22 +19,28 @@
 --   table's CREATE ... IF NOT EXISTS would skip the table that is there,
 --   and change nothing.
 --
--- Safe to run twice
---   Every statement is CREATE ... IF NOT EXISTS, inside one transaction, so a
---   second run changes nothing and a failed run leaves nothing behind.
+-- Run once
+--   One transaction, so a failed run leaves nothing behind. A second run
+--   stops at its first CREATE POLICY ("already exists") and changes nothing:
+--   a policy has no IF NOT EXISTS.
 --
 -- When
---   Before the pull request that adds .github/workflows/trending.yml is
+--   After sql/schema_roles.sql, step 7 (the core tables' read policies), and
+--   before the pull request that adds .github/workflows/trending.yml is
 --   merged: the workflow starts after the next daily refresh on main, and
 --   without the tables it stops at its first check, naming this file.
 --
 -- Who runs it
 --   The owner, by hand: the pipeline never runs a migration. In Supabase's SQL
---   editor, which runs as postgres: the read-only role then reads the new
---   tables through its default privileges (sql/schema_roles.sql, step 4), so
---   the dashboard needs no grant. Run as any other role, follow it with
---   GRANT SELECT ON tickers, trending_prices, trending_snapshots,
---   trending_fetches, trending_news TO quantflow_readonly;
+--   editor, which runs as postgres, so postgres owns the tables, and a
+--   table's owner is not subject to its row-level security: the tier, which
+--   writes as postgres, writes as before. The read-only role reads them
+--   through its default privileges (sql/schema_roles.sql, step 4) and the
+--   policies here, so the dashboard needs no grant. Run as any other role,
+--   follow it with GRANT SELECT ON tickers, trending_prices,
+--   trending_snapshots, trending_fetches, trending_news TO
+--   quantflow_readonly; and the tier would then need that role's login, or
+--   policies of its own (below).
 --
 -- Check before (expected: one row of five empty values). A name instead
 -- means a table by that name is there already, which this script would leave
@@ -37,6 +49,12 @@
 --          to_regclass('public.trending_snapshots'),
 --          to_regclass('public.trending_fetches'),
 --          to_regclass('public.trending_news');
+--   And the three roles it names (expected: anon, authenticated and
+--   quantflow_readonly, a row each; a missing one stops the script, which
+--   then changes nothing):
+--   SELECT rolname FROM pg_roles
+--   WHERE rolname IN ('anon', 'authenticated', 'quantflow_readonly')
+--   ORDER BY 1;
 --
 -- Check afterwards
 --   The five tables, each with 0 rows:
@@ -51,10 +69,21 @@
 --   WHERE conrelid::regclass::text IN ('tickers', 'trending_prices',
 --         'trending_snapshots', 'trending_fetches', 'trending_news')
 --   ORDER BY 1, 2;
---   Who may do what with them (expected: postgres with every privilege, and
---   quantflow_readonly with SELECT once that role exists; any other role
---   listed, Supabase's anon and authenticated among them, is to be decided
---   before the tier writes there):
+--   Row-level security and the read policy (expected: five rows, rls_on and
+--   read_policy both true):
+--   SELECT c.relname AS table_name, c.relrowsecurity AS rls_on,
+--          EXISTS (SELECT 1 FROM pg_policies p
+--                  WHERE p.schemaname = 'public' AND p.tablename = c.relname
+--                    AND p.policyname = 'quantflow_readonly_read'
+--                    AND p.cmd = 'SELECT'
+--                    AND p.roles = '{quantflow_readonly}') AS read_policy
+--   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+--   WHERE n.nspname = 'public' AND c.relname IN ('tickers', 'trending_prices',
+--         'trending_snapshots', 'trending_fetches', 'trending_news')
+--   ORDER BY 1;
+--   Who may do what with them (expected: postgres with every privilege,
+--   quantflow_readonly with SELECT, and Supabase's service_role, which its
+--   default privileges also grant everything; no anon, no authenticated):
 --   SELECT table_name, grantee,
 --          string_agg(privilege_type, ', ' ORDER BY privilege_type)
 --   FROM information_schema.role_table_grants
@@ -62,13 +91,32 @@
 --                        'trending_fetches', 'trending_news')
 --   GROUP BY 1, 2 ORDER BY 1, 2;
 --
+-- The trending writer role (to come, after this tier is merged)
+--   The tier writes as postgres, the tables' owner, which row-level security
+--   does not apply to. A login of its own, which owns nothing, will need:
+--     - LOGIN, NOSUPERUSER, NOBYPASSRLS and a connection limit; CONNECT on
+--       the database and USAGE on the schema, as quantflow_readonly has;
+--     - on these five tables only, never a core one: SELECT and INSERT on
+--       all five; UPDATE on tickers (its upsert, first_bar_date and the
+--       summary); DELETE on trending_prices (each symbol's bars are
+--       replaced); USAGE on the sequence trending_news_id_seq;
+--     - a policy for each of those commands, as row-level security refuses
+--       what no policy allows: on each table, for example, CREATE POLICY
+--       trending_writer ON <table> FOR ALL TO <role> USING (true) WITH
+--       CHECK (true);
+--     - trending.yml's database secrets set to that login, apart from the
+--       daily refresh's.
+--
 -- Undo (by hand, as the owner, and only while nothing in them matters)
 --   DROP TABLE trending_news, trending_fetches, trending_snapshots,
 --              trending_prices, tickers;
---   No core table refers to them, and the script creates nothing else.
+--   Their policies and privileges go with them. No core table refers to
+--   them, and the script creates nothing else.
 --
--- Mirrored in sql/schema_trending.sql (make setup); tests/unit/
--- test_trending_schema.py fails if the two drift apart.
+-- Mirrored in sql/schema_trending.sql (make setup), which holds every
+-- statement before the access ones, and in sql/schema_roles.sql, step 8,
+-- which holds those for a fresh install; tests/unit/test_trending_schema.py
+-- fails if they drift apart.
 -- ============================================================
 
 BEGIN;
@@ -166,5 +214,37 @@ CREATE TABLE IF NOT EXISTS trending_news (
 
 CREATE INDEX IF NOT EXISTS idx_trending_news_ticker_ts
     ON trending_news (ticker, published_at DESC);
+
+-- Row-level security on each table, as on the core's: postgres owns them and
+-- is not affected, so the tier writes as before, while any other role sees no
+-- row unless a policy lets it. The read-only role's policy names a role a
+-- fresh database may not have, so it is not here: sql/migrations/
+-- 002_trending.sql adds it on the live database, and sql/schema_roles.sql,
+-- step 8, on a fresh install.
+ALTER TABLE tickers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trending_prices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trending_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trending_fetches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trending_news ENABLE ROW LEVEL SECURITY;
+
+-- Access, live database only (sql/schema_roles.sql, step 8, for a fresh
+-- install). The read-only role reads every row, as it does the core tables'
+-- (step 7), and only reads: FOR SELECT. Supabase's default privileges give
+-- anon and authenticated, its Data API's roles, every privilege on a new
+-- table and sequence; QuantFlow never uses that API, so they get none.
+CREATE POLICY quantflow_readonly_read ON tickers
+    FOR SELECT TO quantflow_readonly USING (true);
+CREATE POLICY quantflow_readonly_read ON trending_prices
+    FOR SELECT TO quantflow_readonly USING (true);
+CREATE POLICY quantflow_readonly_read ON trending_snapshots
+    FOR SELECT TO quantflow_readonly USING (true);
+CREATE POLICY quantflow_readonly_read ON trending_fetches
+    FOR SELECT TO quantflow_readonly USING (true);
+CREATE POLICY quantflow_readonly_read ON trending_news
+    FOR SELECT TO quantflow_readonly USING (true);
+
+REVOKE ALL ON tickers, trending_prices, trending_snapshots, trending_fetches,
+    trending_news FROM anon, authenticated;
+REVOKE ALL ON SEQUENCE trending_news_id_seq FROM anon, authenticated;
 
 COMMIT;
