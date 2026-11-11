@@ -12,15 +12,19 @@ Two sources, both Yahoo's and both unofficial endpoints:
 A source never raises. Each list it reads comes back as a ListFetch holding
 its items, or the reason it failed, so the run can store what the other lists
 returned, record each list's outcome and still end red (T8). The quote fields
-read are checked for type: a renamed or retyped field fails its list, loudly,
-rather than turning into missing values that the rules would quietly filter.
+read are checked: a retyped field, or one that not a single item carries (a
+renamed field), fails its list, loudly, rather than turning into missing
+values that the rules would quietly filter.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import functools
+import json
 import math
 import re
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -51,9 +55,15 @@ LIST_COUNT = 25
 TRENDING_URL = "https://query1.finance.yahoo.com/v1/finance/trending/US"
 # Names the project, as Yahoo can tell who is calling; no personal contact.
 USER_AGENT = "QuantFlow/1.0 (+https://github.com/logn1602/QuantFlow)"
+# Each wait for data: to connect, and between one read and the next.
 TIMEOUT_SECONDS = 10
-# The real answer is about 30 KB; anything far larger is not the list.
+# The whole answer, which the timeout alone does not bound: one trickling in
+# a byte at a time never waits 10 seconds for the next.
+DEADLINE_SECONDS = 30
+# The real answer is about 30 KB; anything far larger is not the list. Read
+# streamed, so a larger one is refused as it arrives, never held whole.
 MAX_BODY_BYTES = 2_000_000
+_CHUNK_BYTES = 64 * 1024
 
 # The quote fields the sources read, which the trending request asks for.
 QUOTE_FIELDS = (
@@ -66,6 +76,12 @@ QUOTE_FIELDS = (
     "marketCap",
     "firstTradeDateMilliseconds",
 )
+
+# Fields every real quote carries. A list in which not one item has one has
+# lost it, renamed most likely; read as missing values, rule 2 (no quote type
+# is not EQUITY) and the price floor would drop every item, and the list
+# would answer, offer nobody and make everyone on it look absent.
+REQUIRED_FIELDS = (("quoteType", "quote_type"), ("regularMarketPrice", "price"))
 
 # trending_fetches.error is VARCHAR(200).
 MAX_ERROR_CHARS = 200
@@ -121,8 +137,9 @@ def _utcnow() -> dt.datetime:
 
 
 def _number(quote: dict, field: str, position: int) -> float | None:
-    """A numeric quote field: None when absent, null or not finite; a
-    MalformedListError for any other type (a bool is not a number)."""
+    """A numeric quote field: None when absent, null, not finite or an
+    integer past a float's range; a MalformedListError for any other type
+    (a bool is not a number)."""
     value = quote.get(field)
     if value is None:
         return None
@@ -130,7 +147,10 @@ def _number(quote: dict, field: str, position: int) -> float | None:
         raise MalformedListError(
             f"item {position}: {field} is {type(value).__name__}, not a number"
         )
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:  # JSON allows any integer; 10**400 is no quote
+        return None
     return number if math.isfinite(number) else None
 
 
@@ -154,34 +174,52 @@ def _text(quote: dict, field: str, position: int, limit: int) -> str | None:
     return clean_text(value, limit)
 
 
+def _quote_type(quote: dict, position: int) -> str | None:
+    """quoteType in upper case, as rule 2 compares it: Yahoo sends EQUITY,
+    and the same word in another case must not drop every item."""
+    value = _text(quote, "quoteType", position, MAX_QUOTE_TYPE_CHARS)
+    return None if value is None else value.upper()
+
+
 def _first_trade_date(quote: dict, position: int) -> dt.date | None:
     """Yahoo's first trading date, from milliseconds since 1970 (negative for
     a listing before it), as the New York date. Through pandas, which takes a
     negative timestamp anywhere: datetime.fromtimestamp refuses one on
-    Windows. A value outside pandas' range is treated as missing."""
+    Windows. A value outside pandas' range is treated as missing, as is one
+    outside a date's (before the year 1 or after 9999): pandas holds those,
+    and raises NotImplementedError turning them into a date."""
     millis = _number(quote, "firstTradeDateMilliseconds", position)
     if millis is None:
         return None
     try:
         moment = pd.Timestamp(int(millis), unit="ms", tz="UTC")
-    except (OverflowError, ValueError):
+        return moment.tz_convert(EXCHANGE_TZ).date()
+    except (OverflowError, ValueError, NotImplementedError):
         return None
-    return moment.tz_convert(EXCHANGE_TZ).date()
 
 
 def items_from_quotes(
     source: str, list_name: str, quotes: object, fetched_at: dt.datetime
 ) -> tuple[TrendingItem, ...]:
-    """One list's quotes as items, in Yahoo's order.
+    """One list's quotes as items, in Yahoo's order, at most LIST_COUNT.
 
     An item whose symbol is not valid is dropped and logged (escaped), the
     rest kept; a symbol repeated in the list keeps its first, best, rank.
     Raises MalformedListError when quotes is not a list of objects, when a
     field read has the wrong type, or when the list had items and not one of
-    them a valid symbol: what a renamed field would look like.
+    them a valid symbol, or not one a field of REQUIRED_FIELDS: what a
+    renamed field would look like.
     """
     if not isinstance(quotes, list):
         raise MalformedListError(f"quotes is {type(quotes).__name__}, not a list")
+    if len(quotes) > LIST_COUNT:
+        # Every item becomes a snapshot row: an answer past the count asked
+        # must not grow the table by ten times.
+        logger.warning(
+            f"{list_name}: {len(quotes)} items, more than the {LIST_COUNT} asked; "
+            f"the first {LIST_COUNT} kept"
+        )
+        quotes = quotes[:LIST_COUNT]
     items: list[TrendingItem] = []
     rejected: list[str] = []
     seen: set[str] = set()
@@ -208,7 +246,7 @@ def items_from_quotes(
                 volume=_count(quote, "regularMarketVolume", position),
                 market_cap=_count(quote, "marketCap", position),
                 price=_number(quote, "regularMarketPrice", position),
-                quote_type=_text(quote, "quoteType", position, MAX_QUOTE_TYPE_CHARS),
+                quote_type=_quote_type(quote, position),
                 short_name=_text(quote, "shortName", position, MAX_SHORT_NAME_CHARS),
                 first_trade_date=_first_trade_date(quote, position),
                 fetched_at=fetched_at,
@@ -221,6 +259,9 @@ def items_from_quotes(
         )
     if quotes and not items:
         raise MalformedListError(f"no valid symbol among {len(quotes)} items")
+    for field, attribute in REQUIRED_FIELDS:
+        if items and all(getattr(item, attribute) is None for item in items):
+            raise MalformedListError(f"no item carries {field}")
     return tuple(items)
 
 
@@ -242,6 +283,21 @@ def _failed(source: str, list_name: str, error: BaseException) -> ListFetch:
     return ListFetch(source=source, list_name=list_name, items=(), error=reason)
 
 
+def _read_list(
+    source: str,
+    list_name: str,
+    quotes: Callable[[], object],
+    now: Callable[[], dt.datetime],
+) -> ListFetch:
+    """One list, read whole or failed with its reason: never raises (T8)."""
+    try:
+        items = items_from_quotes(source, list_name, quotes(), now())
+    except Exception as error:
+        return _failed(source, list_name, error)
+    logger.info(f"Trending list {list_name}: {len(items)} items")
+    return ListFetch(source=source, list_name=list_name, items=items)
+
+
 class YahooScreenerSource:
     """Yahoo's predefined screeners through yf.screen, one call per list.
 
@@ -259,10 +315,11 @@ class YahooScreenerSource:
         screen: Callable[..., Any] | None = None,
         now: Callable[[], dt.datetime] = _utcnow,
     ) -> None:
-        unknown = [name for name in lists if name not in SCREENER_LISTS]
+        names = tuple(lists)  # read once: a generator has no second pass
+        unknown = [name for name in names if name not in SCREENER_LISTS]
         if unknown:
             raise ValueError(f"not a screener list: {', '.join(unknown)}")
-        self.lists = tuple(lists)
+        self.lists = names
         self._screen = screen
         self._now = now
 
@@ -273,21 +330,24 @@ class YahooScreenerSource:
 
         return yf.screen(list_name, count=LIST_COUNT)
 
-    def _fetch_one(self, list_name: str) -> ListFetch:
-        try:
-            body = self._call(list_name)
-            if not isinstance(body, dict):
-                raise MalformedListError(f"answer is {type(body).__name__}")
-            if "quotes" not in body:
-                raise MalformedListError("answer has no quotes")
-            items = items_from_quotes(self.name, list_name, body["quotes"], self._now())
-        except Exception as error:
-            return _failed(self.name, list_name, error)
-        logger.info(f"Trending list {list_name}: {len(items)} items")
-        return ListFetch(source=self.name, list_name=list_name, items=items)
+    def _quotes(self, list_name: str) -> object:
+        body = self._call(list_name)
+        if not isinstance(body, dict):
+            raise MalformedListError(f"answer is {type(body).__name__}")
+        if "quotes" not in body:
+            raise MalformedListError("answer has no quotes")
+        return body["quotes"]
 
     def fetch(self) -> list[ListFetch]:
-        return [self._fetch_one(list_name) for list_name in self.lists]
+        return [
+            _read_list(
+                self.name,
+                list_name,
+                functools.partial(self._quotes, list_name),
+                self._now,
+            )
+            for list_name in self.lists
+        ]
 
 
 class YahooTrendingSource:
@@ -295,8 +355,9 @@ class YahooTrendingSource:
 
     useQuotes=true makes every item carry its quote, so one request is
     enough, with no lookup per symbol. The request has a timeout and a
-    User-Agent naming the project, and an answer far larger than the list
-    is refused.
+    User-Agent naming the project; its answer is read streamed, and refused
+    once it grows far larger than the list or is still arriving after
+    DEADLINE_SECONDS.
     """
 
     name = TRENDING_SOURCE
@@ -307,9 +368,11 @@ class YahooTrendingSource:
         *,
         get: Callable[..., Any] | None = None,
         now: Callable[[], dt.datetime] = _utcnow,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._get = get
         self._now = now
+        self._clock = clock
 
     def _request(self) -> Any:
         get = self._get if self._get is not None else requests.get
@@ -323,14 +386,32 @@ class YahooTrendingSource:
             params=params,
             headers={"User-Agent": USER_AGENT},
             timeout=TIMEOUT_SECONDS,
+            stream=True,
         )
 
+    def _body(self) -> bytes:
+        """The answer's bytes, decoded as sent (gzip included), bounded in
+        size and in time as they arrive."""
+        started = self._clock()
+        with self._request() as response:
+            response.raise_for_status()
+            chunks: list[bytes] = []
+            size = 0
+            for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
+                size += len(chunk)
+                if size > MAX_BODY_BYTES:
+                    raise MalformedListError(
+                        f"answer of more than {MAX_BODY_BYTES} bytes"
+                    )
+                if self._clock() - started > DEADLINE_SECONDS:
+                    raise MalformedListError(
+                        f"answer still arriving after {DEADLINE_SECONDS} s"
+                    )
+                chunks.append(chunk)
+        return b"".join(chunks)
+
     def _quotes(self) -> object:
-        response = self._request()
-        response.raise_for_status()
-        if len(response.content) > MAX_BODY_BYTES:
-            raise MalformedListError(f"answer of {len(response.content)} bytes")
-        body = response.json()
+        body = json.loads(self._body())
         finance = body.get("finance") if isinstance(body, dict) else None
         result = finance.get("result") if isinstance(finance, dict) else None
         if not isinstance(result, list) or not result:
@@ -341,20 +422,17 @@ class YahooTrendingSource:
         return result[0]["quotes"]
 
     def fetch(self) -> list[ListFetch]:
-        try:
-            items = items_from_quotes(
-                self.name, TRENDING_LIST, self._quotes(), self._now()
-            )
-        except Exception as error:
-            return [_failed(self.name, TRENDING_LIST, error)]
-        logger.info(f"Trending list {TRENDING_LIST}: {len(items)} items")
-        return [ListFetch(source=self.name, list_name=TRENDING_LIST, items=items)]
+        return [_read_list(self.name, TRENDING_LIST, self._quotes, self._now)]
 
 
 def sources_for(lists: Iterable[str]) -> list[TrendingSource]:
     """The sources that read the given lists (TRENDING_LISTS), each reading
-    only those of its lists named."""
+    only those of its lists named. A list no source reads is refused: left
+    out quietly, it would never be fetched and never fail."""
     wanted = list(lists)
+    unread = [n for n in wanted if n != TRENDING_LIST and n not in SCREENER_LISTS]
+    if unread:
+        raise ValueError(f"no source reads: {', '.join(unread)}")
     sources: list[TrendingSource] = []
     if TRENDING_LIST in wanted:
         sources.append(YahooTrendingSource())

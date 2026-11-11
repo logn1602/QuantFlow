@@ -58,11 +58,14 @@ def _response(body, status=200):
     response = requests.Response()
     response.status_code = status
     response._content = body if isinstance(body, bytes) else json.dumps(body).encode()
+    # As requests leaves an answer it has read: iter_content serves it in
+    # chunks, as it serves a streamed one.
+    response._content_consumed = True
     response.url = ts.TRENDING_URL + "?count=25&useQuotes=true"
     return response
 
 
-def _trending(answer):
+def _trending(answer, clock=None):
     calls = []
 
     def get(url, **kwargs):
@@ -71,7 +74,8 @@ def _trending(answer):
             raise answer
         return answer
 
-    source = ts.YahooTrendingSource(get=get, now=lambda: NOW)
+    extra = {} if clock is None else {"clock": clock}
+    source = ts.YahooTrendingSource(get=get, now=lambda: NOW, **extra)
     return source, calls
 
 
@@ -213,9 +217,9 @@ def test_an_invalid_symbol_is_dropped_and_the_rest_kept(caplog):
 def test_a_symbol_repeated_in_one_list_keeps_its_first_rank():
     answers = _captured_screens()
     quotes = answers["day_losers"]["quotes"]
-    quotes.append(copy.deepcopy(quotes[0]))
+    quotes[10] = copy.deepcopy(quotes[0])
     items = _screener(answers).fetch()[2].items
-    assert len(items) == 25
+    assert len(items) == 24
     assert [i.rank for i in items if i.symbol == quotes[0]["symbol"]] == [1]
 
 
@@ -245,10 +249,79 @@ def test_values_the_tables_cannot_hold_are_treated_as_missing():
     assert item.market_cap is None and item.price is None
 
 
+def test_values_out_of_every_range_are_missing_not_a_failure():
+    """An integer too large for a float, and a first trade date past the
+    year 9999, which pandas holds but cannot turn into a date: each is one
+    missing value, not a failed list."""
+    answers = _captured_screens()
+    quote = answers["day_gainers"]["quotes"][0]
+    quote.update(marketCap=10**400, firstTradeDateMilliseconds=10**15)  # 33658
+    answers["day_gainers"]["quotes"][1].update(
+        firstTradeDateMilliseconds=-(10**17)  # the year -1200
+    )
+    gainers = _screener(answers).fetch()[1]
+    assert gainers.succeeded, gainers.error
+    first, second = gainers.items[:2]
+    assert first.market_cap is None and first.first_trade_date is None
+    assert second.first_trade_date is None
+
+
+@pytest.mark.parametrize("field", ["quoteType", "regularMarketPrice"])
+def test_a_field_no_item_carries_fails_the_list(field):
+    """A renamed field reads as a missing value on every item, which the
+    rules would quietly filter (no quote type is not EQUITY, no price is
+    under the floor): the list would answer and offer nobody, and every
+    symbol on it would look absent. Not one item carrying it fails the
+    list instead, and the run ends red (T8)."""
+    answers = _captured_screens()
+    for quote in answers["most_actives"]["quotes"]:
+        quote.pop(field)
+    actives, gainers, _ = _screener(answers).fetch()
+    assert actives.error == f"MalformedListError: no item carries {field}"
+    assert gainers.succeeded
+
+
+def test_quote_types_are_read_in_upper_case():
+    answers = _captured_screens()
+    answers["most_actives"]["quotes"][0]["quoteType"] = "equity"
+    assert _screener(answers).fetch()[0].items[0].quote_type == "EQUITY"
+
+
+def test_a_list_longer_than_asked_is_cut_to_the_count(caplog):
+    """Yahoo answering more than the 25 asked must not store more: every
+    item becomes a snapshot row."""
+    answers = _captured_screens()
+    quotes = answers["most_actives"]["quotes"]
+    extra = copy.deepcopy(quotes[:5])
+    for n, quote in enumerate(extra):
+        quote["symbol"] = f"EXTRA{n}"
+    quotes.extend(extra)
+    actives = _screener(answers).fetch()[0]
+    assert actives.succeeded and len(actives.items) == 25
+    assert not any(item.symbol.startswith("EXTRA") for item in actives.items)
+    assert any("30 items" in r.getMessage() for r in caplog.records)
+
+
+def test_screener_lists_may_be_any_iterable():
+    """The names are checked and kept: a generator read once for the check
+    would leave nothing to fetch."""
+    answers = _captured_screens()
+    source = ts.YahooScreenerSource(
+        (name for name in ["day_losers"]), screen=_screen(answers), now=lambda: NOW
+    )
+    assert source.lists == ("day_losers",)
+    assert [f.list_name for f in source.fetch()] == ["day_losers"]
+
+
 def test_a_first_trade_date_before_1970_is_read():
     """Yahoo gives one as negative milliseconds (^TNX: 1962). On Windows,
     datetime.fromtimestamp refuses those."""
-    quote = {"symbol": "IBM", "firstTradeDateMilliseconds": -252326400000}
+    quote = {
+        "symbol": "IBM",
+        "quoteType": "EQUITY",
+        "regularMarketPrice": 250.0,
+        "firstTradeDateMilliseconds": -252326400000,
+    }
     (item,) = ts.items_from_quotes("yahoo_screener", "most_actives", [quote], NOW)
     assert item.first_trade_date == dt.date(1962, 1, 2)
 
@@ -258,6 +331,7 @@ def test_short_names_are_cleaned_and_cut_to_100_characters():
         "symbol": "XYZ",
         "shortName": "Acme\x00 Corp\u200b \x1b[31mred\x1b[0m\n" + "x" * 200,
         "quoteType": "EQUITY" * 10,
+        "regularMarketPrice": 12.5,
     }
     (item,) = ts.items_from_quotes("yahoo_screener", "most_actives", [quote], NOW)
     assert item.short_name.startswith("Acme Corp [31mred[0m x")
@@ -307,6 +381,8 @@ def test_the_trending_request_carries_its_timeout_user_agent_and_fields():
     ((url, kwargs),) = calls
     assert url == "https://query1.finance.yahoo.com/v1/finance/trending/US"
     assert kwargs["timeout"] == 10
+    # Streamed, so the answer's size is bounded as it arrives.
+    assert kwargs["stream"] is True
     assert kwargs["headers"] == {
         "User-Agent": "QuantFlow/1.0 (+https://github.com/logn1602/QuantFlow)"
     }
@@ -371,6 +447,19 @@ def test_an_answer_far_larger_than_the_list_is_refused():
     assert "MalformedListError: answer of" in fetched.error
 
 
+def test_an_answer_still_arriving_after_the_deadline_is_refused():
+    """The request's timeout bounds each wait for data, not the whole
+    answer: one trickling in a byte at a time would hold the run. The whole
+    answer has DEADLINE_SECONDS."""
+    ticks = iter([0.0, ts.DEADLINE_SECONDS + 1.0])
+    source, _ = _trending(
+        _response(_fixture("trending_tickers")), clock=lambda: next(ticks)
+    )
+    (fetched,) = source.fetch()
+    assert not fetched.succeeded
+    assert "still arriving after" in fetched.error
+
+
 def test_without_a_fake_the_trending_request_fails_soft():
     (fetched,) = ts.YahooTrendingSource().fetch()
     assert not fetched.succeeded and "offline" in fetched.error
@@ -388,6 +477,18 @@ def test_a_stored_reason_is_one_short_line_without_query_strings():
     assert "crumb" not in reason and "abc123" not in reason
     assert "\n" not in reason and len(reason) <= 200
     assert reason.startswith("RuntimeError: 401 for url https://query1")
+
+
+def test_the_known_lists_are_the_ones_the_sources_read():
+    from quantflow.ingestion import trending_rules as rules
+
+    assert set(rules.KNOWN_LISTS) == {ts.TRENDING_LIST, *ts.SCREENER_LISTS}
+    assert len(rules.KNOWN_LISTS) == 1 + len(ts.SCREENER_LISTS)
+
+
+def test_an_unknown_list_is_refused_rather_than_read_by_no_source():
+    with pytest.raises(ValueError, match="no source reads: typo"):
+        ts.sources_for(["most_actives", "typo"])
 
 
 def test_sources_are_built_for_the_lists_named():
