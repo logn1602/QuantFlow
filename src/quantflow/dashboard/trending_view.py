@@ -29,6 +29,9 @@ from quantflow.ingestion import trending_rules as rules
 
 CAPTION = "Discovery only: not forecast or backtested."
 EMPTY = "No trending data yet."
+# Shown when a trending setting cannot be read: the tab is public, so the
+# setting's raw value goes to the log, not to every visitor.
+SETTINGS_WARNING = "The trending settings cannot be read, so this tab is off for now."
 
 # Postgres' code for a table that does not exist.
 UNDEFINED_TABLE = "42P01"
@@ -87,10 +90,20 @@ LISTS_QUERY = text("""
     GROUP BY list_name
 """)
 
+# The chart's bars: about a year of sessions. A symbol's history grows a bar
+# a day for as long as it is tracked, and the chart needs its last year, not
+# all of it.
+CHART_BARS = 260
+
+# The latest CHART_BARS bars, oldest first, as the candles are drawn.
 BARS_QUERY = text("""
     SELECT ts, open, high, low, close, volume
-    FROM trending_prices
-    WHERE ticker = :symbol
+    FROM (
+        SELECT ts, open, high, low, close, volume
+        FROM trending_prices
+        WHERE ticker = :symbol
+        ORDER BY ts DESC LIMIT :limit
+    ) latest
     ORDER BY ts
 """)
 
@@ -118,8 +131,18 @@ def load_list_status(conn) -> pd.DataFrame:
 
 
 def load_bars(conn, symbol: str) -> pd.DataFrame:
-    """One symbol's stored daily bars, for its chart."""
-    return _read(conn, BARS_QUERY, {"symbol": symbol})
+    """One symbol's latest CHART_BARS stored daily bars, for its chart."""
+    return _read(conn, BARS_QUERY, {"symbol": symbol, "limit": CHART_BARS})
+
+
+def load_chart(
+    conn, symbol: str
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame] | tuple[()]:
+    """One symbol's chart frames (chart_frames on load_bars), or () with no
+    bars: app.py keeps the frames an hour, computed once rather than on
+    every rerun, and caching.cached keeps no empty result."""
+    frames = chart_frames(load_bars(conn, symbol), symbol)
+    return () if frames[0].empty else frames
 
 
 # ── Shaping ───────────────────────────────────────────────────────────────────

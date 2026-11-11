@@ -15,8 +15,6 @@ Usage:
     streamlit run dashboard.py
 """
 
-import logging
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -30,6 +28,9 @@ from quantflow.db.connection import get_engine
 from quantflow.db.prices import load_recent_ohlcv
 from quantflow.features.news import NEWS_SOURCES
 from quantflow.ingestion import trending_rules
+from quantflow.utils.logger import get_logger
+
+logger = get_logger("dashboard")
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -245,10 +246,12 @@ def load_trending_lists() -> pd.DataFrame:
 
 
 @cached
-def load_trending_bars(symbol: str) -> pd.DataFrame:
-    """One trending symbol's stored daily bars, for its chart."""
+def load_trending_chart(symbol: str) -> tuple:
+    """One trending symbol's chart: its latest bars with their indicators
+    and anomaly flags (trending_view.load_chart), computed once an hour
+    rather than on every rerun; () with no bars, which is not kept."""
     with get_engine().connect() as conn:
-        return trending_view.load_bars(conn, symbol)
+        return trending_view.load_chart(conn, symbol)
 
 
 @cached
@@ -993,7 +996,8 @@ with tab7:
         trending_settings = trending_rules.settings(TICKERS)
     except trending_rules.TrendingConfigError as error:
         trending_settings = None
-        st.warning(f"The trending settings cannot be read: {error}")
+        logger.warning(f"The trending settings cannot be read: {error}")
+        st.warning(trending_view.SETTINGS_WARNING)
 
     if trending_settings is not None:
         try:
@@ -1021,12 +1025,11 @@ with tab7:
                     chosen = st.selectbox(
                         "Chart", list(shown["Symbol"]), key="trending_symbol"
                     )
-                    bars_t, indicators_t, flags_t = trending_view.chart_frames(
-                        load_trending_bars(chosen), chosen
-                    )
-                    if bars_t.empty:
+                    chart = load_trending_chart(chosen)
+                    if not chart:
                         st.info(f"No stored bars for {chosen} yet.")
                     else:
+                        bars_t, indicators_t, flags_t = chart
                         st.plotly_chart(
                             price_chart(bars_t, indicators_t, flags_t, chosen),
                             use_container_width=True,
@@ -1039,5 +1042,5 @@ with tab7:
         except Exception:
             # The last tab: a fault here must not show a traceback, with the
             # database's details, to every visitor.
-            logging.getLogger(__name__).exception("The Trending tab failed")
+            logger.exception("The Trending tab failed")
             st.error("The trending data could not be loaded right now.")

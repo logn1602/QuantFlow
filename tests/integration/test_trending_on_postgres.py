@@ -699,6 +699,18 @@ def test_the_tabs_chart_reads_one_symbols_bars(pg):
     assert len(prices) == 30 and not indicators.empty
 
 
+def test_the_tabs_chart_reads_the_latest_bars_oldest_first(pg):
+    days = pd.bdate_range(end="2026-11-10", periods=trending_view.CHART_BARS + 40)
+    with pg.begin() as conn:
+        insert_rows(conn, "trending_prices", _bars("SPCX", days, 20.0))
+    with pg.connect() as conn:
+        bars = trending_view.load_bars(conn, "SPCX")
+    assert len(bars) == trending_view.CHART_BARS
+    assert bars["ts"].is_monotonic_increasing
+    assert bars["ts"].iloc[-1] == pd.Timestamp("2026-11-10", tz="UTC")
+    assert bars["ts"].iloc[0] == pd.Timestamp(days[40], tz="UTC")
+
+
 def test_before_the_migration_the_tab_reads_its_empty_state(scratch_schema):
     """The tables are not there yet: each read is an empty frame, not an
     error, and the connection is usable after."""

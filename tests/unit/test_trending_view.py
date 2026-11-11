@@ -10,6 +10,7 @@ run on Postgres in tests/integration/test_trending_on_postgres.py.
 import dataclasses
 import datetime as dt
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -69,8 +70,50 @@ def test_each_read_goes_to_its_query_with_its_parameters(monkeypatch):
     assert seen == [
         (view.TABLE_QUERY, {}),
         (view.LISTS_QUERY, {}),
-        (view.BARS_QUERY, {"symbol": "SPCX"}),
+        (view.BARS_QUERY, {"symbol": "SPCX", "limit": view.CHART_BARS}),
     ]
+
+
+def test_the_chart_reads_only_the_latest_bars_oldest_first():
+    """A symbol's history grows a bar a day for as long as it is tracked:
+    the chart reads its last year, not all of it (the review's performance
+    pass). The order is the candles' own."""
+    assert view.CHART_BARS == 260
+    sql = " ".join(str(view.BARS_QUERY).split())
+    assert "ORDER BY ts DESC LIMIT :limit" in sql
+    assert sql.endswith("ORDER BY ts")
+
+
+def test_a_chart_is_its_frames_or_nothing_to_keep(monkeypatch):
+    """app.py keeps a symbol's chart an hour, as every loader: its frames,
+    computed once rather than on every rerun, or () with no bars, which
+    caching.cached does not keep."""
+    answers = iter([_bars(40), pd.DataFrame()])
+    monkeypatch.setattr(view.pd, "read_sql", lambda *a, **k: next(answers))
+    prices, indicators, _ = view.load_chart(FakeConnection(), "SPCX")
+    assert len(prices) == 40 and not indicators.empty
+    assert view.load_chart(FakeConnection(), "NONE") == ()
+
+
+APP = Path(view.__file__).with_name("app.py").read_text(encoding="utf-8")
+
+
+def _tab(app):
+    return app.split("\nwith tab7:\n", 1)[1]
+
+
+def test_the_tab_shows_a_settings_fault_in_general_words():
+    """A visitor sees that the tab is off, not the setting's raw value; the
+    details go to the log."""
+    tab = _tab(APP)
+    assert "st.warning(trending_view.SETTINGS_WARNING)" in tab
+    assert not re.search(r"st\.(warning|error|info)\(f[\"'][^\n]*\{error", tab)
+    assert "{" not in view.SETTINGS_WARNING
+
+
+def test_the_tab_logs_through_the_project_logger():
+    assert "logging.getLogger" not in APP
+    assert 'get_logger("dashboard")' in APP
 
 
 def test_a_table_not_there_yet_reads_as_empty_and_rolls_back(monkeypatch):
