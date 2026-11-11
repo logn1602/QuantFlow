@@ -19,7 +19,10 @@ and 7.2), what the unit suite can only fake:
   - missing_tables names the tables not there yet;
   - each symbol's price replacement is one transaction: a failed insert
     keeps its bars and first_bar_date, and a second connection polling
-    during replacements always finds the symbol's bars.
+    during replacements always finds the symbol's bars;
+  - the tier's writer, quantflow_trending (sql/schema_roles.sql, steps 11
+    and 13, run as written): two whole runs, logged in as it, store what
+    they should, and every command outside what a run uses is refused.
 
 Needs a disposable local Postgres, never the live database:
 
@@ -27,11 +30,13 @@ Needs a disposable local Postgres, never the live database:
 """
 
 import datetime as dt
+import re
 import threading
 import time
 import uuid
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import psycopg2.errors
 import pytest
@@ -41,6 +46,10 @@ from sqlalchemy.exc import DataError, IntegrityError, ProgrammingError
 from quantflow.dashboard import trending_view
 from quantflow.db import trending
 from quantflow.db.batch import insert_rows
+from quantflow.features import sentiment
+from quantflow.ingestion import trending_rules as rules
+from quantflow.ingestion.trending_sources import ListFetch, TrendingItem
+from quantflow.pipelines import trending as tier
 
 pytestmark = [pytest.mark.integration, pytest.mark.trending]
 
@@ -873,3 +882,363 @@ def test_before_the_migration_the_tab_reads_its_empty_state(scratch_schema):
         assert trending_view.load_list_status(conn).empty
         assert trending_view.load_bars(conn, "SPCX").empty
         assert conn.exec_driver_sql("SELECT 1").scalar_one() == 1
+
+
+# ── The tier's writer (sql/schema_roles.sql, steps 11 to 14) ──────────────────
+
+WRITER = "quantflow_trending"
+ROLES = ROOT / "sql" / "schema_roles.sql"
+CORE_SCHEMAS = (
+    "schema.sql",
+    "schema_sentiment.sql",
+    "schema_metrics.sql",
+    "schema_backtest.sql",
+)
+
+
+def _sql_statements(sql):
+    """Each statement, comments dropped and whitespace made single spaces
+    (as tests/unit/test_schema_roles.py reads the file)."""
+    without_comments = re.sub(r"--[^\n]*", "", sql)
+    return [
+        " ".join(statement.split())
+        for statement in without_comments.split(";")
+        if statement.strip()
+    ]
+
+
+def _writer_statements():
+    statements = _sql_statements(ROLES.read_text(encoding="utf-8"))
+    return [s for s in statements if re.search(rf"\b{WRITER}\b", s)]
+
+
+def _step_13():
+    """Step 13 as the owner runs it: its BEGIN to its COMMIT."""
+    statements = _sql_statements(ROLES.read_text(encoding="utf-8"))
+    first = next(
+        i
+        for i, s in enumerate(statements)
+        if s.startswith("CREATE POLICY ") and f" TO {WRITER} " in s
+    )
+    begin = max(i for i in range(first) if statements[i] == "BEGIN")
+    end = statements.index("COMMIT", first)
+    return ";\n".join(statements[begin : end + 1]) + ";\n"
+
+
+@pytest.fixture
+def writer_role(pg_url):
+    """quantflow_trending, made once on the disposable cluster with no
+    login, as migration_roles makes the others: the tests reach it with
+    SET ROLE. Its own statements (step 11) are run, as written, by the
+    test below."""
+    admin = create_engine(pg_url)
+    try:
+        with admin.begin() as conn:
+            found = conn.execute(
+                text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": WRITER}
+            ).first()
+            if found is None:
+                conn.exec_driver_sql(f"CREATE ROLE {WRITER} NOLOGIN")
+    finally:
+        admin.dispose()
+
+
+def test_step_11_makes_a_login_that_can_reach_the_database_and_do_nothing_else(
+    pg_url,
+):
+    """As written, under a name of its own (roles are cluster-wide, and
+    quantflow_trending may be there already), in a transaction rolled back
+    after the checks: CREATE ROLE, ALTER ROLE and GRANT are all
+    transactional."""
+    other = f"qf_writer_{uuid.uuid4().hex[:8]}"
+    statements = [
+        re.sub(rf"\b{WRITER}\b", other, s)
+        for s in _writer_statements()
+        if s.startswith(("CREATE ROLE", "ALTER ROLE", "GRANT CONNECT", "GRANT USAGE ON SCHEMA"))
+    ]  # fmt: skip
+    assert len(statements) == 5
+    admin = create_engine(pg_url)
+    try:
+        with admin.connect() as conn:
+            for statement in statements:
+                conn.exec_driver_sql(statement)
+            role = conn.execute(
+                text("""
+                    SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+                           rolreplication, rolbypassrls, rolconnlimit,
+                           rolconfig, rolinherit
+                    FROM pg_roles WHERE rolname = :r
+                """),
+                {"r": other},
+            ).one()
+            reach = conn.execute(
+                text("""
+                    SELECT has_database_privilege(:r, current_database(), 'CONNECT'),
+                           has_schema_privilege(:r, 'public', 'USAGE'),
+                           has_schema_privilege(:r, 'public', 'CREATE')
+                """),
+                {"r": other},
+            ).one()
+            conn.rollback()
+    finally:
+        admin.dispose()
+    assert tuple(role)[:7] == (True, False, False, False, False, False, 5)
+    assert sorted(role.rolconfig) == [
+        "idle_in_transaction_session_timeout=60s",
+        "statement_timeout=120s",
+    ]
+    assert tuple(reach) == (True, True, False)
+
+
+NOW = pd.Timestamp("2026-11-10 23:10", tz="UTC")  # Tuesday 18:10 New York
+NEXT = pd.Timestamp("2026-11-11 23:10", tz="UTC")  # the next session's run
+SETTINGS = rules.TrendingSettings(
+    pinned=("SPCX",),
+    lists=rules.KNOWN_LISTS,
+    max_active=3,
+    max_new_per_run=5,
+    # One counted session absent deactivates a symbol, so the second run
+    # also writes a deactivation.
+    inactive_after=1,
+    min_price=5.0,
+    min_market_cap=None,
+    promotion_min_days=20,
+    promotion_min_history_days=504,
+)
+
+
+class _Lists:
+    """A source whose four lists answered: trending_tickers and most_actives
+    with the given symbols, the day's gainers and losers with none."""
+
+    name = "fake"
+
+    def __init__(self, now, *symbols):
+        self.fetches = [
+            ListFetch(
+                source="yahoo_trending" if name == "trending_tickers" else "yahoo_screener",
+                list_name=name,
+                items=tuple(
+                    TrendingItem(
+                        symbol=symbol,
+                        source="yahoo_trending" if name == "trending_tickers" else "yahoo_screener",
+                        list_name=name,
+                        rank=rank,
+                        pct_change=2.5,
+                        volume=1_000_000,
+                        market_cap=10**10,
+                        price=50.0,
+                        quote_type="EQUITY",
+                        short_name=f"{symbol} Inc",
+                        first_trade_date=dt.date(2015, 3, 2),
+                        fetched_at=now.to_pydatetime(),
+                    )
+                    for rank, symbol in enumerate(listed, start=1)
+                ),
+            )
+            for name, listed in (
+                ("trending_tickers", symbols),
+                ("most_actives", symbols[::-1]),
+                ("day_gainers", ()),
+                ("day_losers", ()),
+            )
+        ]  # fmt: skip
+
+    def fetch(self):
+        return list(self.fetches)
+
+
+def _yahoo(last_day):
+    """yfinance_fetcher.download, as the run calls it: every symbol's daily
+    bars, as Yahoo sends them (naive exchange dates), up to last_day."""
+    days = pd.bdate_range("2026-05-11", last_day)
+    steps = np.arange(len(days))
+
+    def get(symbol, **kwargs):
+        closes = 20.0 + 0.05 * steps + np.sin(steps)
+        frame = pd.DataFrame(
+            {
+                "Open": closes,
+                "High": closes + 1,
+                "Low": closes - 1,
+                "Close": closes,
+                "Adj Close": closes,
+                "Volume": 1_000_000,
+            },
+            index=pd.DatetimeIndex(days),
+        )
+        if "start" in kwargs:
+            frame = frame[frame.index >= pd.Timestamp(kwargs["start"])]
+        return frame
+
+    return get
+
+
+@pytest.mark.usefixtures("migration_roles", "writer_role")
+def test_two_whole_runs_work_as_the_writer_and_nothing_else_does(
+    pg_url, scratch_schema, schema_engine, install_engine, monkeypatch
+):
+    """The live database's shape: the core's tables and the tier's, owned
+    by the role that made them (postgres there), with row-level security on
+    the tier's, then step 13 as written. USAGE on this schema stands in for
+    step 11's on public. Then two whole runs logged in as the writer, the
+    lists, Yahoo, RSS and FinBERT faked: the second, a session later, takes
+    every path a run writes by (the upsert's update, a replacement of stored
+    bars, a deactivation, a headline skipped as stored). Then every command
+    outside those, refused."""
+    run_at = {"now": NOW}
+
+    def fetch_rss(symbol, feeds=None):
+        # One headline every run sends, one new each run.
+        return [
+            {"headline": f"{symbol} again", "url": None,
+             "published_at": NOW.to_pydatetime(), "source": "rss"},
+            {"headline": f"{symbol} on {run_at['now'].date()}", "url": None,
+             "published_at": run_at["now"].to_pydatetime(), "source": "rss"},
+        ]  # fmt: skip
+
+    def analyze_batch(headlines):
+        score = {
+            "sentiment": "positive",
+            "score_pos": 0.6,
+            "score_neg": 0.1,
+            "score_neu": 0.3,
+            "compound": 0.5,
+        }
+        return [dict(score) for _ in headlines]
+
+    monkeypatch.setattr(sentiment, "get_finbert", object)
+    monkeypatch.setattr(sentiment, "fetch_rss", fetch_rss)
+    monkeypatch.setattr(sentiment, "analyze_batch", analyze_batch)
+
+    with scratch_schema() as (owner, schema):
+        for name in CORE_SCHEMAS:
+            _run_script(owner, ROOT / "sql" / name)
+        _run_script(owner, MIGRATION)
+        _run_script(owner, None, _step_13())
+        with owner.begin() as conn:
+            conn.exec_driver_sql(f"GRANT USAGE ON SCHEMA {schema} TO {WRITER}")
+        writer = schema_engine(pg_url, schema, role=WRITER)
+        try:
+            install_engine(writer)
+            with writer.connect() as conn:
+                assert conn.exec_driver_sql("SELECT current_user").scalar() == WRITER
+            assert trending.missing_tables() == []
+
+            first = tier.run(
+                core=("AAPL", "MSFT"),
+                settings=SETTINGS,
+                sources=[_Lists(NOW, "HIMS", "TTWO", "AAON")],
+                listing={},
+                now=NOW,
+                get=_yahoo("2026-11-10"),
+                pause=0,
+            )
+            assert first.exit_code == 0, first
+            assert set(first.active) == {"SPCX", "HIMS", "TTWO", "AAON"}
+            assert set(first.prices_replaced) == set(first.active)
+
+            run_at["now"] = NEXT
+            second = tier.run(
+                core=("AAPL", "MSFT"),
+                settings=SETTINGS,
+                sources=[_Lists(NEXT, "HIMS", "TTWO")],
+                listing={},
+                now=NEXT,
+                get=_yahoo("2026-11-11"),
+                pause=0,
+            )
+            assert second.exit_code == 0, second
+            assert set(second.active) == {"SPCX", "HIMS", "TTWO"}
+            assert set(second.prices_replaced) == set(second.active)
+
+            # A read no policy allows finds no row, with no error: so every
+            # table is counted as the writer, against the owner's counts
+            # below, and the run's own reads are checked by what they return.
+            assert trending.counted_sessions(5) == [
+                dt.date(2026, 11, 11),
+                dt.date(2026, 11, 10),
+            ]
+            assert {r["symbol"] for r in trending.load_tickers([])} == {
+                "SPCX",
+                "HIMS",
+                "TTWO",
+            }
+            with writer.connect() as conn:
+                seen = {
+                    name: conn.exec_driver_sql(f"SELECT count(*) FROM {name}").scalar()
+                    for name in TABLES
+                }
+
+            refused = (
+                # No core table, read or written.
+                "SELECT count(*) FROM raw_prices",
+                "INSERT INTO news_sentiment (ticker, source, published_at, "
+                "headline, sentiment) VALUES ('AAPL', 'rss', now(), 'h', 'neutral')",
+                "UPDATE forecasts SET predicted_close = 0",
+                # No command a run does not use.
+                "DELETE FROM tickers",
+                "DELETE FROM trending_snapshots",
+                "DELETE FROM trending_news",
+                "UPDATE trending_prices SET close = 1",
+                "UPDATE trending_fetches SET succeeded = true",
+                "TRUNCATE trending_news",
+                # Never a promotion, which is set by hand.
+                "UPDATE tickers SET tier = 'core'",
+                "UPDATE tickers SET promoted_at = now()",
+                "UPDATE tickers SET first_seen = now()",
+                "INSERT INTO tickers (symbol, tier, first_seen, last_seen) "
+                "VALUES ('ZZZZ', 'core', now(), now())",
+                # Nothing it does not own.
+                "CREATE TABLE writer_owned (a int)",
+                "ALTER TABLE tickers DISABLE ROW LEVEL SECURITY",
+                f"DROP POLICY {WRITER}_read ON tickers",
+            )
+            with writer.connect() as conn:
+                for statement in refused:
+                    with pytest.raises(
+                        ProgrammingError, match=r"permission denied|must be owner"
+                    ):
+                        conn.exec_driver_sql(statement)
+                    conn.rollback()
+        finally:
+            writer.dispose()
+
+        with owner.connect() as conn:
+            tickers = pd.read_sql(
+                text("SELECT symbol, tier, active, promoted_at FROM tickers"), conn
+            ).set_index("symbol")
+            fetches = conn.exec_driver_sql(
+                "SELECT count(*), bool_and(succeeded) FROM trending_fetches"
+            ).one()
+            bars = dict(
+                conn.exec_driver_sql(
+                    "SELECT ticker, max(ts)::date FROM trending_prices GROUP BY ticker"
+                ).all()
+            )
+            news = conn.exec_driver_sql("SELECT count(*) FROM trending_news").scalar()
+            stored = {
+                name: conn.exec_driver_sql(f"SELECT count(*) FROM {name}").scalar()
+                for name in TABLES
+            }
+            core = {
+                name: conn.exec_driver_sql(f"SELECT count(*) FROM {name}").scalar()
+                for name in ("raw_prices", "news_sentiment", "forecasts")
+            }
+    assert dict(tickers["active"]) == {
+        "SPCX": True, "HIMS": True, "TTWO": True, "AAON": False,
+    }  # fmt: skip
+    assert set(tickers["tier"]) == {"trending"}
+    assert tickers["promoted_at"].isna().all()
+    assert tuple(fetches) == (8, True)
+    # AAON's bars stay as the first run stored them; the rest moved on.
+    assert bars == {
+        "SPCX": dt.date(2026, 11, 11),
+        "HIMS": dt.date(2026, 11, 11),
+        "TTWO": dt.date(2026, 11, 11),
+        "AAON": dt.date(2026, 11, 10),
+    }
+    # Two headlines for each of four symbols, then one new for each of three.
+    assert news == 4 * 2 + 3
+    assert seen == stored and all(stored.values()), (seen, stored)
+    assert core == {"raw_prices": 0, "news_sentiment": 0, "forecasts": 0}

@@ -35,6 +35,20 @@
 -- live database, sql/migrations/002_trending.sql runs those statements);
 -- step 9 checks. On the live database, steps 1 to 6 are done: run step 7 on
 -- its own, then step 9.
+--
+-- Step 10 (2026-11-11): what postgres creates later grants Supabase's anon
+-- and authenticated nothing. Run on the live database by the owner after
+-- 002_trending.sql, and recorded here for a fresh install.
+--
+-- Steps 11 to 14: quantflow_trending, the trending tier's own login, for
+-- .github/workflows/trending.yml (its TRENDING_DB_USER and
+-- TRENDING_DB_PASSWORD secrets), so the tier no longer writes as postgres,
+-- which owns every table, the core's included, and which row-level security
+-- does not apply to. The new role owns nothing, so row-level security
+-- applies to it, and it holds only the commands one run of the tier uses,
+-- on the five trending tables: never a core one. On the live database, run
+-- step 11, then step 12 on its own with a real secret, then step 13, then
+-- step 14's checks; set the two secrets after that.
 -- ============================================================
 
 -- 1. A role that can log in and do nothing else. Ten connections: the
@@ -196,3 +210,160 @@ COMMIT;
 --    stops with "no row visible to quantflow_readonly" instead.
 --
 --   uv run python scripts/diagnostics/run_1a_diagnostics.py --sql scripts/diagnostics/readonly_rows.sql --live --out readonly_rows.md
+
+-- 10. What postgres creates later in public: no privilege for anon and
+--     authenticated. Supabase's own default privileges granted them
+--     everything on each new table, sequence and function, which is why
+--     sql/migrations/002_trending.sql revokes it on the tables it creates;
+--     now nothing is granted to begin with. service_role keeps its grants,
+--     which are Supabase's own, and step 4's SELECT for quantflow_readonly
+--     stays. Run on the live database by the owner on 2026-11-11; running
+--     it again changes nothing. On a Postgres without Supabase's roles (a
+--     local cluster), leave it out.
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE ALL ON TABLES FROM anon, authenticated;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE ALL ON SEQUENCES FROM anon, authenticated;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE ALL ON FUNCTIONS FROM anon, authenticated;
+
+-- 11. quantflow_trending: a login that can reach the database and the
+--     public schema, and do nothing there until step 13. Five connections:
+--     a run uses one at a time, and a local run may overlap the workflow's.
+--     A statement stuck behind a lock (a migration's, say) fails after two
+--     minutes rather than hold the run to the job's 30-minute timeout; no
+--     statement of a run takes more than seconds, and none leaves a
+--     transaction idle. As in step 3, where postgres does not own the
+--     database or the schema, the two GRANTs print "no privileges were
+--     granted": every role has both through PUBLIC by default, and step 14
+--     checks it.
+CREATE ROLE quantflow_trending
+    LOGIN
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+    CONNECTION LIMIT 5;
+ALTER ROLE quantflow_trending SET statement_timeout = '120s';
+ALTER ROLE quantflow_trending SET idle_in_transaction_session_timeout = '60s';
+GRANT CONNECT ON DATABASE postgres TO quantflow_trending;
+GRANT USAGE ON SCHEMA public TO quantflow_trending;
+
+-- 12. Its password, run on its own, with a real secret: letters and digits
+--     only, as in step 5, since the pipeline puts DB_PASSWORD in its
+--     connection URL unescaped (config.DATABASE_URL). The same value goes in
+--     the repository's TRENDING_DB_PASSWORD secret, and nowhere else.
+--
+-- ALTER ROLE quantflow_trending PASSWORD 'replace-with-the-secret';
+
+-- 13. What it may do: privileges, and a policy for each, since row-level
+--     security, on for all five tables, refuses any row no policy allows.
+--     Exactly the commands one run uses (src/quantflow/db/trending.py, and
+--     db/sentiment.py for trending_news; tests/unit/test_schema_roles.py
+--     takes the lists from that code):
+--       - SELECT on all five: the run reads tickers and trending_fetches,
+--         and an upsert, or an UPDATE or DELETE with a WHERE, reads the rows
+--         it changes;
+--       - INSERT on all five, and on tickers only in the columns the run
+--         writes, and UPDATE of those but symbol and first_seen: it upserts
+--         its rows there, and can never set tier or promoted_at, which
+--         change by hand only, at a promotion (docs/trending.md, section 8);
+--       - DELETE on trending_prices: each symbol's bars are replaced;
+--       - USAGE on trending_news_id_seq, which trending_news's ids come from.
+--     Nothing on any core table, no TRUNCATE, no DELETE elsewhere, and no
+--     default privileges: a table added later gets nothing until its own
+--     migration grants it. One transaction: a failure leaves nothing
+--     changed, and a second run stops at its first CREATE POLICY ("already
+--     exists"). As in step 7, the lock timeout stops it rather than leave it
+--     queued behind a long read; run it again once the read is done.
+BEGIN;
+SET LOCAL lock_timeout = '10s';
+
+GRANT SELECT ON tickers, trending_prices, trending_snapshots, trending_fetches,
+    trending_news TO quantflow_trending;
+GRANT INSERT ON trending_prices, trending_snapshots, trending_fetches,
+    trending_news TO quantflow_trending;
+GRANT INSERT (symbol, short_name, quote_type, first_seen, last_seen, active,
+    pinned, first_bar_date, first_trade_date, summary_session, last_close,
+    rsi_14, recent_flags, big_move_date) ON tickers TO quantflow_trending;
+GRANT UPDATE (short_name, quote_type, last_seen, active, pinned,
+    first_bar_date, first_trade_date, summary_session, last_close, rsi_14,
+    recent_flags, big_move_date) ON tickers TO quantflow_trending;
+GRANT DELETE ON trending_prices TO quantflow_trending;
+GRANT USAGE ON SEQUENCE trending_news_id_seq TO quantflow_trending;
+
+CREATE POLICY quantflow_trending_read ON tickers
+    FOR SELECT TO quantflow_trending USING (true);
+CREATE POLICY quantflow_trending_read ON trending_prices
+    FOR SELECT TO quantflow_trending USING (true);
+CREATE POLICY quantflow_trending_read ON trending_snapshots
+    FOR SELECT TO quantflow_trending USING (true);
+CREATE POLICY quantflow_trending_read ON trending_fetches
+    FOR SELECT TO quantflow_trending USING (true);
+CREATE POLICY quantflow_trending_read ON trending_news
+    FOR SELECT TO quantflow_trending USING (true);
+
+CREATE POLICY quantflow_trending_insert ON tickers
+    FOR INSERT TO quantflow_trending WITH CHECK (true);
+CREATE POLICY quantflow_trending_insert ON trending_prices
+    FOR INSERT TO quantflow_trending WITH CHECK (true);
+CREATE POLICY quantflow_trending_insert ON trending_snapshots
+    FOR INSERT TO quantflow_trending WITH CHECK (true);
+CREATE POLICY quantflow_trending_insert ON trending_fetches
+    FOR INSERT TO quantflow_trending WITH CHECK (true);
+CREATE POLICY quantflow_trending_insert ON trending_news
+    FOR INSERT TO quantflow_trending WITH CHECK (true);
+
+CREATE POLICY quantflow_trending_update ON tickers
+    FOR UPDATE TO quantflow_trending USING (true) WITH CHECK (true);
+CREATE POLICY quantflow_trending_delete ON trending_prices
+    FOR DELETE TO quantflow_trending USING (true);
+
+COMMIT;
+
+-- 14. Checks, after step 13, in the SQL editor.
+--
+--    The role. Expected one row: rolcanlogin t; rolsuper, rolcreatedb,
+--    rolcreaterole, rolreplication and rolbypassrls f; rolconnlimit 5;
+--    rolconfig the two settings.
+--
+-- SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+--        rolreplication, rolbypassrls, rolconnlimit, rolconfig
+-- FROM pg_roles WHERE rolname = 'quantflow_trending';
+--
+--    It can connect and use the schema, and cannot create in it. Expected:
+--    t, t, f.
+--
+-- SELECT has_database_privilege('quantflow_trending', 'postgres', 'CONNECT'),
+--        has_schema_privilege('quantflow_trending', 'public', 'USAGE'),
+--        has_schema_privilege('quantflow_trending', 'public', 'CREATE');
+--
+--    What it holds on whole tables and sequences, in any schema. Expected
+--    six rows, and no core table: tickers SELECT; trending_fetches,
+--    trending_news and trending_snapshots INSERT, SELECT;
+--    trending_news_id_seq USAGE; trending_prices DELETE, INSERT, SELECT.
+--
+-- SELECT c.relname,
+--        string_agg(acl.privilege_type, ', ' ORDER BY acl.privilege_type)
+-- FROM pg_class c
+-- CROSS JOIN LATERAL aclexplode(c.relacl) AS acl
+-- WHERE acl.grantee = 'quantflow_trending'::regrole
+-- GROUP BY 1 ORDER BY 1;
+--
+--    And on tickers' columns. Expected 14 rows: symbol and first_seen
+--    INSERT, the other twelve INSERT, UPDATE; no tier, no promoted_at.
+--
+-- SELECT a.attname,
+--        string_agg(acl.privilege_type, ', ' ORDER BY acl.privilege_type)
+-- FROM pg_attribute a
+-- CROSS JOIN LATERAL aclexplode(a.attacl) AS acl
+-- WHERE a.attrelid = 'public.tickers'::regclass
+--   AND acl.grantee = 'quantflow_trending'::regrole
+-- GROUP BY a.attname, a.attnum ORDER BY a.attnum;
+--
+--    Its policies. Expected 12 rows, each for {quantflow_trending}:
+--    quantflow_trending_read (SELECT) and quantflow_trending_insert (INSERT)
+--    on each of the five tables, quantflow_trending_update (UPDATE) on
+--    tickers, quantflow_trending_delete (DELETE) on trending_prices.
+--
+-- SELECT tablename, policyname, cmd, roles::text, qual, with_check
+-- FROM pg_policies
+-- WHERE schemaname = 'public' AND 'quantflow_trending' = ANY (roles)
+-- ORDER BY tablename, policyname;
