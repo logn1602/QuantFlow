@@ -283,6 +283,58 @@ def test_trending_starts_when_the_daily_refresh_completes_or_by_hand():
         assert trigger not in on, trigger
 
 
+TRENDING_STEPS = _steps(TRENDING)
+
+
+def _job_header(workflow):
+    """The job's own keys: between `jobs:` and its first step."""
+    return workflow.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[0]
+
+
+@pytest.mark.trending
+def test_trending_runs_only_for_this_repositorys_own_refreshes_or_by_hand():
+    """A workflow_run event carries the triggering run's repository and
+    event: the job runs for a refresh this repository scheduled or started
+    by hand, never for one a fork's branch set off."""
+    condition = re.search(
+        r"^    if: >-\n((?:      .+\n)+)", _job_header(TRENDING), re.M
+    )
+    assert condition, "the trending job has no if:"
+    text = " ".join(condition.group(1).split())
+    assert "github.event_name == 'workflow_dispatch'" in text
+    assert (
+        "github.event.workflow_run.head_repository.full_name == github.repository"
+        in text
+    )
+    assert (
+        """contains(fromJSON('["schedule", "workflow_dispatch"]'), """
+        "github.event.workflow_run.event)"
+    ) in text
+
+
+@pytest.mark.trending
+def test_trending_gives_the_database_secrets_to_the_run_step_alone():
+    """The write credentials are in no step but the one that writes: not in
+    the job's env, where setup-uv, the cache and the test suite would see
+    them too. The tests get CI's dummy password."""
+    assert "secrets.DB_" not in _job_header(TRENDING)
+    holding = [name for name, step in TRENDING_STEPS.items() if "secrets.DB_" in step]
+    assert holding == ["Run the trending tier"]
+    run = TRENDING_STEPS["Run the trending tier"]
+    for name in ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+        assert f"{name}: ${{{{ secrets.{name} }}}}" in run, name
+    assert "DB_PASSWORD: ci-not-a-real-password" in TRENDING_STEPS["Run tests"]
+
+
+@pytest.mark.trending
+def test_trending_checks_out_without_keeping_the_token():
+    """Nothing here pushes: the clone's token is not left in .git/config for
+    the steps after it."""
+    checkout = TRENDING_STEPS["Checkout repository"]
+    assert "uses: actions/checkout@" in checkout
+    assert re.search(r"^\s+persist-credentials: false$", checkout, re.M)
+
+
 @pytest.mark.trending
 def test_trending_has_its_own_timeout_and_concurrency_group():
     assert re.search(r"^    timeout-minutes: 30$", TRENDING, re.MULTILINE)

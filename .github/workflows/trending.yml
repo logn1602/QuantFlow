@@ -31,15 +31,19 @@ concurrency:
 
 jobs:
   trending:
+    # By hand, or after a refresh this repository ran on its own schedule or
+    # by hand: a workflow_run event names the triggering run's repository and
+    # event, so a run set off from a fork's branch never gets here.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.head_repository.full_name == github.repository &&
+      contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # The database's write credentials are not here but on the one step that
+    # writes, so setup-uv, the caches and the test suite never hold them.
     env:
-      DB_HOST: ${{ secrets.DB_HOST }}
-      DB_PORT: ${{ secrets.DB_PORT }}
-      DB_NAME: ${{ secrets.DB_NAME }}
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       # The core watchlist, which the tier leaves out of its lists (rule 3).
       # The same eight as daily_refresh.yml and .env.example.
       TICKERS: AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM
@@ -51,6 +55,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Nothing here pushes: the token is not left in .git/config.
+          persist-credentials: false
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -70,6 +77,10 @@ jobs:
       # writes anything.
       - name: Run tests
         run: uv run pytest -m "not eval and not integration"
+        env:
+          # CI's dummy, for the URL config builds at import: the offline
+          # suite opens no connection.
+          DB_PASSWORD: ci-not-a-real-password
 
       # The model the daily refresh caches, by the revision the code pins
       # (FINBERT_REVISION in features/sentiment.py).
@@ -81,7 +92,14 @@ jobs:
 
       # Fetch the lists, choose the active set, then prices, analytics and
       # sentiment for it, sentiment last. Exits 1 when any list failed, after
-      # storing what the others returned (T8), or when a price replacement or
-      # FinBERT failed, so GitHub's failure notice goes out.
+      # storing what the others returned (T8), when a write or FinBERT
+      # failed, when a step did nothing for any active symbol, or when the
+      # tables are not there yet, so GitHub's failure notice goes out.
       - name: Run the trending tier
         run: uv run python -m quantflow.pipelines.trending
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
