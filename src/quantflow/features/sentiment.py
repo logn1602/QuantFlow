@@ -36,6 +36,7 @@ from quantflow.config import NEWS_API_KEY, TICKERS
 from quantflow.db.connection import get_engine
 from quantflow.db.sentiment import insert_sentiment
 from quantflow.utils.logger import get_logger
+from quantflow.utils.text import storable_text as _clean_text
 
 # Applied after imports rather than before them: nothing imported here
 # warns at import time (transformers is loaded lazily in get_finbert),
@@ -318,19 +319,6 @@ def fetch_newsapi(ticker: str) -> list[dict]:
 
 
 # ── Database write ────────────────────────────────────────────────────────────
-
-
-def _clean_text(value: str | None, limit: int) -> str:
-    """Feed text made safe to bind: no NUL bytes, no code points UTF-8 cannot
-    encode (lone surrogates become "?"), at most `limit` characters.
-
-    Headlines and URLs come from third-party feeds. psycopg2 rejects both
-    defects on the client side, before anything reaches the server, so in one
-    batched INSERT a single malformed article would fail the whole write and
-    stop the daily refresh with it.
-    """
-    cleaned = (value or "").replace("\x00", "")
-    return cleaned.encode("utf-8", "replace").decode("utf-8")[:limit]
 
 
 def save_sentiment(

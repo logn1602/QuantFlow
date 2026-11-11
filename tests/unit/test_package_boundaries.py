@@ -77,6 +77,7 @@ TRENDING_MODULES = {
     "quantflow.ingestion.trending_rules",
     "quantflow.db.trending",
     "quantflow.pipelines.trending",
+    "quantflow.features.trending_analytics",
     "quantflow.dashboard.trending_view",
 }
 ALLOWED_IN = {"quantflow.dashboard.app"}

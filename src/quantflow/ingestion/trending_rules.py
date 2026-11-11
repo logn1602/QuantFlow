@@ -1,8 +1,10 @@
 """The trending tier's rules, as pure functions (docs/trending.md, section 4).
 
-Everything here decides from its arguments alone: no database, no network, no
+Each rule decides from its arguments alone: no database, no network, no
 clock. The run (pipelines/trending.py) reads the inputs and writes the
-results, so each rule can be tested on its own.
+results, so each rule can be tested on its own. Two readers stand apart:
+settings(), which parses config's raw values, and listing_dates(), which
+reads the committed listing-date file; neither touches the database.
 
 Symbols arrive from unofficial endpoints and from the environment, so each one
 is validated before it reaches the database, a URL or a log line (4.1).
@@ -19,11 +21,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard
 from urllib.parse import quote
 
+import numpy as np
 import pandas as pd
 
 from quantflow import config
-from quantflow.features.sentiment import _clean_text
 from quantflow.utils.logger import get_logger
+from quantflow.utils.text import storable_text
 from quantflow.utils.trading_calendar import EXCHANGE_TZ, TRADING_DAY
 
 if TYPE_CHECKING:
@@ -33,7 +36,7 @@ logger = get_logger(__name__)
 
 # raw_prices.ticker and every trending table's symbol column are VARCHAR(10).
 MAX_SYMBOL_CHARS = 10
-_SYMBOL = re.compile(r"[A-Z][A-Z0-9.\-]{0,9}", re.ASCII)
+_SYMBOL = re.compile(rf"[A-Z][A-Z0-9.\-]{{0,{MAX_SYMBOL_CHARS - 1}}}", re.ASCII)
 
 # tickers.short_name is VARCHAR(100), tickers.quote_type VARCHAR(20).
 MAX_SHORT_NAME_CHARS = 100
@@ -45,6 +48,22 @@ KNOWN_LISTS = ("trending_tickers", "most_actives", "day_gainers", "day_losers")
 # TRENDING_PINNED is read up to this many symbols, so the owner's list cannot
 # crowd out the tier's budget (section 5).
 MAX_PINNED = 10
+
+# The window of the anomaly flags counted on the tab and of the big-move
+# badge: the last 10 trading dates (section 10), for the run and the tab.
+RECENT_DATES = 10
+
+
+def missing(value: Any) -> bool:
+    """True for None, NaN and NaT: a stored NULL as pandas reads it."""
+    return value is None or bool(pd.isna(value))
+
+
+def list_priority(lists: Sequence[str]) -> Callable[[str], int]:
+    """A list's place in TRENDING_LISTS, for sorting; a list not named there
+    comes last."""
+    order = {name: place for place, name in enumerate(lists)}
+    return lambda name: order.get(name, len(order))
 
 
 class TrendingConfigError(ValueError):
@@ -75,7 +94,7 @@ def clean_text(value: object, limit: int) -> str | None:
         return None
     cleaned = "".join(
         " " if ch.isspace() else ch
-        for ch in _clean_text(value, len(value))
+        for ch in storable_text(value, len(value))
         if ch.isspace() or unicodedata.category(ch) not in ("Cc", "Cf")
     )
     cleaned = " ".join(cleaned.split())[:limit].strip()
@@ -292,12 +311,6 @@ class Candidate:
     first_trade_date: dt.date | None
 
 
-def _priority(lists: Sequence[str]) -> Callable[[str], int]:
-    """A list's place in TRENDING_LISTS; a list not named there comes last."""
-    order = {name: place for place, name in enumerate(lists)}
-    return lambda name: order.get(name, len(order))
-
-
 def rejection(
     item: TrendingItem, *, core: Iterable[str], settings: TrendingSettings
 ) -> str | None:
@@ -338,7 +351,7 @@ def candidates(
     symbol, so the order never depends on how the lists arrived. Pinned
     symbols are left out: they are active whatever the rules say."""
     core = set(core)
-    priority = _priority(settings.lists)
+    priority = list_priority(settings.lists)
     best: dict[str, TrendingItem] = {}
     lists: dict[str, set[str]] = {}
     dropped: dict[str, int] = {}
@@ -391,7 +404,7 @@ def pinned_items(
 ) -> dict[str, TrendingItem]:
     """Each pinned symbol's best-ranked item today, through the rules or not:
     its name, quote type and first trade date, for its tickers row."""
-    priority = _priority(settings.lists)
+    priority = list_priority(settings.lists)
     found: dict[str, TrendingItem] = {}
     for fetch in fetches:
         for item in fetch.items:
@@ -413,20 +426,17 @@ class Selection:
     pinned: tuple[str, ...]
     joined: tuple[str, ...]  # active now and not before
     new: tuple[str, ...]  # joined with no stored history: a first-sight download
-    waiting: tuple[str, ...]  # new, over the run's limit: left for a later run
+    # New, past the run's limit, where the cap had a place: for a later run.
+    waiting: tuple[str, ...]
     kept_absent: tuple[str, ...]  # active before, on no list that answered, kept
     deactivated: tuple[str, ...]
     complete: bool  # every list answered: the session counts (T8)
 
 
-def _missing(value: Any) -> bool:
-    return value is None or bool(pd.isna(value))
-
-
 def absences(last_seen: Any, counted: Sequence[dt.date]) -> int:
     """How many of the counted sessions came after the one a symbol was last
     seen in (last_seen a timestamp, or None for never)."""
-    if _missing(last_seen):
+    if missing(last_seen):
         return len(counted)
     seen = session_date(last_seen)
     return sum(1 for day in counted if day > seen)
@@ -434,7 +444,7 @@ def absences(last_seen: Any, counted: Sequence[dt.date]) -> int:
 
 def _recency(row: Mapping[str, Any]) -> int:
     last_seen = row.get("last_seen")
-    return 0 if _missing(last_seen) else pd.Timestamp(last_seen).value
+    return 0 if missing(last_seen) else pd.Timestamp(last_seen).value
 
 
 def choose_active(
@@ -444,6 +454,7 @@ def choose_active(
     settings: TrendingSettings,
     complete: bool,
     counted: Sequence[dt.date],
+    core: Iterable[str],
 ) -> Selection:
     """The active set for this run (4.3), from today's candidates in order
     and the stored tickers rows by symbol.
@@ -461,16 +472,21 @@ def choose_active(
     join only into room left under the cap. A symbol on the failed list alone
     would otherwise look absent and lose its place to the other lists' names.
 
+    A core ticker (core) active before leaves the tier either way: rule 3
+    keeps it off the candidates, and it must not stay on as absent.
+
     counted is the latest counted sessions, newest first, as
     db.trending.counted_sessions reads them after this run's fetch is stored,
     so this run's session is among them when complete.
     """
     pinned = tuple(settings.pinned)
-    before = [
+    core = set(core)
+    previously = [
         symbol
         for symbol, row in sorted(stored.items())
         if row.get("active") and symbol not in pinned
     ]
+    before = [symbol for symbol in previously if symbol not in core]
     was_active = set(before)
     listed = [c.symbol for c in found if c.symbol not in pinned]
     on_lists = set(listed)
@@ -482,7 +498,7 @@ def choose_active(
 
     def admit(symbol: str) -> None:
         history = (stored.get(symbol) or {}).get("first_bar_date")
-        if symbol not in was_active and _missing(history):
+        if symbol not in was_active and missing(history):
             if len(new) >= settings.max_new_per_run:
                 # Waiting only if the cap had a place for it: with churn,
                 # most candidates are new, and naming every one past the
@@ -532,7 +548,7 @@ def choose_active(
         new=tuple(new),
         waiting=tuple(waiting),
         kept_absent=tuple(kept_absent),
-        deactivated=tuple(s for s in before if s not in taken),
+        deactivated=tuple(s for s in previously if s not in taken),
         complete=complete,
     )
 
@@ -596,9 +612,9 @@ def ticker_rows(
         row = {column: base.get(column) for column in TICKER_COLUMNS}
         row["symbol"] = symbol
         seen = symbol in by_symbol or symbol in pinned
-        if _missing(row["first_seen"]):
+        if missing(row["first_seen"]):
             row["first_seen"] = now
-        if seen or _missing(row["last_seen"]):
+        if seen or missing(row["last_seen"]):
             row["last_seen"] = now
         meta: Candidate | TrendingItem | None = by_symbol.get(
             symbol
@@ -610,7 +626,7 @@ def ticker_rows(
                     row[column] = value
         if symbol in listing:
             row["first_trade_date"] = history_start(
-                None if _missing(row["first_trade_date"]) else row["first_trade_date"],
+                None if missing(row["first_trade_date"]) else row["first_trade_date"],
                 listing[symbol],
             )
         row["active"] = symbol in active
@@ -668,14 +684,19 @@ def listing_dates(path: Path | None = None) -> dict[str, dt.date]:
     rules hold: a reason on every line, no future date, no repeat. It raises
     ValueError on a file it cannot read, and the run stops on it: the file is
     committed with the code. A symbol listed twice keeps its later date, the
-    current holder's."""
+    current holder's.
+
+    A date with no session (a weekend, a holiday) becomes the next session,
+    the first a listing can have a bar on: the run checks a download's first
+    bar against it, and a date with no bar would fail that check forever."""
     entries = config.split_jump_acknowledged(
         config.TRENDING_LISTING_DATES_FILE if path is None else path
     )
     dates: dict[str, dt.date] = {}
     for symbol, day in entries:
-        if symbol not in dates or day > dates[symbol]:
-            dates[symbol] = day
+        session = TRADING_DAY.rollforward(pd.Timestamp(day)).date()
+        if symbol not in dates or session > dates[symbol]:
+            dates[symbol] = session
     return dates
 
 
@@ -705,10 +726,17 @@ def history_start(
 
 
 def history_days(start: dt.date, as_of: dt.date) -> int:
-    """NYSE trading days from start to as_of, both counted."""
+    """NYSE trading days from start to as_of, both counted: numpy's count of
+    business days on the same calendar, as fast for 40 years as for one."""
     if start > as_of:
         return 0
-    return len(pd.date_range(start, as_of, freq=TRADING_DAY))
+    end = as_of + dt.timedelta(days=1)  # busday_count leaves its end out
+    return int(np.busday_count(start, end, busdaycal=TRADING_DAY.calendar))
+
+
+def recent_start(session: dt.date) -> dt.date:
+    """The first of the RECENT_DATES trading dates ending at session."""
+    return (pd.Timestamp(session) - (RECENT_DATES - 1) * TRADING_DAY).date()
 
 
 def promotion_eligible(
@@ -716,15 +744,15 @@ def promotion_eligible(
     days_trending: int,
     pinned: bool,
     first_trade_date: dt.date | None,
-    listed: dt.date | None,
     as_of: dt.date,
     settings: TrendingSettings,
 ) -> bool:
     """Shown as promotion-eligible (section 8): on the lists on at least
     TRENDING_PROMOTION_MIN_DAYS sessions, or pinned, and with at least
-    PROMOTION_MIN_HISTORY_DAYS trading days of history. Unknown history is
-    not enough history."""
-    start = history_start(first_trade_date, listed)
+    PROMOTION_MIN_HISTORY_DAYS trading days of history. first_trade_date is
+    the stored one, where the run has folded in a later listing date
+    (history_start). Unknown history is not enough history."""
+    start = first_trade_date
     if start is None:
         return False
     attention = pinned or days_trending >= settings.promotion_min_days

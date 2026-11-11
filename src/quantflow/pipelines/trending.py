@@ -36,10 +36,8 @@ import pandas as pd
 
 from quantflow import config
 from quantflow.db import trending as db_trending
-from quantflow.db.prices import PRICE_COLUMNS, daily_bars, indexed_by_date
 from quantflow.features import sentiment
-from quantflow.features.anomalies import detect_anomalies
-from quantflow.features.indicators import compute_indicators
+from quantflow.features.trending_analytics import analyse
 from quantflow.ingestion import trending_rules as rules
 from quantflow.ingestion.split_guard import split_sized_jumps
 from quantflow.ingestion.trending_sources import TrendingSource, sources_for
@@ -55,9 +53,6 @@ logger = get_logger("trending")
 
 # A new symbol's first-sight history (section 7.2).
 FIRST_SIGHT_PERIOD = "6mo"
-# The anomaly flags counted on the tab, and the big-move badge's window: the
-# last 10 trading dates (section 10).
-RECENT_DATES = 10
 # trending_prices' prices are NUMERIC(12, 4): a value this large cannot be
 # stored (a heavily reverse-split name's adjusted history can reach it).
 MAX_STORABLE_PRICE = 1e8
@@ -133,9 +128,9 @@ def fetch_prices(
     partial answer must never shorten a history), or a price cannot be
     stored. From first_bar_date, or six months back for a new symbol; bars
     before a listing date dropped (section 5)."""
-    first = row.get("first_bar_date")
-    if first is None or pd.isna(first):
-        first = None
+    stored_first = row.get("first_bar_date")
+    first: dt.date | None = None if rules.missing(stored_first) else stored_first
+    if first is None:
         data = get(symbol, period=FIRST_SIGHT_PERIOD, interval="1d", auto_adjust=False)
     else:
         data = get(symbol, start=first.isoformat(), interval="1d", auto_adjust=False)
@@ -179,17 +174,18 @@ def summarize(
     rows: Sequence[Mapping[str, Any]], symbol: str
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     """The tab's summary from the symbol's fresh bars (7.4): the latest
-    session and close, RSI(14), the anomaly flags of the last RECENT_DATES
-    trading dates, and the latest big move, by the core's own functions on
-    one row per date. Also returns the big moves found (split_sized_jumps),
-    which warn and never block for a trending symbol (7.3)."""
-    daily = daily_bars(pd.DataFrame(list(rows)), symbol)
-    ohlcv = indexed_by_date(daily, PRICE_COLUMNS)
-    indicators = compute_indicators(ohlcv)
-    flags = detect_anomalies(indexed_by_date(daily, ["close", "volume"]), symbol)
+    session and close, RSI(14), the anomaly flags of the last
+    rules.RECENT_DATES trading dates, and the latest big move, by the core's
+    own functions on one row per date (trending_analytics.analyse, which
+    the tab's chart uses too). Also returns the big moves found
+    (split_sized_jumps), which warn and never block for a trending symbol
+    (7.3)."""
+    analysis = analyse(pd.DataFrame(list(rows)), symbol)
+    daily, indicators, flags = analysis.daily, analysis.indicators, analysis.flags
     jumps = split_sized_jumps(daily[["date", "close"]])
 
-    recent = daily["date"].iloc[-RECENT_DATES:].min()
+    session = daily["date"].iloc[-1].date()
+    recent = pd.Timestamp(rules.recent_start(session))
     flagged = 0
     if not flags.empty:
         flagged = int((flags.index.tz_localize(None) >= recent).sum())
@@ -197,7 +193,7 @@ def summarize(
     if not indicators.empty and pd.notna(indicators["rsi_14"].iloc[-1]):
         rsi = round(float(indicators["rsi_14"].iloc[-1]), 2)
     summary = {
-        "summary_session": daily["date"].iloc[-1].date(),
+        "summary_session": session,
         "last_close": round(float(daily["close"].iloc[-1]), 4),
         "rsi_14": rsi,
         "recent_flags": flagged,
@@ -231,7 +227,12 @@ def _select(
     }
     counted = db_trending.counted_sessions(settings.inactive_after)
     selection = rules.choose_active(
-        found, stored, settings=settings, complete=complete, counted=counted
+        found,
+        stored,
+        settings=settings,
+        complete=complete,
+        counted=counted,
+        core=core,
     )
     rows = rules.ticker_rows(
         selection, found, pinned_found, stored, now=now, listing=listing

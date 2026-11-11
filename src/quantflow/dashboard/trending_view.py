@@ -23,21 +23,15 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 
-from quantflow.db.prices import PRICE_COLUMNS, daily_bars, indexed_by_date
-from quantflow.features.anomalies import detect_anomalies
-from quantflow.features.indicators import compute_indicators
+from quantflow.db.prices import PRICE_COLUMNS
+from quantflow.features.trending_analytics import analyse
 from quantflow.ingestion import trending_rules as rules
-from quantflow.utils.trading_calendar import TRADING_DAY
 
 CAPTION = "Discovery only: not forecast or backtested."
 EMPTY = "No trending data yet."
 
 # Postgres' code for a table that does not exist.
 UNDEFINED_TABLE = "42P01"
-
-# The anomaly flags and the big-move badge cover the last 10 trading dates,
-# as the run counts them (pipelines/trending.RECENT_DATES).
-RECENT_DATES = 10
 
 # One grouped query for the whole table, not one per row: each active symbol
 # with its summary from the last run, its place on the latest fetch's lists,
@@ -168,19 +162,14 @@ def list_caption(lines: Sequence[str]) -> str:
 def _date(value: Any) -> dt.date | None:
     """A stored date as a date, None for NULL. pd.isna first: NaT is itself
     an instance of datetime.date."""
-    if value is None or pd.isna(value):
+    if rules.missing(value):
         return None
     return pd.Timestamp(value).date()
 
 
-def _recent_start(session: dt.date) -> dt.date:
-    """The first of the RECENT_DATES trading dates ending at session."""
-    return (pd.Timestamp(session) - (RECENT_DATES - 1) * TRADING_DAY).date()
-
-
 def badges(row: pd.Series, *, settings: rules.TrendingSettings, today: dt.date) -> str:
     """The row's badges, as words: pinned, promotion-eligible (section 8),
-    and a big move in the last RECENT_DATES trading dates (7.3)."""
+    and a big move in the last rules.RECENT_DATES trading dates (7.3)."""
     words = []
     pinned = bool(row.get("pinned"))
     if pinned:
@@ -190,13 +179,12 @@ def badges(row: pd.Series, *, settings: rules.TrendingSettings, today: dt.date) 
         days_trending=int(row.get("days_trending") or 0),
         pinned=pinned,
         first_trade_date=_date(row.get("first_trade_date")),
-        listed=None,  # folded into first_trade_date by the run
         as_of=session,
         settings=settings,
     ):
         words.append("promotion-eligible")
     moved = _date(row.get("big_move_date"))
-    if moved is not None and moved >= _recent_start(session):
+    if moved is not None and moved >= rules.recent_start(session):
         words.append(f"big move {moved.isoformat()}")
     return ", ".join(words)
 
@@ -211,7 +199,7 @@ TABLE_COLUMNS = [
     "Days trending",
     "Sentiment (7d)",
     "Articles (7d)",
-    "Flags (10d)",
+    f"Flags ({rules.RECENT_DATES}d)",
     "RSI (14)",
     "Last close",
     "Session",
@@ -220,7 +208,11 @@ TABLE_COLUMNS = [
 
 
 def _number(value: Any, digits: int) -> float | None:
-    return None if value is None or pd.isna(value) else round(float(value), digits)
+    return None if rules.missing(value) else round(float(value), digits)
+
+
+def _whole(value: Any) -> int | None:
+    return None if rules.missing(value) else int(value)
 
 
 def table_rows(
@@ -231,27 +223,23 @@ def table_rows(
     words. Values only; app.py shows the frame as text, never as HTML."""
     if raw.empty:
         return pd.DataFrame(columns=TABLE_COLUMNS)
-    order = {name: place for place, name in enumerate(settings.lists)}
+    priority = rules.list_priority(settings.lists)
     rows = []
     for _, row in raw.iterrows():
         lists = row.get("lists")
-        named = sorted(lists, key=lambda n: order.get(n, len(order))) if lists else []
-        rank = row.get("best_rank")
-        volume = row.get("volume")
+        named = sorted(lists, key=priority) if lists else []
         rows.append(
             {
                 "Symbol": row["symbol"],
                 "Name": row.get("short_name") or "",
-                "Best rank": None if rank is None or pd.isna(rank) else int(rank),
+                "Best rank": _whole(row.get("best_rank")),
                 "Lists": ", ".join(named),
                 "% change": _number(row.get("pct_change"), 2),
-                "Volume": None if volume is None or pd.isna(volume) else int(volume),
+                "Volume": _whole(row.get("volume")),
                 "Days trending": int(row.get("days_trending") or 0),
                 "Sentiment (7d)": _number(row.get("sentiment_7d"), 3),
                 "Articles (7d)": int(row.get("articles_7d") or 0),
-                "Flags (10d)": None
-                if pd.isna(row.get("recent_flags"))
-                else int(row["recent_flags"]),
+                f"Flags ({rules.RECENT_DATES}d)": _whole(row.get("recent_flags")),
                 "RSI (14)": _number(row.get("rsi_14"), 1),
                 "Last close": _number(row.get("last_close"), 2),
                 "Session": _date(row.get("summary_session")),
@@ -266,13 +254,12 @@ def chart_frames(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """A symbol's stored bars as app.py's price_chart and rsi_macd_chart
     take them: one row per date, with its indicators and anomaly flags
-    computed by the core's own functions, each with a date column."""
+    computed as the run computes them (trending_analytics.analyse), each
+    with a date column."""
     empty = pd.DataFrame(columns=["date"])
     if bars.empty:
         return pd.DataFrame(columns=["date", *PRICE_COLUMNS]), empty, empty
-    daily = daily_bars(bars, symbol)
-    indicators = compute_indicators(indexed_by_date(daily, PRICE_COLUMNS))
-    flags = detect_anomalies(indexed_by_date(daily, ["close", "volume"]), symbol)
+    analysis = analyse(bars, symbol)
 
     def dated(frame: pd.DataFrame) -> pd.DataFrame:
         if frame.empty:
@@ -280,4 +267,4 @@ def chart_frames(
         index = pd.DatetimeIndex(frame.index).tz_convert("UTC").tz_localize(None)
         return frame.reset_index(drop=True).assign(date=index)
 
-    return daily, dated(indicators), dated(flags)
+    return analysis.daily, dated(analysis.indicators), dated(analysis.flags)

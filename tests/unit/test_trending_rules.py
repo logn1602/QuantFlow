@@ -12,6 +12,9 @@ The core watchlist is passed in, never read from config.TICKERS.
 import dataclasses
 import datetime as dt
 import json
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -106,7 +109,12 @@ def _stored(symbol, *, active=True, pinned=False, history=True, seen=NOW, **more
 def _choose(found, stored_rows=(), *, complete=True, counted=COUNTED, **changes):
     stored = {row["symbol"]: row for row in stored_rows}
     return rules.choose_active(
-        found, stored, settings=_settings(**changes), complete=complete, counted=counted
+        found,
+        stored,
+        settings=_settings(**changes),
+        complete=complete,
+        counted=counted,
+        core=CORE,
     )
 
 
@@ -435,6 +443,18 @@ def test_an_outage_of_every_list_keeps_everyone_and_adds_nobody():
     assert chosen.deactivated == () and chosen.joined == ()
 
 
+@pytest.mark.parametrize("complete", [True, False])
+def test_a_core_ticker_active_before_leaves_the_tier(complete):
+    """A symbol added to TICKERS after the tier tracked it: rule 3 keeps it
+    off the candidates, and it must not stay active as an absent symbol
+    either, not even after a failed list (T8)."""
+    stored = [_stored("NVDA"), _stored("P1")]
+    chosen = _choose(_candidates(["C1"]), stored, complete=complete)
+    assert "NVDA" not in chosen.active and "P1" in chosen.active
+    assert chosen.deactivated == ("NVDA",)
+    assert "NVDA" not in chosen.kept_absent
+
+
 def test_the_selection_does_not_depend_on_the_stored_rows_order():
     stored = [_stored(f"P{i}", seen=NOW - pd.Timedelta(days=i)) for i in range(6)]
     found = _candidates(["C1"])
@@ -468,7 +488,7 @@ def test_ticker_rows_record_who_is_active_and_when_each_was_seen():
         settings=SETTINGS,
     )
     selection = rules.choose_active(
-        found, stored, settings=SETTINGS, complete=True, counted=COUNTED
+        found, stored, settings=SETTINGS, complete=True, counted=COUNTED, core=CORE
     )
     rows = {
         row["symbol"]: row
@@ -496,7 +516,7 @@ def test_ticker_rows_record_who_is_active_and_when_each_was_seen():
 
 def test_a_pinned_symbols_item_names_its_row_even_through_no_rule():
     selection = rules.choose_active(
-        [], {}, settings=SETTINGS, complete=True, counted=COUNTED
+        [], {}, settings=SETTINGS, complete=True, counted=COUNTED, core=CORE
     )
     item = _item("SPCX", quote_type="ETF", short_name="Space Exploration Technologies")
     (row,) = rules.ticker_rows(selection, [], {"SPCX": item}, {}, now=NOW)
@@ -508,6 +528,7 @@ def test_first_trade_date_is_the_later_of_yahoos_and_the_listing_date():
     selection = rules.choose_active(
         [],
         {},
+        core=CORE,
         settings=_settings(pinned=("SPCX", "OLDCO", "NEWCO")),
         complete=True,
         counted=COUNTED,
@@ -578,6 +599,25 @@ def test_a_listing_date_without_a_reason_stops_the_run(tmp_path):
         rules.listing_dates(path)
 
 
+def test_a_listing_date_on_a_closed_day_rolls_to_the_next_session(tmp_path):
+    """The download's reach-back check compares its first bar with the
+    listing date. A date with no session (a Saturday, Labor Day) has no
+    bar, so the check failed on every run and the symbol's bars were never
+    replaced; the next session is the first one the listing can have."""
+    path = tmp_path / "listing.txt"
+    path.write_text(
+        "ABC:2026-06-13  # a Saturday\n"
+        "XYZ:2026-09-07  # Labor Day\n"
+        "SPCX:2026-06-12  # a Friday, kept\n",
+        encoding="utf-8",
+    )
+    assert rules.listing_dates(path) == {
+        "ABC": dt.date(2026, 6, 15),
+        "XYZ": dt.date(2026, 9, 8),
+        "SPCX": dt.date(2026, 6, 12),
+    }
+
+
 def test_the_committed_listing_dates_are_read_by_default():
     assert rules.listing_dates() == {"SPCX": dt.date(2026, 6, 12)}
 
@@ -603,6 +643,53 @@ def test_history_counts_nyse_trading_days_both_ends_included():
     assert rules.history_days(dt.date(2026, 11, 7), dt.date(2026, 11, 6)) == 0
 
 
+def test_history_days_agrees_with_the_calendar_everywhere():
+    """Counted by numpy's business-day count on the same NYSE calendar: the
+    same answer as listing the days, before 1970 and across holidays."""
+    pairs = [
+        (dt.date(1962, 1, 2), dt.date(1962, 12, 31)),
+        (dt.date(1980, 12, 12), dt.date(2026, 11, 10)),
+        (dt.date(2026, 11, 26), dt.date(2026, 11, 26)),  # Thanksgiving alone
+        (dt.date(2026, 11, 7), dt.date(2026, 11, 9)),  # from a Saturday
+        (dt.date(2026, 12, 24), dt.date(2027, 1, 4)),
+    ]
+    for start, as_of in pairs:
+        expected = len(pd.date_range(start, as_of, freq=rules.TRADING_DAY))
+        assert rules.history_days(start, as_of) == expected, (start, as_of)
+
+
+def test_history_days_counts_decades_quickly():
+    """Called for every row the tab shows, on every rerun: listing a
+    46-year history's days took 0.16 to 0.36 seconds a call."""
+    started = time.perf_counter()
+    for _ in range(100):
+        rules.history_days(dt.date(1980, 12, 12), dt.date(2026, 11, 10))
+    assert time.perf_counter() - started < 1.0
+
+
+def test_the_recent_window_is_the_last_ten_trading_dates():
+    assert rules.RECENT_DATES == 10
+    assert rules.recent_start(dt.date(2026, 11, 10)) == dt.date(2026, 10, 28)
+    # Thanksgiving week: the 26th is no trading date.
+    assert rules.recent_start(dt.date(2026, 11, 30)) == dt.date(2026, 11, 16)
+
+
+def test_the_rules_never_import_the_sentiment_stage():
+    """features.sentiment turns every warning off as it is imported, for the
+    whole process. The dashboard imports the rules, so it would silence the
+    dashboard's warnings too. Checked in a fresh interpreter: this one has
+    imported everything already."""
+    probe = (
+        "import sys, quantflow.ingestion.trending_rules, "
+        "quantflow.dashboard.trending_view; "
+        "print('quantflow.features.sentiment' in sys.modules)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert out.stdout.strip() == "False"
+
+
 def test_history_starts_at_the_later_of_first_trade_and_listing():
     assert rules.history_start(dt.date(2010, 1, 4), dt.date(2026, 6, 12)) == dt.date(
         2026, 6, 12
@@ -616,7 +703,6 @@ def _eligible(**kwargs):
         "days_trending": 0,
         "pinned": False,
         "first_trade_date": None,
-        "listed": None,
         "as_of": dt.date(2026, 11, 10),
         "settings": SETTINGS,
     } | kwargs
@@ -625,7 +711,7 @@ def _eligible(**kwargs):
 
 def test_spcx_is_not_eligible_until_it_has_two_years_of_history():
     listed = dt.date(2026, 6, 12)
-    spcx = {"pinned": True, "first_trade_date": listed, "listed": listed}
+    spcx = {"pinned": True, "first_trade_date": listed}
     assert not _eligible(**spcx)
     first = next(
         day.date()

@@ -92,7 +92,8 @@ SPLIT_JUMP_ACKNOWLEDGED_FILE = (
 # dashboard down. A blank value takes the default below.
 #
 # TRENDING_PINNED's default is also written in .env.example and trending.yml;
-# tests/unit/test_trending_config.py fails if the three drift apart.
+# tests/unit/test_trending_config.py (.env.example) and test_workflows.py
+# (trending.yml) fail if the three drift apart.
 DEFAULT_TRENDING_PINNED = "SPCX"
 DEFAULT_TRENDING_LISTS = "trending_tickers,most_actives,day_gainers,day_losers"
 DEFAULT_TRENDING_MAX_ACTIVE = 15
