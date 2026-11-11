@@ -11,11 +11,13 @@ the real ones.
 
 import copy
 import datetime as dt
+import gzip
 import json
 from pathlib import Path
 
 import pytest
 import requests
+import urllib3
 
 from quantflow.ingestion import trending_sources as ts
 
@@ -281,6 +283,21 @@ def test_a_field_no_item_carries_fails_the_list(field):
     assert gainers.succeeded
 
 
+def test_a_quote_type_is_cut_after_it_is_upper_cased():
+    """Upper case can lengthen text ("ß" is "SS"): cut first, a quote type
+    could pass tickers.quote_type's 20 characters, and a pinned symbol's
+    would fail the run's one write, every list's outcome with it (the Red
+    Team pass, 2026-11-10)."""
+    quote = {
+        "symbol": "SPCX",
+        "quoteType": "equity" + "\u00df" * 14,
+        "regularMarketPrice": 100.0,
+    }
+    (item,) = ts.items_from_quotes("yahoo_screener", "most_actives", [quote], NOW)
+    assert len(item.quote_type) <= ts.MAX_QUOTE_TYPE_CHARS
+    assert item.quote_type.startswith("EQUITYSS")
+
+
 def test_quote_types_are_read_in_upper_case():
     answers = _captured_screens()
     answers["most_actives"]["quotes"][0]["quoteType"] = "equity"
@@ -458,6 +475,89 @@ def test_an_answer_still_arriving_after_the_deadline_is_refused():
     (fetched,) = source.fetch()
     assert not fetched.succeeded
     assert "still arriving after" in fetched.error
+
+
+class _TrickledBody:
+    """A response body arriving a few bytes at a time, each byte
+    seconds_per_byte of a fake clock after the last: what a congested edge
+    or a hostile server can do while every wait stays inside the read
+    timeout. read() blocks until it has what it was asked for, as a
+    socket's buffered reader does; read1() returns what one socket read
+    brought."""
+
+    def __init__(self, data, *, seconds_per_byte, bytes_per_read=1):
+        self.data = data
+        self.seconds_per_byte = seconds_per_byte
+        self.bytes_per_read = bytes_per_read
+        self.position = 0
+        self.now = 0.0
+
+    def clock(self):
+        return self.now
+
+    def _take(self, n):
+        chunk = self.data[self.position : self.position + n]
+        self.position += len(chunk)
+        self.now += self.seconds_per_byte * len(chunk)
+        return chunk
+
+    def read(self, amt=None):
+        return self._take(len(self.data) if amt is None else amt)
+
+    def read1(self, amt=None):
+        return self._take(min(self.bytes_per_read, amt or self.bytes_per_read))
+
+    def isclosed(self):
+        return self.position >= len(self.data)
+
+    def close(self):
+        pass
+
+
+def _streamed(body, headers=None):
+    """A streamed answer as requests.get(stream=True) returns one: a
+    requests Response over a urllib3 one, its body not read yet."""
+    response = requests.Response()
+    response.status_code = 200
+    response.reason = "OK"
+    response.url = ts.TRENDING_URL
+    response.raw = urllib3.HTTPResponse(
+        body=body,
+        headers={"Content-Type": "application/json", **(headers or {})},
+        status=200,
+        preload_content=False,
+        decode_content=True,
+    )
+    return response
+
+
+def test_a_small_answer_trickling_in_is_refused_at_the_deadline():
+    """The real answer, about 30 KB, is smaller than one 64 KB chunk, and
+    urllib3's stream blocks until a chunk is full or the answer ends: the
+    deadline, checked between chunks, ran once, after the whole answer had
+    arrived (the Red Team pass, 2026-11-10). Read as each socket read brings
+    it, the answer is refused within a read of the deadline."""
+    data = json.dumps(_fixture("trending_tickers")).encode()
+    body = _TrickledBody(data, seconds_per_byte=5.0)
+    source, _ = _trending(_streamed(body), clock=body.clock)
+    (fetched,) = source.fetch()
+    assert not fetched.succeeded and "still arriving after" in fetched.error
+    assert body.position <= ts.DEADLINE_SECONDS / 5.0 + 1
+    assert body.now <= ts.DEADLINE_SECONDS + 5.0
+
+
+@pytest.mark.parametrize("encoding", [None, "gzip"])
+def test_a_streamed_answer_in_time_is_read_whole_and_decoded(encoding):
+    """Yahoo sends the list gzipped: each read is decoded as it comes."""
+    data = json.dumps(_fixture("trending_tickers")).encode()
+    headers = {}
+    if encoding:
+        data, headers = gzip.compress(data), {"Content-Encoding": encoding}
+    body = _TrickledBody(data, seconds_per_byte=0.0, bytes_per_read=512)
+    source, _ = _trending(_streamed(body, headers), clock=body.clock)
+    (fetched,) = source.fetch()
+    assert fetched.succeeded, fetched.error
+    assert len(fetched.items) == 24 and fetched.items[0].symbol == "NVDA"
 
 
 def test_without_a_fake_the_trending_request_fails_soft():

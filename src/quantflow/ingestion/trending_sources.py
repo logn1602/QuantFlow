@@ -25,7 +25,7 @@ import json
 import math
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -58,7 +58,8 @@ USER_AGENT = "QuantFlow/1.0 (+https://github.com/logn1602/QuantFlow)"
 # Each wait for data: to connect, and between one read and the next.
 TIMEOUT_SECONDS = 10
 # The whole answer, which the timeout alone does not bound: one trickling in
-# a byte at a time never waits 10 seconds for the next.
+# a byte at a time never waits 10 seconds for the next. Checked after every
+# socket read (_arriving), so it holds within one read timeout.
 DEADLINE_SECONDS = 30
 # The real answer is about 30 KB; anything far larger is not the list. Read
 # streamed, so a larger one is refused as it arrives, never held whole.
@@ -163,7 +164,12 @@ def _count(quote: dict, field: str, position: int) -> int | None:
     return int(number)
 
 
-def _text(quote: dict, field: str, position: int, limit: int) -> str | None:
+def _text(
+    quote: dict, field: str, position: int, limit: int, *, upper: bool = False
+) -> str | None:
+    """A text quote field, cleaned and cut to limit; upper, in upper case,
+    which comes first: upper case can lengthen text ("\u00df" is "SS"), and
+    the cut is what keeps the value inside its column."""
     value = quote.get(field)
     if value is None:
         return None
@@ -171,14 +177,7 @@ def _text(quote: dict, field: str, position: int, limit: int) -> str | None:
         raise MalformedListError(
             f"item {position}: {field} is {type(value).__name__}, not text"
         )
-    return clean_text(value, limit)
-
-
-def _quote_type(quote: dict, position: int) -> str | None:
-    """quoteType in upper case, as rule 2 compares it: Yahoo sends EQUITY,
-    and the same word in another case must not drop every item."""
-    value = _text(quote, "quoteType", position, MAX_QUOTE_TYPE_CHARS)
-    return None if value is None else value.upper()
+    return clean_text(value.upper() if upper else value, limit)
 
 
 def _first_trade_date(quote: dict, position: int) -> dt.date | None:
@@ -246,7 +245,11 @@ def items_from_quotes(
                 volume=_count(quote, "regularMarketVolume", position),
                 market_cap=_count(quote, "marketCap", position),
                 price=_number(quote, "regularMarketPrice", position),
-                quote_type=_quote_type(quote, position),
+                # In upper case, as rule 2 compares it: Yahoo sends EQUITY,
+                # and the same word in another case must not drop every item.
+                quote_type=_text(
+                    quote, "quoteType", position, MAX_QUOTE_TYPE_CHARS, upper=True
+                ),
                 short_name=_text(quote, "shortName", position, MAX_SHORT_NAME_CHARS),
                 first_trade_date=_first_trade_date(quote, position),
                 fetched_at=fetched_at,
@@ -281,6 +284,21 @@ def _failed(source: str, list_name: str, error: BaseException) -> ListFetch:
     reason = _reason(error)
     logger.warning(f"Trending list {list_name} ({source}) failed: {reason}")
     return ListFetch(source=source, list_name=list_name, items=(), error=reason)
+
+
+def _arriving(response: Any) -> Iterator[bytes]:
+    """A streamed answer's body as it arrives, decoded (gzip included): each
+    piece what one socket read brought (urllib3's read1), so a check made
+    between pieces runs at least once per read timeout. iter_content would
+    block until a whole chunk had arrived, or the answer had ended, and the
+    real answer is smaller than one chunk. An answer with no urllib3 body
+    to read (already read, as the tests' are) comes from iter_content."""
+    read1 = getattr(getattr(response, "raw", None), "read1", None)
+    if read1 is None:
+        yield from response.iter_content(chunk_size=_CHUNK_BYTES)
+        return
+    while chunk := read1(_CHUNK_BYTES, decode_content=True):
+        yield chunk
 
 
 def _read_list(
@@ -397,7 +415,7 @@ class YahooTrendingSource:
             response.raise_for_status()
             chunks: list[bytes] = []
             size = 0
-            for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
+            for chunk in _arriving(response):
                 size += len(chunk)
                 if size > MAX_BODY_BYTES:
                     raise MalformedListError(

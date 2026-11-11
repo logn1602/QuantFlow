@@ -156,9 +156,11 @@ The list closest to what the tier is for, the stocks people look up most. yfinan
 `requests.get("https://query1.finance.yahoo.com/v1/finance/trending/US", ...)` with
 `count=25`, `useQuotes=true` and `fields` naming the quote fields the rules use, a
 10-second timeout on each wait, and the User-Agent `QuantFlow/1.0
-(+https://github.com/logn1602/QuantFlow)`. The answer is read streamed and refused once
-it passes 2 MB (the real one is about 30 KB) or is still arriving after 30 seconds: the
-timeout alone bounds each wait, not the whole answer. With `useQuotes`, each item carries its
+(+https://github.com/logn1602/QuantFlow)`. The answer is read streamed, a socket read at a
+time, and refused once it passes 2 MB (the real one is about 30 KB) or is still arriving
+after 30 seconds: the timeout alone bounds each wait, not the whole answer, and a check
+made only between 64 KB chunks would run once, after an answer smaller than one had
+arrived (the Red Team pass, 2026-11-10). With `useQuotes`, each item carries its
 quote (`quoteType`, `shortName`, `regularMarketPrice`, `regularMarketChangePercent`,
 `regularMarketVolume`, `marketCap`, `firstTradeDateMilliseconds`, Yahoo's own
 `trendingScore`), so one request is enough, with no lookup per symbol. `requests` is
