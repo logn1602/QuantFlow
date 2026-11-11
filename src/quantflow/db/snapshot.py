@@ -12,6 +12,10 @@ from sqlalchemy import text
 from quantflow.db.features import ARTICLE_SELECT
 from quantflow.utils.trading_calendar import news_cutoff
 
+# The tables a snapshot reads. Each holds rows wherever the pipeline has run,
+# so the export stops if one shows none (db.readonly.require_rows).
+SNAPSHOT_TABLES = ("raw_prices", "news_sentiment", "technical_indicators", "anomalies")
+
 _RAW_BARS = text("""
     SELECT ticker, ts, open, high, low, close, volume
     FROM raw_prices

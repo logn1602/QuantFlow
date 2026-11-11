@@ -21,6 +21,11 @@ Read-only four ways:
     read-only, and fails if not;
   - the transaction is rolled back at the end, whatever happens.
 
+And a core table the queries read that shows no row stops the run before
+any query (tables_expected, db.readonly.require_rows): row-level security
+with no policy for the read-only role hides every row without an error, so
+the results would have reported empty tables as data.
+
 These protect the database's rows. The check is a scan, not Postgres's own
 parser, so the guarantee that does not depend on it is a database role that
 can only SELECT (sql/schema_roles.sql): --live runs log in as it
@@ -53,6 +58,7 @@ from psycopg2 import extensions
 
 from quantflow import config  # noqa: F401  (tests patch its settings through here)
 from quantflow.db.readonly import (
+    ROWS_EXPECTED,
     is_local_database,
     live_refusal,
     masked,
@@ -167,6 +173,25 @@ def queries(sql_file: Path = SQL_FILE) -> dict[str, str]:
     return found
 
 
+# A table name after FROM or JOIN, schema-qualified or not, in a query's code
+# (comments and quoted text already blanked out by _code).
+_READ_FROM = re.compile(
+    r"(?<![A-Za-z0-9_])(?:FROM|JOIN)\s+(?:public\.)?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+
+def tables_expected(sql_file: Path = SQL_FILE) -> list[str]:
+    """The core tables the file's queries read that always hold rows
+    (db.readonly.ROWS_EXPECTED): the run stops if one shows none. A name
+    that is not one of them (a CTE, a catalog view, EXTRACT's FROM) is
+    left out."""
+    names: set[str] = set()
+    for sql in queries(sql_file).values():
+        names |= {name.lower() for name in _READ_FROM.findall(_code(sql))}
+    return sorted(names & ROWS_EXPECTED)
+
+
 def _still_read_only(dbapi, name: str) -> None:
     """Fails if the transaction ended or stopped being read-only during the
     query just run. check_read_only should make that impossible; this is the
@@ -203,8 +228,9 @@ def as_markdown(df: pd.DataFrame) -> str:
 
 def run(out: Path, sql_file: Path = SQL_FILE) -> None:
     results = {}
-    # One read-only snapshot transaction for every query (db.readonly).
-    with read_only_connection() as conn:
+    # One read-only snapshot transaction for every query (db.readonly), which
+    # first checks that each core table the queries read shows a row.
+    with read_only_connection(expect_rows=tables_expected(sql_file)) as conn:
         # Each query goes through the same connection's own cursor with no
         # parameters, so it reaches Postgres exactly as written (a "%" in the
         # SQL is an operator, not a placeholder).

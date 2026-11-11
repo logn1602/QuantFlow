@@ -27,6 +27,7 @@ tier's tables are tested in test_trending_on_postgres.py.
 """
 
 import datetime as dt
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -68,6 +69,64 @@ def _bars(days, ticker="AAPL"):
 def _count(engine, sql, **params):
     with engine.connect() as conn:
         return conn.execute(text(sql), params).scalar_one()
+
+
+def _one_article(conn):
+    conn.execute(
+        text("""
+            INSERT INTO news_sentiment (ticker, source, published_at, headline,
+                url, sentiment, score_pos, score_neg, score_neu, compound)
+            VALUES ('AAPL', 'rss', '2026-04-10 20:00+00', 'a headline',
+                'https://finance.yahoo.com/news/a', 'neutral', 0.1, 0.1, 0.8, 0.0)
+        """)
+    )
+
+
+def test_row_level_security_with_no_policy_stops_a_read_that_expects_rows(pg):
+    """What quantflow_readonly met on the live database (2026-11-11): with
+    row-level security on and no policy for it, a role granted SELECT sees
+    no row and no error. require_rows stops the read and says so; once a
+    SELECT policy names the role, the read goes on. The table's owner sees
+    every row throughout."""
+    from quantflow.db.readonly import EmptyTablesError, require_rows
+
+    role = f"qf_rls_{uuid.uuid4().hex[:8]}"
+    prices.insert_bars(_bars(["2026-04-09"]))
+    with pg.begin() as conn:
+        schema = conn.exec_driver_sql("SELECT current_schema()").scalar_one()
+        conn.exec_driver_sql("ALTER TABLE raw_prices ENABLE ROW LEVEL SECURITY")
+        conn.exec_driver_sql(f"CREATE ROLE {role} NOLOGIN")
+        conn.exec_driver_sql(f"GRANT USAGE ON SCHEMA {schema} TO {role}")
+        conn.exec_driver_sql(f"GRANT SELECT ON raw_prices TO {role}")
+    try:
+        with pg.connect() as conn:
+            conn.exec_driver_sql(f"SET ROLE {role}")
+            hidden = conn.exec_driver_sql("SELECT count(*) FROM raw_prices")
+            assert hidden.scalar_one() == 0  # silently empty
+            with pytest.raises(EmptyTablesError) as raised:
+                require_rows(conn, ["raw_prices"])
+            assert str(raised.value).startswith(f"raw_prices: no row visible to {role}")
+            assert "sql/schema_roles.sql, step 7" in str(raised.value)
+            conn.rollback()
+        with pg.begin() as conn:
+            conn.exec_driver_sql(
+                f"CREATE POLICY quantflow_readonly_read ON raw_prices "
+                f"FOR SELECT TO {role} USING (true)"
+            )
+        with pg.connect() as conn:
+            conn.exec_driver_sql(f"SET ROLE {role}")
+            require_rows(conn, ["raw_prices"])
+            seen = conn.exec_driver_sql("SELECT count(*) FROM raw_prices")
+            assert seen.scalar_one() == 1
+            conn.rollback()
+        assert _count(pg, "SELECT count(*) FROM raw_prices") == 1
+    finally:
+        with pg.begin() as conn:
+            conn.exec_driver_sql(
+                "DROP POLICY IF EXISTS quantflow_readonly_read ON raw_prices"
+            )
+            conn.exec_driver_sql(f"DROP OWNED BY {role}")
+            conn.exec_driver_sql(f"DROP ROLE {role}")
 
 
 def test_on_conflict_skips_are_not_counted_across_chunks(pg):
@@ -442,6 +501,16 @@ def test_the_free_tier_usage_queries_run_read_only_on_postgres(
             ddl = (ROOT / "sql" / name).read_text(encoding="utf-8")
             # Their comments hold "%", which the driver reads as a placeholder.
             conn.exec_driver_sql(ddl.replace("%", "%%"))
+        # A row in every core table the queries read, as the live database
+        # has: the runner stops on one that shows none (db.readonly).
+        _one_article(conn)
+        conn.exec_driver_sql(
+            "INSERT INTO model_metrics (ticker, model, holdout_days) "
+            "VALUES ('AAPL', 'arima', 30)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO backtest_results (ticker, holdout_days) VALUES ('AAPL', 30)"
+        )
 
     bars = _bars(["2026-04-09", "2026-04-10"])
     bars.append({**bars[-1], "ts": pd.Timestamp("2026-04-10 13:30", tz="UTC")})
@@ -503,6 +572,7 @@ def test_a_query_that_ends_the_read_only_transaction_fails_the_run(
     reporting a read-only run. It cannot undo what was already committed."""
     diagnostics = _diagnostics(monkeypatch)
     monkeypatch.setattr(diagnostics, "check_read_only", lambda name, sql: None)
+    prices.insert_bars(_bars(["2026-04-09"]))  # raw_prices holds rows, as live
     sql = tmp_path / "escape.sql"
     sql.write_text(f"-- @query escape\n{query}\n", encoding="utf-8")
     out = tmp_path / "out.md"
@@ -542,6 +612,16 @@ def test_the_evaluation_snapshot_is_exported_read_only(pg, tmp_path, capsys):
                 """),
                 {"h": f"headline {stored}", "url": url, "stored": stored},
             )
+
+    with pg.begin() as conn:  # stored rows, which every table the export reads holds
+        conn.exec_driver_sql(
+            "INSERT INTO technical_indicators (ticker, ts, rsi_14) "
+            "VALUES ('AAPL', '2026-04-09 00:00+00', 50)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO anomalies (ticker, ts, close, zscore, flag) "
+            "VALUES ('AAPL', '2026-04-09 00:00+00', 1.0, 0.0, 'HIGH')"
+        )
 
     code = evaluate.main(
         ["export", "--as-of", "2026-04-10", "--tickers", "AAPL", "--out",
