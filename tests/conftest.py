@@ -45,9 +45,12 @@ Integration support (tests/integration, a disposable local Postgres):
                           as every get_engine and dropped after the test.
   schema_engine           an engine on a given schema with session settings of
                           its own (a New York TimeZone, say).
+  scratch_schema          a context manager: an empty schema of the test's own
+                          and an engine on it, dropped after (pg builds on it).
 """
 
 import copy
+import functools
 import re
 import sys
 import uuid
@@ -370,26 +373,41 @@ def pg_url(request, monkeypatch):
     return url
 
 
-@pytest.fixture
-def pg(pg_url, install_engine):
+@contextmanager
+def _scratch_schema(url, prefix="qf_scratch", **settings):
+    """An empty schema of its own on url and an engine on it (with
+    _schema_engine's settings), dropped with everything in it after."""
     from sqlalchemy import create_engine
 
-    schema = f"qf_test_{uuid.uuid4().hex[:8]}"
-    admin = create_engine(pg_url)
+    schema = f"{prefix}_{uuid.uuid4().hex[:8]}"
+    admin = create_engine(url)
     with admin.begin() as conn:
         conn.exec_driver_sql(f"CREATE SCHEMA {schema}")
-    engine = _schema_engine(pg_url, schema)
-    with engine.begin() as conn:
-        for name in SCHEMA_FILES:
-            conn.exec_driver_sql((ROOT / "sql" / name).read_text(encoding="utf-8"))
-    install_engine(engine)
+    engine = _schema_engine(url, schema, **settings)
+    try:
+        yield engine, schema
+    finally:
+        engine.dispose()
+        with admin.begin() as conn:
+            conn.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
+        admin.dispose()
 
-    yield engine
 
-    engine.dispose()
-    with admin.begin() as conn:
-        conn.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
-    admin.dispose()
+@pytest.fixture
+def scratch_schema(pg_url):
+    """_scratch_schema on the disposable database: with scratch_schema() as
+    (engine, schema): ..."""
+    return functools.partial(_scratch_schema, pg_url)
+
+
+@pytest.fixture
+def pg(pg_url, install_engine):
+    with _scratch_schema(pg_url, "qf_test") as (engine, _):
+        with engine.begin() as conn:
+            for name in SCHEMA_FILES:
+                conn.exec_driver_sql((ROOT / "sql" / name).read_text(encoding="utf-8"))
+        install_engine(engine)
+        yield engine
 
 
 @pytest.fixture(autouse=True)

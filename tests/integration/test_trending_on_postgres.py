@@ -3,13 +3,16 @@
 The trending tier's storage on real Postgres (docs/trending.md, sections 6
 and 7.2), what the unit suite can only fake:
 
-  - the migration runs twice, creating the five tables and nothing else, and
-    agrees with sql/schema_trending.sql;
+  - the migration runs twice, creating the five tables and nothing else,
+    and builds the same catalog as sql/schema_trending.sql in a schema of
+    its own (columns, defaults, constraints, indexes, sequences), a
+    comparison shown to catch each kind of difference;
   - a role granted SELECT by default privileges, as the read-only role is
     (sql/schema_roles.sql, step 4), reads every new table and writes none;
   - trending_news has news_sentiment's columns and key;
   - a fetch, the tickers upsert and the reads on the types the driver
-    returns;
+    returns; a run's fetch and tickers rows land together or not at all;
+  - missing_tables names the tables not there yet;
   - each symbol's price replacement is one transaction: a failed insert
     keeps its bars and first_bar_date, and a second connection polling
     during replacements always finds the symbol's bars.
@@ -23,12 +26,11 @@ import datetime as dt
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError, ProgrammingError
 
 from quantflow.dashboard import trending_view
@@ -50,33 +52,66 @@ TABLES = (
 T0 = pd.Timestamp("2026-11-10 23:10", tz="UTC")
 
 
-@contextmanager
-def _fresh_schema(pg_url, schema_engine):
-    """An empty schema of its own and an engine on it, dropped after."""
-    schema = f"qf_fresh_{uuid.uuid4().hex[:8]}"
-    admin = create_engine(pg_url)
-    with admin.begin() as conn:
-        conn.exec_driver_sql(f"CREATE SCHEMA {schema}")
-    engine = schema_engine(pg_url, schema)
-    try:
-        yield engine, schema
-    finally:
-        engine.dispose()
-        with admin.begin() as conn:
-            conn.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
-        admin.dispose()
-
-
-def _run_script(engine, path):
-    """A SQL file as psql or Supabase's editor runs it: one script, its own
-    BEGIN and COMMIT, on a connection outside any SQLAlchemy transaction."""
+def _run_script(engine, path, script=None):
+    """A SQL file (or script, its text) as psql or Supabase's editor runs
+    it: one script, its own BEGIN and COMMIT, on a connection outside any
+    SQLAlchemy transaction."""
     raw = engine.raw_connection()
     try:
         raw.driver_connection.autocommit = True
         with raw.cursor() as cursor:
-            cursor.execute(path.read_text(encoding="utf-8"))
+            cursor.execute(script or path.read_text(encoding="utf-8"))
     finally:
         raw.invalidate()  # the connection's autocommit stays out of the pool
+
+
+def _catalog(engine, schema):
+    """What a script built in schema: every column (type, length, precision,
+    nullability, default), constraint, index and sequence, with the
+    schema's own name taken out, so two schemas' catalogs compare."""
+    queries = {
+        "columns": """
+            SELECT table_name, ordinal_position, column_name, data_type,
+                   character_maximum_length, numeric_precision, numeric_scale,
+                   is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = :s
+            ORDER BY table_name, ordinal_position
+        """,
+        "constraints": """
+            SELECT rel.relname, con.conname, con.contype,
+                   pg_get_constraintdef(con.oid)
+            FROM pg_constraint con
+            JOIN pg_class rel ON rel.oid = con.conrelid
+            JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+            WHERE ns.nspname = :s
+            ORDER BY rel.relname, con.conname
+        """,
+        "indexes": """
+            SELECT tablename, indexname, indexdef
+            FROM pg_indexes
+            WHERE schemaname = :s
+            ORDER BY tablename, indexname
+        """,
+        "sequences": """
+            SELECT sequence_name, data_type, start_value, increment
+            FROM information_schema.sequences
+            WHERE sequence_schema = :s
+            ORDER BY sequence_name
+        """,
+    }
+
+    def plain(value):
+        return value.replace(f"{schema}.", "") if isinstance(value, str) else value
+
+    with engine.connect() as conn:
+        return {
+            part: [
+                tuple(plain(v) for v in row)
+                for row in conn.execute(text(query), {"s": schema})
+            ]
+            for part, query in queries.items()
+        }
 
 
 def _tables(engine, schema):
@@ -126,27 +161,81 @@ def _unique_keys(engine, schema, table_name):
 # ── The migration ─────────────────────────────────────────────────────────────
 
 
-def test_the_migration_runs_twice_and_creates_the_five_tables(pg_url, schema_engine):
-    with _fresh_schema(pg_url, schema_engine) as (engine, schema):
+def test_the_migration_runs_twice_and_creates_the_five_tables(scratch_schema):
+    assert set(TABLES) == set(trending.TRENDING_TABLES)
+    with scratch_schema() as (engine, schema):
         _run_script(engine, MIGRATION)
         assert _tables(engine, schema) == TABLES
-        first = {t: _columns(engine, schema, t) for t in TABLES}
+        first = _catalog(engine, schema)
 
         _run_script(engine, MIGRATION)  # idempotent: nothing changes
-        _run_script(engine, SCHEMA)  # make setup's file: the same tables
-        assert _tables(engine, schema) == TABLES
-        for name in TABLES:
-            pd.testing.assert_frame_equal(_columns(engine, schema, name), first[name])
+        assert _catalog(engine, schema) == first
+
+
+def test_the_migration_and_the_schema_file_build_the_same_catalog(scratch_schema):
+    """Each in a schema of its own: run in one, the second script's CREATE
+    ... IF NOT EXISTS would skip every table and compare nothing."""
+    with (
+        scratch_schema() as (migrated, one),
+        scratch_schema() as (set_up, other),
+    ):
+        _run_script(migrated, MIGRATION)
+        _run_script(set_up, SCHEMA)
+        assert _catalog(migrated, one) == _catalog(set_up, other)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "part"),
+    [
+        ("error         VARCHAR(200)", "error         VARCHAR(201)", "columns"),
+        ("NOT NULL DEFAULT 'trending'", "NOT NULL DEFAULT 'core'", "columns"),
+        (
+            "close       NUMERIC(12, 4)  NOT NULL",
+            "close       NUMERIC(12, 4)",
+            "columns",
+        ),
+        (
+            "CHECK (tier IN ('core', 'trending'))",
+            "CHECK (tier IN ('trending', 'core'))",
+            "constraints",
+        ),
+        (
+            "UNIQUE (snapshot_ts, symbol, source, list_name)",
+            "UNIQUE (snapshot_ts, symbol, list_name, source)",
+            "constraints",
+        ),
+        (
+            "ON trending_snapshots (symbol, session_date)",
+            "ON trending_snapshots (session_date, symbol)",
+            "indexes",
+        ),
+        ("BIGSERIAL PRIMARY KEY", "SERIAL PRIMARY KEY", "sequences"),
+    ],
+)
+def test_the_catalog_comparison_sees_each_kind_of_difference(
+    scratch_schema, old, new, part
+):
+    """The comparison above proves something only if a drift would fail it:
+    one change of each kind to the schema file, each caught."""
+    script = SCHEMA.read_text(encoding="utf-8")
+    assert script.count(old) == 1, f"the schema file no longer has: {old}"
+    with (
+        scratch_schema() as (migrated, one),
+        scratch_schema() as (drifted, other),
+    ):
+        _run_script(migrated, MIGRATION)
+        _run_script(drifted, SCHEMA, script.replace(old, new))
+        assert _catalog(migrated, one)[part] != _catalog(drifted, other)[part]
 
 
 def test_a_role_with_default_select_reads_every_new_table_and_writes_none(
-    pg_url, schema_engine
+    scratch_schema,
 ):
     """The read-only role reads tables postgres creates after it through its
     default privileges (sql/schema_roles.sql, step 4), so the dashboard needs
     no grant after the migration. Modelled here on the test schema."""
     role = f"qf_ro_{uuid.uuid4().hex[:8]}"
-    with _fresh_schema(pg_url, schema_engine) as (engine, schema):
+    with scratch_schema() as (engine, schema):
         with engine.begin() as conn:
             conn.exec_driver_sql(f"CREATE ROLE {role} NOLOGIN")
             conn.exec_driver_sql(f"GRANT USAGE ON SCHEMA {schema} TO {role}")
@@ -260,6 +349,37 @@ def _ticker(symbol, **columns):
     row = dict.fromkeys(trending.TICKER_COLUMNS)
     row.update(symbol=symbol, first_seen=T0, last_seen=T0, active=True, pinned=False)
     return row | columns
+
+
+def test_a_runs_fetch_and_tickers_rows_land_together_or_not_at_all(pg):
+    """One transaction on Postgres: a tickers row the table refuses (no
+    first_seen: NOT NULL) leaves no snapshot and no outcome behind."""
+    row = dict.fromkeys(trending.TICKER_COLUMNS) | {
+        "symbol": "SPCX",
+        "last_seen": T0,
+        "active": True,
+        "pinned": True,
+    }
+    snapshots = [_snapshot("SPCX", "most_actives", 1)]
+    outcomes = [_outcome(T0, dt.date(2026, 11, 10), "most_actives", True)]
+    with pytest.raises(IntegrityError):
+        trending.save_run(snapshots, outcomes, [row], trending.SELECTION_COLUMNS)
+    with pg.connect() as conn:
+        for name in ("trending_snapshots", "trending_fetches", "tickers"):
+            count = conn.exec_driver_sql(f"SELECT count(*) FROM {name}")
+            assert count.scalar_one() == 0, name
+
+    row["first_seen"] = T0
+    written = trending.save_run(snapshots, outcomes, [row], trending.SELECTION_COLUMNS)
+    assert written == (1, 1, 1)
+
+
+def test_missing_tables_names_the_tables_not_there_yet(scratch_schema, install_engine):
+    with scratch_schema() as (engine, _):
+        install_engine(engine)
+        assert trending.missing_tables() == list(trending.TRENDING_TABLES)
+        _run_script(engine, MIGRATION)
+        assert trending.missing_tables() == []
 
 
 def test_the_tickers_upsert_keeps_first_seen_tier_and_promoted_at(pg):
@@ -579,11 +699,11 @@ def test_the_tabs_chart_reads_one_symbols_bars(pg):
     assert len(prices) == 30 and not indicators.empty
 
 
-def test_before_the_migration_the_tab_reads_its_empty_state(pg_url, schema_engine):
+def test_before_the_migration_the_tab_reads_its_empty_state(scratch_schema):
     """The tables are not there yet: each read is an empty frame, not an
     error, and the connection is usable after."""
     with (
-        _fresh_schema(pg_url, schema_engine) as (engine, _),
+        scratch_schema() as (engine, _),
         engine.connect() as conn,
     ):
         assert trending_view.load_table(conn).empty
