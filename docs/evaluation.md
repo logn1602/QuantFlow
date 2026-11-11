@@ -784,7 +784,9 @@ failing on the code before it, as in Phase 1:
   `transaction_read_only` (the diagnostics tests, reused); plus an integration test on a
   throwaway local Postgres. From 2026-11-09 `--live` also needs the SELECT-only role
   (`DB_READONLY_USER`, `DB_READONLY_PASSWORD`; `sql/schema_roles.sql`) and logs in as
-  it.
+  it. From 2026-11-11 the export stops if a table it reads shows no row
+  (`db.readonly.require_rows`): with row-level security on and no policy for the role,
+  every table looked empty to it, and the export would have written that as data.
 - The CLI: params and metrics reach a faked MLflow; an exception ends the run as FAILED;
   an MLflow failure exits non-zero with the files written; the window defaults to
   validation; `--window test` without a reason is refused before any data is read; the

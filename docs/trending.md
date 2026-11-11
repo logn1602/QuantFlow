@@ -311,12 +311,16 @@ Yahoo still serves the old fund's metadata: logged.
 
 ## 6. Storage
 
-Migration `sql/migrations/002_trending.sql`, idempotent (`CREATE TABLE IF NOT EXISTS`,
-`CREATE INDEX IF NOT EXISTS`), mirrored in a new `sql/schema_trending.sql` and in `make
-setup`. The owner runs it, in Supabase's SQL editor as `postgres`: the read-only role
-reads tables `postgres` creates later through its default privileges
-(`sql/schema_roles.sql`, step 4), so the dashboard reads them with no further grant. Run
-as any other role, the migration needs a `GRANT SELECT ... TO quantflow_readonly`.
+Migration `sql/migrations/002_trending.sql`, one transaction (`CREATE TABLE IF NOT
+EXISTS`, `CREATE INDEX IF NOT EXISTS`), mirrored in a new `sql/schema_trending.sql` and in
+`make setup`. It also switches row-level security on for the five tables, gives the
+read-only role a `FOR SELECT` policy on each, and takes every privilege on them from
+Supabase's `anon` and `authenticated` roles ("Access" below, added 2026-11-11 before it
+was applied). The owner runs it, in Supabase's SQL editor as `postgres`: the read-only
+role reads tables `postgres` creates later through its default privileges
+(`sql/schema_roles.sql`, step 4) and the policies, so the dashboard reads them with no
+further grant. Run as any other role, the migration needs a `GRANT SELECT ... TO
+quantflow_readonly`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS tickers (
@@ -431,6 +435,35 @@ Access goes through a new `db/trending.py`: batched writes through `db/batch.ins
 upsert, the price replacement (7.2), and the reads the run and the dashboard need. No
 SQL outside `db/` apart from the dashboard's display queries, which follow the existing
 pattern.
+
+### Access (2026-11-11)
+
+Found at Checkpoint 6, before the migration was applied: the live database has
+row-level security on for every core table and no policy, so `quantflow_readonly` saw
+every table as empty, with no error; and Supabase's default privileges gave `anon` and
+`authenticated`, the roles of its Data API, which QuantFlow never uses, every privilege on
+every table and sequence. Now:
+
+- The core tables: `sql/schema_roles.sql`, step 7, gives the read-only role a `FOR
+  SELECT` policy on each and takes every privilege from `anon` and `authenticated`. The
+  owner runs it before the migration.
+- The trending tables: the migration does the same as it creates them. `make setup`
+  creates them with row-level security on and no policy, since its files cannot name
+  roles a fresh database may not have; `schema_roles.sql`, step 8, adds the policies on
+  a fresh install, and a unit test keeps those statements and the migration's the same.
+- `postgres` owns every table, and a table's owner is not subject to its row-level
+  security, so the core's writes and the tier's are unchanged. Checked on a local copy
+  of the 2026-11-11 backup with row-level security on: a capped run stored its lists,
+  bars and articles as before, and the read-only role then read every row and wrote
+  none.
+- A `--live` read that finds a table it expects rows in empty now stops
+  (`db.readonly.require_rows`), naming the tables and the missing policy, instead of
+  reporting them empty. The dashboard, read as the role without the policies, showed
+  only "No data found": its secrets move to the role once the policies are in place.
+- The tier's own writer role (decision 4 at Checkpoint 6, after the merge) will need
+  SELECT and INSERT on the five tables, UPDATE on `tickers`, DELETE on
+  `trending_prices`, USAGE on `trending_news_id_seq`, and a policy for each of those
+  commands; the migration's header lists them.
 
 ## 7. Pipeline
 
@@ -842,6 +875,7 @@ of 7.5 (a test, beside the existing boundary tests).
 | A symbol's news write | Rolled back; the next symbol still runs; then the run exits 1 | An error, and a failed run |
 | A database error | The run fails; a fetch and the selection made from it are stored together or not at all | A failed trending run; the core is unaffected |
 | The migration not yet applied | The run exits 1 before fetching, naming `002_trending.sql`; the tab shows its empty state | A failed trending run until the owner runs it |
+| A read policy missing (row-level security hides every row from the read-only role, with no error) | A `--live` diagnostics run or a snapshot export stops before reading on, naming the tables (`db.readonly.require_rows`); the tier, which writes as the tables' owner, is unaffected | "no row visible to quantflow_readonly ... (sql/schema_roles.sql, step 7)", exit 1 |
 | A feed that never answers | Each feed read has a 20-second socket timeout; the job's 30-minute timeout is the backstop | A warning, or at worst a failed trending run; the daily refresh had already finished |
 | An invalid symbol, pinned or listed | Dropped | A warning naming it |
 | A big move on a trending name | Logged, a badge on the tab | The badge |
@@ -882,9 +916,10 @@ Offline, as every unit test here, marked `trending`:
   the core tabs' loaders unchanged.
 - Configuration: defaults, blank values, the three copies of `TRENDING_PINNED` equal.
 
-On a throwaway Postgres (integration): the migration twice (idempotent), the new tables
-readable by the read-only role, `trending_news` matching `news_sentiment`'s columns and
-key, the batched writes on real types, and the price replacement in one transaction: a
+On a throwaway Postgres (integration): the migration twice (the second run stops at its
+first policy and changes nothing), every row of the new tables readable by the read-only
+role through its policy and by no role without one, nothing left to `anon` and
+`authenticated`, `trending_news` matching `news_sentiment`'s columns and key, the batched writes on real types, and the price replacement in one transaction: a
 failed insert leaves the old rows, and a second connection polling during a replacement
 always finds the symbol's bars (as PR #19's check did for forecasts).
 
