@@ -114,8 +114,13 @@ field of the wrong type) logs a warning and becomes that list's `error`, a short
 with no items; the source's other lists still count. An item whose symbol fails
 validation is dropped and logged; the rest of the list is kept. A list that answered
 with items none of which has a valid symbol counts as failed, not as empty: that is what
-a renamed field in Yahoo's format would look like. A list that answered with no items at
-all succeeded.
+a renamed field in Yahoo's format would look like. So does one in which not a single item
+carries `quoteType` or `regularMarketPrice`: read as missing values, rule 2 and the price
+floor would drop every item quietly, and everyone on the list would look absent (the
+pre-checkpoint review, 2026-11-10). A list that answered with no items at all succeeded.
+`quoteType` is read in upper case; an answer longer than the 25 asked is cut to 25, with
+a warning, since every item becomes a snapshot row; an integer past a float's range, or
+a first trade date past the year 9999, is one missing value, not a failed list.
 
 ### Yahoo's predefined screeners (implemented first)
 
@@ -140,8 +145,8 @@ its own price floor (`TRENDING_MIN_PRICE`, $5 by default, section 11).
 
 The quote fields used (`symbol`, `shortName`, `quoteType`, `regularMarketPrice`,
 `regularMarketChangePercent`, `regularMarketVolume`, `marketCap`) are confirmed on a
-captured response in Phase 6, which becomes the test fixture. A missing field is `None`,
-not a failure.
+captured response in Phase 6, which becomes the test fixture. A field missing from an
+item is `None`, not a failure; missing from every item, it fails the list (above).
 
 ### Yahoo's trending tickers (included; checked 2026-11-09)
 
@@ -150,8 +155,10 @@ The list closest to what the tier is for, the stocks people look up most. yfinan
 `YahooTrendingSource` makes a plain request, as the brief prescribes for that case:
 `requests.get("https://query1.finance.yahoo.com/v1/finance/trending/US", ...)` with
 `count=25`, `useQuotes=true` and `fields` naming the quote fields the rules use, a
-10-second timeout, and the User-Agent `QuantFlow/1.0
-(+https://github.com/logn1602/QuantFlow)`. With `useQuotes`, each item carries its
+10-second timeout on each wait, and the User-Agent `QuantFlow/1.0
+(+https://github.com/logn1602/QuantFlow)`. The answer is read streamed and refused once
+it passes 2 MB (the real one is about 30 KB) or is still arriving after 30 seconds: the
+timeout alone bounds each wait, not the whole answer. With `useQuotes`, each item carries its
 quote (`quoteType`, `shortName`, `regularMarketPrice`, `regularMarketChangePercent`,
 `regularMarketVolume`, `marketCap`, `firstTradeDateMilliseconds`, Yahoo's own
 `trendingScore`), so one request is enough, with no lookup per symbol. `requests` is
@@ -223,7 +230,9 @@ Every run, from the deduped candidates and the stored `tickers` rows:
    (section 9). A new symbol over the limit waits for a later run, if it is still
    listed.
 4. An active symbol not chosen is deactivated (`active = false`); its prices, news and
-   snapshots stay. Not after a fetch in which any list failed (below).
+   snapshots stay. Not after a fetch in which any list failed (below), except a core
+   ticker: a symbol added to `TICKERS` after the tier tracked it is deactivated whatever
+   the fetch, since rule 3 keeps it off the candidates and it must not stay on as absent.
 
 A symbol is *seen* in a run when it is a candidate: on a list that answered, and through
 the rules of 4.2. Every candidate gets a `tickers` row (first and last seen), active or
@@ -251,8 +260,14 @@ A session counts towards absence only when one of its fetches had every list ans
 nobody's absence and deactivates nothing: a symbol on the failed list alone would look
 absent, and lose its place to names from the lists that answered. Candidates from the
 lists that answered still join, but only into room the kept symbols leave under the cap,
-so the active set never grows past it. Then the run ends red (section 14). The selection
-is a pure function of its inputs, tested in Phase 6.
+so the active set never grows past it. Then the run ends red (section 14). A list that
+answered with items and offered not one candidate, every item dropped by rule 2 or a
+floor (what a changed `quoteType` value would look like), is read as failed, with why, and
+the same applies; a list of pinned or core symbols alone is not failed. The selection is a
+pure function of its inputs, tested in Phase 6. The counted sessions it takes are those
+stored before the run plus this fetch's session when every list answered: computed, not
+read back, so the fetch and the selection made from it can be stored in one transaction
+(7.1).
 
 Why 15: every active symbol costs, each run, one Yahoo history download, an RSS fetch
 and FinBERT on about 20 headlines on the runner's CPU. Fifteen plus the pinned symbols
@@ -280,7 +295,9 @@ prices. A committed file, `config/trending_listing_dates.txt`, lists reused symb
 the format of `config/split_jump_acknowledged.txt` (one `SYMBOL:YYYY-MM-DD` per line, a
 reason required) and is read by the same parser (`config.split_jump_acknowledged`, which
 takes a path). The fetch drops every bar before a listed date and logs how many it
-dropped. The file starts with:
+dropped. A date with no session (a weekend, a holiday) is read as the next session, the
+first a listing can have a bar on: the download's reach-back check compares its first bar
+with it, and a date with no bar would fail that check on every run. The file starts with:
 
 ```
 SPCX:2026-06-12  # the symbol was a Tuttle Capital ETF's before this listing
@@ -425,14 +442,14 @@ pattern.
    most_actives, day_gainers, day_losers               |
         |                                              |
         v                                              |
- validate symbols --> trending_snapshots (every item, session_date)
-        |             trending_fetches (each list: answered or failed)
+ validate symbols; a list that offers nobody is failed  |
         |                                              |
         v                                              v
  EQUITY, not core, $5 floor, dedupe --> active set (15 + pinned, 5 new a run)
                                               |
                                               v
-                                          tickers (active, first_seen, ...)
+          one transaction: trending_snapshots (every item, session_date),
+          trending_fetches (each list: answered or failed), tickers (active, ...)
                                               |
         +-------------------------------------+------------------------+
         v                                     v                        v
@@ -447,14 +464,21 @@ pattern.
  forecasts, model_metrics, backtest_results.
 ```
 
-1. Fetch every list; store every item in `trending_snapshots`, with its session date,
-   and each list's outcome in `trending_fetches`, in one transaction.
-2. Apply the rules and choose the active set (section 4); write `tickers`.
+First, the five tables must be there (`to_regclass`): before the owner runs
+`002_trending.sql`, the run exits 1 naming it, before fetching anything.
+
+1. Fetch every list; a list that answered and offered nobody is read as failed (4.3).
+2. Apply the rules and choose the active set (section 4); store every item in
+   `trending_snapshots`, with its session date, each list's outcome in
+   `trending_fetches` and the selection in `tickers`, in one transaction: a fetch stored
+   without the selection made from it would count its session towards absence for
+   symbols whose `last_seen` never moved.
 3. Prices for every active symbol (7.2).
 4. Indicators and anomaly flags for every active symbol (7.4).
 5. Sentiment for every active symbol (7.5).
-6. Exit 1 if any list failed (T8), or if a step failed (section 14), once steps 2 to 5
-   have run on what the lists that answered returned.
+6. Exit 1 if any list failed (T8), a write failed, or a step did nothing for any active
+   symbol (section 14), once steps 2 to 5 have run on what the lists that answered
+   returned.
 
 If the active set is empty, steps 3 to 5 are skipped: the stages treat an empty ticker
 list as "every core ticker" (`tickers = tickers or TICKERS` in `indicators.run`,
@@ -484,8 +508,9 @@ ones, never none. A failed insert rolls the delete back with it, and a replaceme
 rows is refused, so a symbol never loses its history to a bad answer.
 
 The replacement is also skipped, with a warning, when the download does not reach back to
-the symbol's `first_bar_date`, so a partial answer from Yahoo can never shorten a
-history; `first_bar_date` comes from `tickers`, so no stored bars are read to check. The
+the symbol's `first_bar_date` or ends before its stored `summary_session`, so a partial
+answer from Yahoo can never shorten a history at either end; both dates come from
+`tickers`, so no stored bars are read to check. The
 replaced rows leave dead tuples that autovacuum reclaims: about 4,000 rows a run, under
 1 MB.
 
@@ -510,11 +535,15 @@ and the anomaly z-score's 30-row window. The run stores, on each symbol's `ticke
 what the tab's table shows: the session, the last close, RSI(14), the number of anomaly
 flags in the last 10 trading days, and the latest big move. The full indicator and flag
 series are computed again when a visitor opens a symbol's chart (section 10), from its
-rows in `trending_prices`, by the same functions. Nothing is written to `technical_indicators` or
+latest rows in `trending_prices`, by the same helper
+(`features/trending_analytics.analyse`), so the run and the tab cannot compute them
+differently. Nothing is written to `technical_indicators` or
 `anomalies`, and the stages' `run` functions are not called: they read and write the
 core's tables.
 
-Each symbol is processed on its own: one that raises is logged and the rest go on.
+Each symbol is processed on its own: one that raises is logged and the rest go on. A run
+in which not one is summarised (or not one has its bars replaced) failed that step, and
+ends red.
 
 ### 7.5 Sentiment: RSS only, in `trending_news`
 
@@ -538,6 +567,13 @@ The run calls the sentiment module's parts, not its `run` (which would also call
 
 Tests prove both defaults unchanged, and that the template reproduces each of the eight
 core URLs in `RSS_FEEDS` exactly, so a trending feed is the same kind of feed.
+
+feedparser has no timeout of its own and reads through urllib, which waits as long as the
+socket default allows, forever unless one is set: the run sets it to 20 seconds around
+each feed read, and puts it back. A feed or FinBERT failing for a symbol is a warning,
+and every symbol's feed failing ends the run red; the database refusing a symbol's write
+is a fault, as a failed price replacement is: logged as an error, the next symbol still
+runs, and the run ends red.
 
 ### 7.6 Why the core's news read needs no change
 
@@ -674,16 +710,20 @@ A seventh tab, "Trending", captioned **"Discovery only: not forecast or backtest
   anomaly flags of the last 10 trading days, and badges: pinned, promotion-eligible, big
   move (7.3);
 - for the selected row, the price and indicator charts the core tabs use
-  (`price_chart`, `rsi_macd_chart`), on its rows in `trending_prices`, with indicators
-  and flags computed by `compute_indicators` and `detect_anomalies`.
+  (`price_chart`, `rsi_macd_chart`), on its latest 260 rows in `trending_prices` (about
+  a year; a symbol's history grows a bar a day for as long as it is tracked), with
+  indicators and flags computed by the run's own helper and kept an hour, as every
+  loader's result is.
 
 Data loading is testable, which `app.py` itself is not (Known problem 5): the queries
 and the table's shaping live in an importable `dashboard/trending_view.py` that takes a
 connection, tested offline with a fake one. The table is one grouped query, not one per
 row. `app.py` wraps each loader in `dashboard/caching.cached` like every loader, so
 nothing empty is cached. When the tables are empty or missing (before the migration),
-the tab shows an empty state ("No trending data yet") instead of an error. Symbols and
-names are shown as text only, never as HTML. The six core tabs are unchanged.
+the tab shows an empty state ("No trending data yet") instead of an error. A setting that
+cannot be read turns the tab off with a general warning; its value goes to the log, not
+to every visitor. Symbols and names are shown as text only, never as HTML. The six core
+tabs are unchanged.
 
 ## 11. Configuration
 
@@ -715,12 +755,18 @@ the reason `split_jump_acknowledged.txt` is: a commit carries its list everywher
   whatever its result, plus `workflow_dispatch` (the owner's runs). It therefore starts
   only once the daily refresh has finished, never beside it, and stops if GitHub ever
   disables the daily refresh's schedule (60 days without repository activity), which the
-  owner would notice there first.
+  owner would notice there first. The job runs by hand, or after a refresh this
+  repository ran on its own schedule or by hand (the event's head repository and
+  event), never for one a fork's branch set off.
 - **Job**: its own `timeout-minutes: 30` and concurrency group; the same database
-  secrets; the FinBERT model from the same `actions/cache` key the daily refresh saves.
+  secrets, on the run step alone, so setup-uv, the caches and the tests never hold them
+  (the tests get CI's dummy password); checkout keeps no token
+  (`persist-credentials: false`); the FinBERT model from the same `actions/cache` key
+  the daily refresh saves.
 - **Steps**: install from `uv.lock`; the offline test suite; the run (7.1), with its
   sentiment step last.
-- **Failure**: a failed step, or a failed source list (T8), fails this workflow, so
+- **Failure**: a failed step, a failed source list (T8), a failed write, or a step that
+  did nothing for any active symbol fails this workflow, so
   GitHub's failure notice goes out and the daily refresh stays green. A red daily
   refresh still means a core data problem, a red trending run a trending one, as the
   dependency audit's own workflow already does for security updates.
@@ -738,8 +784,9 @@ run the laptop scheduler, and relies on the daily workflow. The scheduler is unc
 
 ### Make
 
-`make trending` (one run of the tier; `--cap N` for a local check, Phase 6 step 5),
-listed in `make help`. `make promote` waits with the rest of promotion (section 8).
+`make trending` (one run of the tier, on the database `.env` names; `CAP=N` for a local
+check, Phase 6 step 5: a run like any other, so the active symbols past the cap are
+deactivated until a run without it), listed in `make help`. `make promote` waits with the rest of promotion (section 8).
 
 ## 13. Code layout
 
@@ -778,15 +825,17 @@ of 7.5 (a test, beside the existing boundary tests).
 
 | What fails | What happens | What the owner sees |
 |---|---|---|
-| A Yahoo list (HTTP error, timeout, malformed, or items with no valid symbol) | Its outcome stored as failed; the other lists' items stored and used; nothing deactivated, the session not counted (4.3); prices, analytics and sentiment still run for the active set; then the run exits 1 (T8) | A warning naming the list, a failed trending run and GitHub's failure notice, and the tab's line with the list's last success |
+| A Yahoo list (HTTP error, timeout, an answer too large or too slow, malformed, items with no valid symbol, a field no item carries, or items none of which passes the rules) | Its outcome stored as failed; the other lists' items stored and used; nothing deactivated, the session not counted (4.3); prices, analytics and sentiment still run for the active set; then the run exits 1 (T8) | A warning naming the list, a failed trending run and GitHub's failure notice, and the tab's line with the list's last success |
 | Every list at once (Yahoo down, or its format changed) | The same, with no new symbol joining | The same, every day it lasts |
-| One symbol's history download, or a partial one | Its stored bars stay; it stays active | A warning |
+| One symbol's history download, or a partial one (not reaching back, or ending early) | Its stored bars stay; it stays active | A warning |
+| Every active symbol's download, summary or feed in one run | The run goes on, then exits 1: the whole step failed | A failed trending run |
 | A price replacement's insert | Rolled back with its delete: the old rows stay, and the tab never finds the symbol without bars | A warning, and a failed run |
 | One symbol's indicators, flags or sentiment | That symbol is skipped for that step; the rest go on | A warning |
 | An RSS feed | No articles for that symbol that run | A warning |
-| A database error | The run fails | A failed trending run; the core is unaffected |
-| The migration not yet applied | The run fails; the tab shows its empty state | A failed trending run until the owner runs `002_trending.sql` |
-| The run hangs (an RSS fetch has no timeout of its own) | The job's 30-minute timeout ends it | A failed trending run; the daily refresh had already finished |
+| A symbol's news write | Rolled back; the next symbol still runs; then the run exits 1 | An error, and a failed run |
+| A database error | The run fails; a fetch and the selection made from it are stored together or not at all | A failed trending run; the core is unaffected |
+| The migration not yet applied | The run exits 1 before fetching, naming `002_trending.sql`; the tab shows its empty state | A failed trending run until the owner runs it |
+| A feed that never answers | Each feed read has a 20-second socket timeout; the job's 30-minute timeout is the backstop | A warning, or at worst a failed trending run; the daily refresh had already finished |
 | An invalid symbol, pinned or listed | Dropped | A warning naming it |
 | A big move on a trending name | Logged, a badge on the tab | The badge |
 
@@ -831,6 +880,18 @@ readable by the read-only role, `trending_news` matching `news_sentiment`'s colu
 key, the batched writes on real types, and the price replacement in one transaction: a
 failed insert leaves the old rows, and a second connection polling during a replacement
 always finds the symbol's bars (as PR #19's check did for forecasts).
+
+Added after the pre-checkpoint review (2026-11-10), each failing first where it covers a
+fault: a field no item carries, values past every range, the streamed answer's size and
+deadline, an over-long list; core tickers leaving, a listing date on a closed day, the
+trading-day count's speed; a list that offers nobody, a download ending early, whole steps
+failing, the news write, the run's single transaction, deactivation across runs, the
+feeds' socket timeout, the tables' check; the workflow's gate, its secrets on the run
+step alone and checkout without the token; the chart's bounded read and its cache; the
+offline guard refusing urllib and httpx; relative imports resolved per package. On
+Postgres: the migration's catalog against the schema file's in schemas of their own, each
+kind of drift shown to be caught; the run's transaction; the tables' check; the chart's
+latest 260 bars.
 
 ## 16. Order of work (Phase 6)
 

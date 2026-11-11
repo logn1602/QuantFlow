@@ -7,9 +7,20 @@
 --   trending_news, with their keys and indexes. Nothing else: no core table
 --   is read, changed or dropped.
 --
+-- Frozen once applied
+--   Once the live database has run it, this file does not change: a later
+--   change to these tables is a migration of its own (003_...). An edited
+--   table's CREATE ... IF NOT EXISTS would skip the table that is there,
+--   and change nothing.
+--
 -- Safe to run twice
 --   Every statement is CREATE ... IF NOT EXISTS, inside one transaction, so a
 --   second run changes nothing and a failed run leaves nothing behind.
+--
+-- When
+--   Before the pull request that adds .github/workflows/trending.yml is
+--   merged: the workflow starts after the next daily refresh on main, and
+--   without the tables it stops at its first check, naming this file.
 --
 -- Who runs it
 --   The owner, by hand: the pipeline never runs a migration. In Supabase's SQL
@@ -19,11 +30,42 @@
 --   GRANT SELECT ON tickers, trending_prices, trending_snapshots,
 --   trending_fetches, trending_news TO quantflow_readonly;
 --
--- Check afterwards (expected: the five tables, each with 0 rows):
+-- Check before (expected: one row of five empty values). A name instead
+-- means a table by that name is there already, which this script would leave
+-- as it is: stop and look at it first.
+--   SELECT to_regclass('public.tickers'), to_regclass('public.trending_prices'),
+--          to_regclass('public.trending_snapshots'),
+--          to_regclass('public.trending_fetches'),
+--          to_regclass('public.trending_news');
+--
+-- Check afterwards
+--   The five tables, each with 0 rows:
 --   SELECT relname, n_live_tup FROM pg_stat_user_tables
 --   WHERE relname IN ('tickers', 'trending_prices', 'trending_snapshots',
 --                     'trending_fetches', 'trending_news')
 --   ORDER BY relname;
+--   Their keys (expected: 7 rows; tickers p and c, trending_news p and u,
+--   one each for the other three):
+--   SELECT conrelid::regclass AS table_name, conname, contype
+--   FROM pg_constraint
+--   WHERE conrelid::regclass::text IN ('tickers', 'trending_prices',
+--         'trending_snapshots', 'trending_fetches', 'trending_news')
+--   ORDER BY 1, 2;
+--   Who may do what with them (expected: postgres with every privilege, and
+--   quantflow_readonly with SELECT once that role exists; any other role
+--   listed, Supabase's anon and authenticated among them, is to be decided
+--   before the tier writes there):
+--   SELECT table_name, grantee,
+--          string_agg(privilege_type, ', ' ORDER BY privilege_type)
+--   FROM information_schema.role_table_grants
+--   WHERE table_name IN ('tickers', 'trending_prices', 'trending_snapshots',
+--                        'trending_fetches', 'trending_news')
+--   GROUP BY 1, 2 ORDER BY 1, 2;
+--
+-- Undo (by hand, as the owner, and only while nothing in them matters)
+--   DROP TABLE trending_news, trending_fetches, trending_snapshots,
+--              trending_prices, tickers;
+--   No core table refers to them, and the script creates nothing else.
 --
 -- Mirrored in sql/schema_trending.sql (make setup); tests/unit/
 -- test_trending_schema.py fails if the two drift apart.

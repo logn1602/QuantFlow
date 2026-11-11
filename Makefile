@@ -21,7 +21,7 @@ help:
 	@echo "  make sentiment    Fetch + analyze news sentiment"
 	@echo "  make backtest     Run strategy backtest (run models first)"
 	@echo "  make evaluate     Rolling-origin evaluation, validation dates (SNAPSHOT=dir)"
-	@echo "  make trending     One run of the trending tier, discovery only (CAP=n)"
+	@echo "  make trending     One trending run, on .env's database (CAP=n: see below)"
 	@echo "  make dashboard    Launch Streamlit dashboard"
 	@echo "  make scheduler    Start the live data scheduler"
 	@echo "  make test         Run the offline test suite (no DB needed)"
@@ -85,8 +85,10 @@ sentiment:
 	python -m quantflow.features.sentiment
 
 # The trending tier (docs/trending.md): discovery and analytics only, in its
-# own tables, never forecast or backtested. CAP=3 tracks at most 3 discovered
-# symbols, for a local check.
+# own tables, never forecast or backtested. Writes to the database .env names,
+# as every target here does. CAP=3 tracks at most 3 discovered symbols, for a
+# local check: a run like any other, so the active symbols past the cap are
+# deactivated until a run without it.
 CAP ?=
 trending:
 	python -m quantflow.pipelines.trending $(if $(CAP),--cap $(CAP),)
