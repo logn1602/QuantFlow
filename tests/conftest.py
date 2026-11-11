@@ -14,9 +14,11 @@ Offline unit support:
                           of reaching the live Supabase instance that .env
                           points at.
   _no_network (autouse)   makes yf.download, yf.Ticker, every other yfinance
-                          request and every requests call raise, so a test
-                          that forgets to fake Yahoo, Alpha Vantage or NewsAPI
-                          never reaches them.
+                          request, every requests call, every urllib request
+                          (feedparser's) and every httpx request
+                          (huggingface_hub's) raise, so a test that forgets to
+                          fake Yahoo, its RSS feeds, Alpha Vantage, NewsAPI or
+                          the FinBERT download never reaches them.
   _no_committed_acknowledgements (autouse)
                           points config.SPLIT_JUMP_ACKNOWLEDGED_FILE at an
                           empty list, so no test depends on what
@@ -430,6 +432,9 @@ def _no_database(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
+    import urllib.request
+
+    import httpx
     import requests
     import yfinance
     import yfinance.data
@@ -447,6 +452,12 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(yfinance, "Ticker", refuse)
     monkeypatch.setattr(yfinance.data.YfData, "_make_request", refuse)
     monkeypatch.setattr(requests.Session, "request", refuse)
+    # feedparser reads every feed through urllib, whose requests all go
+    # through OpenerDirector.open (urlopen included); huggingface_hub sends
+    # its own through httpx, whose requests all go through send.
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", refuse)
+    monkeypatch.setattr(httpx.Client, "send", refuse)
+    monkeypatch.setattr(httpx.AsyncClient, "send", refuse)
 
 
 @pytest.fixture(scope="session")

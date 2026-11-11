@@ -403,51 +403,47 @@ def _trending_test_files():
     )
 
 
+def _ticker_reads(source):
+    """The lines of source that read TICKERS: as an attribute, a name, or an
+    import. Setting it by name (monkeypatch.setattr) is not a read."""
+    import ast
+
+    return [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if (isinstance(node, ast.Attribute) and node.attr == "TICKERS")
+        or (isinstance(node, ast.Name) and node.id == "TICKERS")
+        or (
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "TICKERS" for alias in node.names)
+        )
+    ]
+
+
 @pytest.mark.trending
 def test_no_trending_test_reads_the_tickers_from_config():
     """CI sets two tickers and the daily refresh eight: a trending test that
     read config.TICKERS could pass in one and fail in the other. Setting it
     in a test (monkeypatch, by name) is fine; reading it is not."""
-    import ast
-
     files = _trending_test_files()
     assert len(files) >= 5, files
-    offenders = []
-    for path in files:
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            reads = (
-                (isinstance(node, ast.Attribute) and node.attr == "TICKERS")
-                or (isinstance(node, ast.Name) and node.id == "TICKERS")
-                or (
-                    isinstance(node, ast.ImportFrom)
-                    and any(alias.name == "TICKERS" for alias in node.names)
-                )
-            )
-            if reads:
-                offenders.append(f"{path.name}:{node.lineno}")
+    offenders = [
+        f"{path.name}:{line}"
+        for path in files
+        for line in _ticker_reads(path.read_text(encoding="utf-8"))
+    ]
     assert offenders == []
 
 
 @pytest.mark.trending
-def test_the_tickers_check_sees_a_read(tmp_path):
-    """Or the test above proves nothing."""
-    import ast
-
+def test_the_tickers_check_sees_a_read():
+    """The same check, on reads it must see and a setting it must not, or
+    the test above proves nothing."""
     for source in (
         "from quantflow.config import TICKERS\n",
+        "from quantflow.config import DB_HOST, TICKERS\n",
         "x = config.TICKERS\n",
         "x = TICKERS\n",
     ):
-        nodes = list(ast.walk(ast.parse(source)))
-        assert any(
-            (isinstance(n, ast.Attribute) and n.attr == "TICKERS")
-            or (isinstance(n, ast.Name) and n.id == "TICKERS")
-            or (isinstance(n, ast.ImportFrom) and n.names[0].name == "TICKERS")
-            for n in nodes
-        ), source
-    setting = 'monkeypatch.setattr(config, "TICKERS", ["AAPL"])\n'
-    assert not any(
-        isinstance(n, ast.Attribute | ast.Name)
-        and getattr(n, "attr", getattr(n, "id", "")) == "TICKERS"
-        for n in ast.walk(ast.parse(setting))
-    )
+        assert _ticker_reads(source), source
+    assert not _ticker_reads('monkeypatch.setattr(config, "TICKERS", ["AAPL"])\n')
