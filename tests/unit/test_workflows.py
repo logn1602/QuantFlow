@@ -183,11 +183,43 @@ def test_the_finbert_model_is_cached_by_the_revision_the_code_pins():
     from quantflow.features.sentiment import FINBERT_REVISION
 
     cache = STEPS["Cache the FinBERT model"]
-    assert "uses: actions/cache@v4" in cache
+    assert "uses: actions/cache@" in cache
     assert "path: ~/.cache/huggingface" in cache
     assert FINBERT_REVISION in cache
     names = list(STEPS)
     assert names.index("Cache the FinBERT model") < names.index(SENTIMENT)
+
+
+# An action named by a tag runs whatever code the tag points at when the job
+# starts, and a tag can be moved; a commit is one version of the code for
+# good. Each `uses:` names the full commit, with its release in the trailing
+# comment Dependabot reads to propose updates (.github/dependabot.yml).
+PINNED_ACTION = re.compile(
+    r"uses: (?P<action>[\w.-]+/[\w./-]+)@(?P<commit>[0-9a-f]{40}) # v\d+\.\d+\.\d+$"
+)
+
+
+def test_every_action_is_pinned_to_a_full_commit_with_its_release():
+    """Named by tags, the workflows ran whatever astral-sh/setup-uv's v5
+    pointed at, in jobs holding the database password (the Checkpoint 6
+    security review, 2026-11-11). And one commit per action everywhere, so
+    no workflow is left on an older release."""
+    commits: dict[str, set[str]] = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        uses = re.findall(r"^\s*(?:- )?uses: .+$", text, re.MULTILINE)
+        assert uses, f"{path.name}: no actions found"
+        for line in uses:
+            match = PINNED_ACTION.search(line.strip())
+            assert match, f"{path.name}: not pinned to a commit: {line.strip()}"
+            commits.setdefault(match["action"], set()).add(match["commit"])
+    assert all(len(found) == 1 for found in commits.values()), commits
+
+
+def test_dependabot_proposes_the_pinned_actions_updates_weekly():
+    dependabot = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    assert "package-ecosystem: github-actions" in dependabot
+    assert re.search(r"^\s+interval: weekly$", dependabot, re.MULTILINE)
 
 
 def test_the_daily_refresh_no_longer_fetches_newsapi():
