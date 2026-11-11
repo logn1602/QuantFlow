@@ -570,10 +570,13 @@ core URLs in `RSS_FEEDS` exactly, so a trending feed is the same kind of feed.
 
 feedparser has no timeout of its own and reads through urllib, which waits as long as the
 socket default allows, forever unless one is set: the run sets it to 20 seconds around
-each feed read, and puts it back. A feed or FinBERT failing for a symbol is a warning,
-and every symbol's feed failing ends the run red; the database refusing a symbol's write
-is a fault, as a failed price replacement is: logged as an error, the next symbol still
-runs, and the run ends red.
+each feed read, and puts it back. A feed or FinBERT failing for a symbol is a warning;
+a run in which not one active symbol had a headline read and scored ends red. That is
+judged by the headlines, not by errors: a feed host answering with an error status
+raises nothing (feedparser returns no entries, `fetch_rss` no articles), and
+`analyze_batch` leaves a headline it could not score as None (the Red Team pass,
+2026-11-10). The database refusing a symbol's write is a fault, as a failed price
+replacement is: logged as an error, the next symbol still runs, and the run ends red.
 
 ### 7.6 Why the core's news read needs no change
 
@@ -828,7 +831,7 @@ of 7.5 (a test, beside the existing boundary tests).
 | A Yahoo list (HTTP error, timeout, an answer too large or too slow, malformed, items with no valid symbol, a field no item carries, or items none of which passes the rules) | Its outcome stored as failed; the other lists' items stored and used; nothing deactivated, the session not counted (4.3); prices, analytics and sentiment still run for the active set; then the run exits 1 (T8) | A warning naming the list, a failed trending run and GitHub's failure notice, and the tab's line with the list's last success |
 | Every list at once (Yahoo down, or its format changed) | The same, with no new symbol joining | The same, every day it lasts |
 | One symbol's history download, or a partial one (not reaching back, or ending early) | Its stored bars stay; it stays active | A warning |
-| Every active symbol's download, summary or feed in one run | The run goes on, then exits 1: the whole step failed | A failed trending run |
+| Every active symbol's download or summary in one run, or not one headline read and scored (a feed host answering with errors raises nothing) | The run goes on, then exits 1: the whole step failed | A failed trending run |
 | A price replacement's insert | Rolled back with its delete: the old rows stay, and the tab never finds the symbol without bars | A warning, and a failed run |
 | One symbol's indicators, flags or sentiment | That symbol is skipped for that step; the rest go on | A warning |
 | An RSS feed | No articles for that symbol that run | A warning |

@@ -14,8 +14,12 @@ are never called.
 
 import dataclasses
 import datetime as dt
+import email.message
+import io
 import re
 import socket
+import urllib.error
+import urllib.request
 
 import numpy as np
 import pandas as pd
@@ -29,6 +33,9 @@ from quantflow.ingestion.trending_sources import ListFetch, TrendingItem
 from quantflow.pipelines import trending
 
 pytestmark = pytest.mark.trending
+
+# The real fetcher, kept before the world fixture fakes it.
+REAL_FETCH_RSS = sentiment.fetch_rss
 
 NOW = pd.Timestamp("2026-11-10 23:10", tz="UTC")  # Tuesday 18:10 New York
 SESSION = dt.date(2026, 11, 10)
@@ -448,10 +455,12 @@ def test_one_symbols_failed_download_or_news_is_a_warning_only(world, monkeypatc
             raise RuntimeError("Yahoo hiccup")
         return _yahoo(DAYS)
 
+    world_fetch = sentiment.fetch_rss
+
     def fetch_rss(symbol, feeds=None):
         if symbol == "SPCX":
             raise RuntimeError("feed down")
-        return []
+        return world_fetch(symbol, feeds)
 
     monkeypatch.setattr(sentiment, "fetch_rss", fetch_rss)
     result = _run(_all_lists("HIMS", "TTWO"), broken_download)
@@ -491,14 +500,49 @@ def test_analytics_failing_for_one_symbol_warns_and_for_every_one_ends_red(
     assert result.failed_steps == ["analytics"] and result.exit_code == 1
 
 
-def test_news_failing_for_every_symbol_ends_red(world, monkeypatch):
+@pytest.mark.parametrize("status", [503, 429])
+def test_the_feed_host_failing_for_every_symbol_ends_red(world, monkeypatch, status):
+    """The real failure, through the real fetch_rss and feedparser: the feed
+    host answering every request with an error status. feedparser turns it
+    into a result with no entries and fetch_rss into no articles, so nothing
+    raises and nothing is logged above INFO (the Red Team pass, 2026-11-10):
+    a step no symbol got a headline from has failed."""
+
+    def refused(self, request, *args, **kwargs):
+        url = getattr(request, "full_url", request)
+        raise urllib.error.HTTPError(
+            url, status, "refused", email.message.Message(), io.BytesIO(b"")
+        )
+
+    monkeypatch.setattr(sentiment, "fetch_rss", REAL_FETCH_RSS)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", refused)
+    yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")})
+    result = _run(_all_lists("HIMS"), yahoo)
+    assert result.sentiment_failed == []  # nothing raised
+    assert result.failed_steps == ["sentiment"] and result.exit_code == 1
+    assert result.scored == {"SPCX": 0, "HIMS": 0}
+
+
+def test_one_symbol_without_headlines_is_no_failure(world, monkeypatch):
+    world_fetch = sentiment.fetch_rss
+
     def fetch_rss(symbol, feeds=None):
-        raise RuntimeError("feeds down")
+        return [] if symbol == "HIMS" else world_fetch(symbol, feeds)
 
     monkeypatch.setattr(sentiment, "fetch_rss", fetch_rss)
     yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")})
     result = _run(_all_lists("HIMS"), yahoo)
-    assert result.sentiment_failed == ["SPCX", "HIMS"]
+    assert result.scored == {"SPCX": 2, "HIMS": 0}
+    assert result.failed_steps == [] and result.exit_code == 0
+
+
+def test_headlines_the_model_scores_none_of_end_red(world, monkeypatch):
+    """analyze_batch catches its own errors and leaves a headline it could
+    not score as None: for every headline of every symbol, the step failed."""
+    monkeypatch.setattr(sentiment, "analyze_batch", lambda heads: [None] * len(heads))
+    yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")})
+    result = _run(_all_lists("HIMS"), yahoo)
+    assert result.scored == {"SPCX": 0, "HIMS": 0}
     assert result.failed_steps == ["sentiment"] and result.exit_code == 1
 
 

@@ -84,7 +84,10 @@ class RunResult:
     prices_failed: list[str] = field(default_factory=list)
     analysed: list[str] = field(default_factory=list)
     analytics_failed: list[str] = field(default_factory=list)
-    articles: dict[str, int] = field(default_factory=dict)
+    articles: dict[str, int] = field(default_factory=dict)  # rows written
+    # Headlines read and scored, by symbol, stored before or not: what shows
+    # whether the feeds and the model worked at all.
+    scored: dict[str, int] = field(default_factory=dict)
     sentiment_failed: list[str] = field(default_factory=list)
     news_failed: list[str] = field(default_factory=list)
     finbert_failed: bool = False
@@ -92,8 +95,13 @@ class RunResult:
     @property
     def failed_steps(self) -> list[str]:
         """The steps that did nothing for any active symbol: no bars
-        replaced, no summary made, no symbol's news read. Each symbol's
-        miss is a warning, but all of them is the step failing."""
+        replaced, no summary made, no headline read and scored. Each
+        symbol's miss is a warning, but all of them is the step failing.
+
+        Sentiment is judged by the headlines scored, not by errors: a feed
+        host answering with an error status raises nothing (feedparser
+        returns no entries and fetch_rss no articles), and analyze_batch
+        leaves a headline it could not score as None."""
         if not self.active:
             return []
         steps = []
@@ -101,7 +109,9 @@ class RunResult:
             steps.append("prices")
         elif not self.analysed:
             steps.append("analytics")
-        if not self.finbert_failed and set(self.sentiment_failed) >= set(self.active):
+        if not self.finbert_failed and not any(
+            self.scored.get(symbol) for symbol in self.active
+        ):
             steps.append("sentiment")
         return steps
 
@@ -399,6 +409,7 @@ def _news(selection, result: RunResult, *, pause: float) -> None:
             logger.warning(f"{symbol}: sentiment failed: {error}")
             result.sentiment_failed.append(symbol)
         else:
+            result.scored[symbol] = len(scored)
             try:
                 result.articles[symbol] = sentiment.save_sentiment(
                     scored, symbol, table="trending_news"
