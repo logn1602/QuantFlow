@@ -25,7 +25,8 @@ env:
 # before saving it, and uv.lock pins PyPI's torch with its CUDA libraries,
 # so an unpruned cache could hold gigabytes of wheels that PyPI serves as
 # fast, in the repository's 10 GB of Actions cache beside the FinBERT
-# model. Pruned, it keeps only what was built from source.
+# model. Pruned, it keeps only what was built from source. version pins uv
+# itself, the same release in every workflow (daily_refresh.yml says why).
 jobs:
   lint:
     name: Lint (ruff)
@@ -34,6 +35,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.8"
           enable-cache: true
           prune-cache: true
       # Version must match the ruff pin in .pre-commit-config.yaml and the
@@ -50,6 +52,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.8"
           enable-cache: true
           prune-cache: true
       - name: Set up Python 3.11
@@ -66,6 +69,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.8"
           enable-cache: true
           prune-cache: true
       - name: Set up Python 3.11

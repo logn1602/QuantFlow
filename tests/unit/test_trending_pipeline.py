@@ -625,17 +625,21 @@ def test_a_pinned_symbol_that_is_not_an_equity_is_warned_about(world, caplog):
 
 def test_the_feeds_are_read_with_a_socket_timeout_put_back_after(world, monkeypatch):
     """feedparser has no timeout: it reads through urllib, which waits as long
-    as the socket default allows, forever unless one is set."""
+    as the socket default allows, forever unless one is set. The real
+    fetch_rss sets it around each read, for the core and the tier alike."""
+    import feedparser
+
     seen = []
 
-    def fetch_rss(symbol, feeds=None):
+    def parse(url):
         seen.append(socket.getdefaulttimeout())
-        return []
+        return feedparser.FeedParserDict(entries=[])
 
-    monkeypatch.setattr(sentiment, "fetch_rss", fetch_rss)
+    monkeypatch.setattr(sentiment, "fetch_rss", REAL_FETCH_RSS)
+    monkeypatch.setattr(sentiment.feedparser, "parse", parse)
     before = socket.getdefaulttimeout()
     _run(_all_lists("HIMS"), FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")}))
-    assert seen == [trending.RSS_TIMEOUT_SECONDS] * 2
+    assert seen == [sentiment.RSS_TIMEOUT_SECONDS] * 2
     assert socket.getdefaulttimeout() == before
 
 
