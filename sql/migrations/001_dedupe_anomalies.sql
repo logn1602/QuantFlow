@@ -1,4 +1,14 @@
 -- ============================================================
+-- OBSOLETE (2026-11-12): not to be run. Checked read-only on the live
+-- database that day, as quantflow_readonly: anomalies holds 771 rows and
+-- 771 distinct (ticker, ts), so there is no duplicate to delete. Since
+-- Phase 1 save_anomalies replaces each ticker's flags in one transaction,
+-- which is what keeps it so; the live table still has no UNIQUE (ticker,
+-- ts), which sql/schema.sql gives a fresh install. The script stops at its
+-- first statement and changes nothing. It stays as the record of the
+-- 2026-08-04 duplicates and how they would have been removed.
+-- ============================================================
+-- ============================================================
 -- 001_dedupe_anomalies.sql
 --
 -- Problem
@@ -48,6 +58,15 @@
 -- ============================================================
 
 BEGIN;
+
+-- Obsolete (the banner above): stop first, inside the transaction, so a
+-- psql run that carries on past an error still changes nothing.
+DO $$
+BEGIN
+    RAISE EXCEPTION
+        '001_dedupe_anomalies.sql is obsolete (2026-11-12): the live anomalies table has no duplicates; see its header';
+END $$;
+
 SET LOCAL lock_timeout = '10s';
 
 -- Fail loudly rather than silently doing nothing if this has already run.

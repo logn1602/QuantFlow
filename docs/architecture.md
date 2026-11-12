@@ -379,7 +379,7 @@ visit.
 ## Known problems
 
 Ordered by how much they would change the reported results. Updated 2026-11-12
-(Phase 7, and its follow-ups): items 1, 2, 6, 8 and 14 are fixed; 8 to 13 were found in
+(Phase 7, and its follow-ups): items 1, 2, 6, 7, 8 and 14 are fixed; 8 to 13 were found in
 Phase 4, 13 was seen on the live app on 2026-11-12, and 14 to 16 are new.
 
 ### 1. The base-model comparison was not like-for-like (fixed in Phase 2)
@@ -440,7 +440,7 @@ The backtest called `tune_and_train_meta` for its log lines and threw the
 results away, running the meta-learner's whole out-of-fold loop twice per
 ticker. It now runs once (`tests/unit/test_backtest_pipeline.py`).
 
-### 7. Anomaly table duplication
+### 7. Anomaly table duplication (fixed in Phase 1; none left, 2026-11-12)
 
 The live `anomalies` table held many copies of each `(ticker, ts)` flag because
 `UNIQUE (ticker, ts)` was added to `schema.sql` after the table already existed, and
@@ -448,9 +448,11 @@ The live `anomalies` table held many copies of each `(ticker, ts)` flag because
 NOTHING` in `save_anomalies` had nothing to detect. The write path now replaces each
 ticker's flags inside a transaction, which is correct regardless of constraint state,
 so each run leaves one copy of each of its flags (about 765 rows on 2026-11-09).
-`sql/migrations/001_dedupe_anomalies.sql`,
-which adds the constraint, has not been run against the live database. The replace
-leaves dead rows behind: 6.1 MB on disk for those 765 rows (see "Running on free
+Checked read-only on 2026-11-12, the live table holds no duplicate (771 rows, 771
+distinct keys), so `sql/migrations/001_dedupe_anomalies.sql`, which would have
+deleted them and added the constraint, is marked obsolete and refuses to run; the live
+table keeps no `UNIQUE (ticker, ts)`, and the replace is what keeps it clean. The
+replace leaves dead rows behind: 6.1 MB on disk for those 765 rows (see "Running on free
 tiers"). Fresh installs are unaffected.
 
 ### 8. The dashboard did not set the dark theme it is styled for (fixed in Phase 4)
