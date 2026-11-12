@@ -6,6 +6,7 @@ it trades.
 """
 
 import datetime as dt
+from collections.abc import Iterable
 
 import pandas as pd
 from pandas.tseries.holiday import (
@@ -115,17 +116,23 @@ def last_completed_session(now) -> pd.Timestamp:
     return previous_trading_day(today)
 
 
-def next_trading_days(after, n: int) -> pd.DatetimeIndex:
+def next_trading_days(after, n: int, closed: Iterable = ()) -> pd.DatetimeIndex:
     """The n NYSE trading days strictly after `after`, as naive midnights.
 
     after may be a date, a naive timestamp, or a tz-aware one; only its
-    calendar date is used.
+    calendar date is used. closed: days the schedule lists as trading days
+    on which the exchange did not open (the evaluation's unscheduled
+    closures, decision D22), skipped like holidays.
     """
     day = pd.Timestamp(after)
     if day.tzinfo is not None:
         day = day.tz_localize(None)
     start = day.normalize() + pd.Timedelta(days=1)
-    return pd.date_range(start=start, periods=n, freq=TRADING_DAY)
+    shut = pd.DatetimeIndex([pd.Timestamp(d) for d in closed]).normalize().unique()
+    if shut.empty:
+        return pd.date_range(start=start, periods=n, freq=TRADING_DAY)
+    days = pd.date_range(start=start, periods=n + len(shut), freq=TRADING_DAY)
+    return days[~days.isin(shut)][:n]
 
 
 NEWS_CUTOFF_AFTER_DATE = pd.Timedelta(hours=36)

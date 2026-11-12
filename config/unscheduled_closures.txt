@@ -1,0 +1,20 @@
+# Unscheduled closures: full days the NYSE did not open although its published
+# schedule listed them as trading days (decision D22 in docs/evaluation.md).
+# The project calendar (src/quantflow/utils/trading_calendar.py) knows the
+# schedule only, so the evaluation harness refuses an origin whose forecast
+# days cross such a day until it is listed here.
+#
+# Once the exchange has closed on such a day, add one line for it:
+#
+#   YYYY-MM-DD  # the source, required (the exchange's notice, say)
+#
+# A closed day is not a trading day: the forward window keeps its 42 origins,
+# every 5 days the exchange opened from 2026-11-09, so each listed day moves
+# the last origin and the last target one trading day later, and the forward
+# test is scored once that close is in.
+#
+# Only days from 2026-11-09, the forward window's first origin, are taken:
+# the earlier windows are scored as registered, so 2025-01-09 (a national day
+# of mourning) is not listed, and the tuning window leaves out the origins
+# whose forecast days cross it. An early close is a trading day; it is not
+# listed.

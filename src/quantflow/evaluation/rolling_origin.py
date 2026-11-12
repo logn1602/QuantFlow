@@ -38,6 +38,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from quantflow.evaluation import closures
 from quantflow.evaluation.splits import HORIZON
 from quantflow.utils.logger import get_logger
 from quantflow.utils.trading_calendar import news_cutoff, next_trading_days
@@ -141,17 +142,20 @@ BASELINES: dict[str, Forecaster] = {"naive": naive_forecast, "drift": drift_fore
 def _forecast_days(dates, position: int, horizon: int):
     """(the data's next `horizon` dates after row `position`, the calendar's
     next `horizon` trading days, whether they agree): the one check both
-    origin_data and calendar_mismatched apply, so they cannot disagree."""
+    origin_data and calendar_mismatched apply, so they cannot disagree. The
+    calendar skips the listed unscheduled closures (D22, closures.listed):
+    a gap the list does not explain is still a mismatch."""
     dates = pd.DatetimeIndex(dates)
     found = dates[position + 1 : position + 1 + horizon].normalize()
-    expected = next_trading_days(dates[position], horizon)
+    expected = next_trading_days(dates[position], horizon, closed=closures.listed())
     return found, expected, len(found) == horizon and bool((found == expected).all())
 
 
 def calendar_mismatched(dates, positions, horizon: int = HORIZON) -> list[int]:
     """The origin positions whose next `horizon` dates in the data are not
     the calendar's next trading days: a one-off closure the calendar cannot
-    know, such as 2025-01-09, inside their forecast days. origin_data
+    know and the list does not hold (D22), such as 2025-01-09, inside their
+    forecast days. origin_data
     refuses such an origin (CalendarMismatchError); a window that may hold
     one, like the tuning window, leaves it out first and says so."""
     return [p for p in positions if not _forecast_days(dates, p, horizon)[2]]

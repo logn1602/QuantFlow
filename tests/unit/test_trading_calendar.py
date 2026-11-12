@@ -62,6 +62,24 @@ def test_next_trading_days_start_strictly_after_the_given_day():
     assert [d.date().isoformat() for d in got] == ["2026-07-06", "2026-07-07"]
 
 
+def test_next_trading_days_skip_a_closed_day_like_a_holiday():
+    """The evaluation's unscheduled closures (D22): a listed day is skipped,
+    and with none listed the days are the schedule's, as before."""
+    got = next_trading_days("2027-03-09", 3, closed=[pd.Timestamp("2027-03-10")])
+    assert [d.date().isoformat() for d in got] == [
+        "2027-03-11",
+        "2027-03-12",
+        "2027-03-15",
+    ]
+    plain = next_trading_days("2027-03-09", 3)
+    assert [d.date().isoformat() for d in plain] == [
+        "2027-03-10",
+        "2027-03-11",
+        "2027-03-12",
+    ]
+    assert plain.freq == next_trading_days("2027-03-09", 3, closed=()).freq
+
+
 def test_next_trading_days_accept_dates_and_tz_aware_timestamps():
     import datetime as dt
 

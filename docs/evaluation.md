@@ -52,6 +52,15 @@ trading dates per ticker from 2024-04-10):
 That is 25 forecasts per ticker, model and horizon, 200 per model and horizon across
 the 8 tickers.
 
+**Fixed by date (decision D21, 2026-11-12).** The grid was drawn counting back from the
+snapshot's last date, and counted that way on a newer snapshot it would move: with data
+to 2026-11-18 the last test origin would be 2026-11-09, the forward test's first, and
+from 2026-11-20 the validation window would hold test dates (found in the full-diff
+review). Every command now takes its grid from `splits.registered_grid`, which anchors
+it at 2026-10-28 and checks each window's first and last origin against the dates above;
+a snapshot whose trading dates cannot match them is refused, never shifted. A newer
+snapshot scores the same dates.
+
 Every 5 trading days follows the brief's example. At horizons 6 and 7, the windows of
 two consecutive origins overlap by one or two days, so their errors are correlated.
 Spread is therefore reported as quartiles, not as a standard error, and the significance
@@ -514,6 +523,32 @@ counting RSS articles, and the rule below, written now rather than at scoring ti
 - **Dropped** means the booster trains without those seven columns, live and in the
   harness, from the next release. The stored news and the dashboard's sentiment tab stay.
 
+### The forward window in code, and an unscheduled closure (decisions D21, D22)
+
+Written 2026-11-12, before any forward date is scored. The forward window is fixed by
+date like the others (D21): `splits.registered_grid` holds its 42 origins from
+2026-11-09, and leaves the window empty while the data does not hold the last origin's
+day-7 close, so no command can score part of it.
+
+**An unscheduled closure (D22, pre-registered).** The exchange can close on a day its
+published schedule lists as a trading day: a national day of mourning (2025-01-09),
+weather (Hurricane Sandy's two days in 2012), an emergency. The project calendar cannot
+know one in advance, and the harness refuses an origin whose 7 forecast days do not
+match the calendar's (`CalendarMismatchError`), so without a rule one such day would
+make the forward test unrunnable as registered. The rule:
+
+- **A closed day is not a trading day.** The window keeps its 42 origins, every 5 days
+  the exchange opened from 2026-11-09, each forecasting the next 7 days it opened. Each
+  closure therefore moves the last origin and the last target one trading day later
+  (`splits.last_forward_target`), and the forward test is scored once that close is in.
+- **It is listed before scoring.** The day goes into `config/unscheduled_closures.txt`,
+  dated and with its source, once it has happened; the harness then counts past it. A
+  gap nobody listed is still refused, so a missing bar is never taken for a closure.
+- **Only from 2026-11-09 on.** The earlier windows are scored as registered: 2025-01-09
+  is not listed, and the tuning window leaves out the origins whose days cross it.
+- **Nothing else changes**: the snapshot, the cells, the D15 gate, and the D17 and D19
+  rules. An early close is a trading day, as it is now.
+
 ### Ablation
 
 The boosters with and without the sentiment features (the six plus `has_news`), on the
@@ -948,6 +983,8 @@ Decided by the owner; the body above applies them.
 | D19 | Pre-registered 2026-11-09, before any forward date is scored: the news rule for the forward test. Per booster, the sentiment features are kept only if the booster's MAPE with them over every forward cell is strictly lower than without them and lower on at least 5 of the 8 tickers; a tie drops. "Not enough data" under the gate, or either variant failing more than 10% of its cells, means no decision (section 4). |
 | D20 | Decided 2026-11-09, after D18: the published figures are rerun on the RSS-only code, the validation dates (P4b) and, for reporting only, the test dates a fourth time (T4, ledger entry 4), so they describe the boosters as they run. No decision rests on T4: every keep-or-drop decision stays on the validation dates (D13). |
 | D17 | Pre-registered 2026-11-08, before any forward date is scored: the forward test (D16) also compares the live ensemble's current weights with the new rolling-origin weights on the same cells. The live ensemble uses the new weights if their MAPE over every forward cell is no higher than the current weights' (a tie goes to the new weights, as in D2); either failing on more than 10% of its cells means no decision (section 5). |
+| D21 | Decided 2026-11-12, before any new snapshot is exported: the windows are fixed by date. Every command takes its grid from `splits.registered_grid`, anchored at the last test origin (2026-10-28) and checked against each window's registered first and last origin, so a newer snapshot scores the same dates and one that cannot match them is refused; the forward window (D16) stays empty until its last target is in (section 2, section 4). |
+| D22 | Pre-registered 2026-11-12, before any forward date is scored: a day the exchange's schedule lists as a trading day but on which it did not open is not a trading day. The forward window keeps its 42 origins over the days the exchange opened, so each such closure moves its last target one trading day later; the day is listed in `config/unscheduled_closures.txt` with its source before scoring, and an unlisted gap is still refused (section 4). |
 
 Phase 3 candidates raised in review, not part of Phase 2: naive's forecast (the
 origin's close) as a fifth stack column, so the ensemble can lean on it; not freezing

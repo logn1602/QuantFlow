@@ -215,3 +215,85 @@ def test_the_warmup_origins_cover_the_rolling_weights_window():
     from quantflow.evaluation.out_of_fold import WINDOW_ORIGINS
 
     assert splits.WARMUP_ORIGINS >= WINDOW_ORIGINS
+
+
+# ── The registered windows, by date (decision D21) ───────────────────────────
+
+
+def _calendar(end, start="2024-04-10", closed=("2025-01-09",)):
+    """The project calendar's trading days less the given closures: the
+    2026-11-06 snapshot's dates when end is 2026-11-06."""
+    from quantflow.utils.trading_calendar import TRADING_DAY
+
+    days = pd.date_range(start, end, freq=TRADING_DAY)
+    return days[~days.isin(pd.DatetimeIndex(closed))]
+
+
+def _span(dates, positions):
+    first, last = dates[positions[0]], dates[positions[-1]]
+    return first.date().isoformat(), last.date().isoformat()
+
+
+def test_the_registered_grid_on_the_snapshot_is_the_grid_drawn_there():
+    dates = _calendar("2026-11-06")
+    assert len(dates) == SNAPSHOT_DATES
+    assert splits.registered_grid(dates) == splits.origin_grid(SNAPSHOT_DATES)
+
+
+@pytest.mark.parametrize("end", ["2026-11-18", "2026-11-20", "2027-05-28"])
+def test_a_newer_snapshot_scores_the_same_dates(end):
+    """Counted back from its last date, data to 2026-11-18 put the last test
+    origin on 2026-11-09, the forward test's first origin, and data to
+    2026-11-20 put test dates in the validation window (full-diff review,
+    2026-11-12)."""
+    dates = _calendar(end)
+    grid = splits.registered_grid(dates)
+    assert _span(dates, grid.validation) == ("2025-06-30", "2026-04-23")
+    assert _span(dates, grid.validation_warmup) == ("2025-04-02", "2025-06-23")
+    assert _span(dates, grid.test) == ("2026-05-07", "2026-10-28")
+    assert _span(dates, grid.test_warmup) == ("2026-02-10", "2026-04-30")
+    assert _span(dates, grid.tuning) == ("2024-10-01", "2025-03-19")
+    assert grid.forward == grid.forward_warmup == ()
+
+
+def test_a_snapshot_short_of_the_last_test_target_is_refused():
+    with pytest.raises(ValueError, match="before the last test origin"):
+        splits.registered_grid(_calendar("2026-11-05"))
+    with pytest.raises(ValueError, match="do not include 2026-10-28"):
+        splits.registered_grid(_calendar("2026-10-27"))
+
+
+def test_history_that_differs_inside_the_windows_is_refused_not_shifted():
+    dates = _calendar("2026-11-20")
+    lost = dates.delete(dates.get_loc(pd.Timestamp("2025-09-02")))
+    with pytest.raises(ValueError, match="validation window would run 2025-06-27"):
+        splits.registered_grid(lost)
+
+
+def test_the_forward_window_is_registered_and_empty_until_its_last_target():
+    """D16: 42 origins every 5 trading days from 2026-11-09, the last on
+    2027-09-03 with its day-7 target 2027-09-15, scored once that close is
+    in, so before then the window is empty and nothing can look early."""
+    assert splits.last_forward_target() == pd.Timestamp("2027-09-15")
+    dates = _calendar("2027-09-15")
+    grid = splits.registered_grid(dates)
+    assert len(grid.forward) == splits.FORWARD_ORIGINS == 42
+    assert _span(dates, grid.forward) == ("2026-11-09", "2027-09-03")
+    assert dates[grid.forward[-1] + splits.HORIZON] == pd.Timestamp("2027-09-15")
+    assert all(b - a == splits.ORIGIN_STEP for a, b in pairwise(grid.forward))
+    assert len(grid.forward_warmup) == splits.WARMUP_ORIGINS
+    assert grid.forward_warmup[-1] + splits.ORIGIN_STEP == grid.forward[0]
+    assert grid.window("forward") == (grid.forward, grid.forward_warmup)
+    assert splits.registered_grid(_calendar("2027-09-14")).forward == ()
+
+
+def test_a_closed_day_is_not_a_trading_day_so_the_last_target_moves_a_day():
+    """D22: the window keeps its 42 origins over the days the exchange
+    opened, so a closure moves its end one trading day later."""
+    closed = pd.Timestamp("2027-03-10")
+    assert splits.last_forward_target([closed]) == pd.Timestamp("2027-09-16")
+    dates = _calendar("2027-09-16", closed=("2025-01-09", "2027-03-10"))
+    grid = splits.registered_grid(dates)
+    assert len(grid.forward) == 42
+    assert dates[grid.forward[-1] + splits.HORIZON] == pd.Timestamp("2027-09-16")
+    assert splits.registered_grid(dates[:-1]).forward == ()
