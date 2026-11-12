@@ -90,6 +90,9 @@ class RunResult:
     scored: dict[str, int] = field(default_factory=dict)
     sentiment_failed: list[str] = field(default_factory=list)
     news_failed: list[str] = field(default_factory=list)
+    # The summaries' one write (7.4) failed: the bars are stored, the tab's
+    # table keeps the previous run's summaries.
+    summary_failed: bool = False
     finbert_failed: bool = False
 
     @property
@@ -118,12 +121,13 @@ class RunResult:
     @property
     def exit_code(self) -> int:
         """1 when any list failed (T8), a write failed (a price replacement,
-        a symbol's news), FinBERT could not load, or a step failed for every
+        the summaries, a symbol's news), FinBERT could not load, or a step failed for every
         active symbol; one symbol's skipped download, analytics or feed is a
         warning only (section 14)."""
         failed = (
             self.failed_lists
             or self.prices_failed
+            or self.summary_failed
             or self.news_failed
             or self.finbert_failed
             or self.failed_steps
@@ -358,22 +362,27 @@ def _prices_and_analytics(
         logger.info(f"  {symbol}: {written} daily bars replace the stored ones")
         try:
             summary, jumps = summarize(bars, symbol)
+            moved = summary["big_move_date"]
+            if moved is not None and moved != row.get("big_move_date"):
+                move = jumps.iloc[-1]
+                logger.warning(
+                    f"{symbol}: big move on {moved}, close "
+                    f"{move['ratio']:.2f}x the day before (badged, never blocking)"
+                )
         except Exception as error:
             logger.warning(f"{symbol}: indicators or flags failed: {error}")
             result.analytics_failed.append(symbol)
             continue
-        if summary["big_move_date"] is not None and summary["big_move_date"] != row.get(
-            "big_move_date"
-        ):
-            move = jumps.iloc[-1]
-            logger.warning(
-                f"{symbol}: big move on {summary['big_move_date']}, close "
-                f"{move['ratio']:.2f}x the day before (badged, never blocking)"
-            )
         summaries.append(row | summary | {"first_bar_date": _first_date(bars)})
         result.analysed.append(symbol)
     if summaries:
-        db_trending.upsert_tickers(summaries, db_trending.SUMMARY_COLUMNS)
+        # A failure here is a write failing, as a price replacement's is: the
+        # news still runs, and the run ends red.
+        try:
+            db_trending.upsert_tickers(summaries, db_trending.SUMMARY_COLUMNS)
+        except Exception as error:
+            logger.error(f"The summaries could not be stored: {error}")
+            result.summary_failed = True
 
 
 @contextmanager

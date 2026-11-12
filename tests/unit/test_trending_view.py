@@ -264,7 +264,8 @@ def test_symbol_and_badges_come_first_and_stay_in_view_on_any_width():
     config = view.table_column_config()
     assert set(config) <= set(view.TABLE_COLUMNS)
     pinned = {name for name, column in config.items() if column.get("pinned")}
-    assert pinned == {"Symbol", "Badges"}
+    assert pinned == set(view.PINNED_COLUMNS) == {"Symbol", "Badges"}
+    assert view.TABLE_COLUMNS[: len(view.PINNED_COLUMNS)] == list(view.PINNED_COLUMNS)
     assert config["Badges"].get("width") == "medium"
     (table,) = [
         call for call in _dataframe_calls(_tab(APP)) if call.startswith("shown")

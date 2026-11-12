@@ -334,3 +334,18 @@ def test_counted_sessions_come_back_as_dates_newest_first(read_tables):
     read_tables["trending_fetches"] = frame
     assert trending.counted_sessions(5) == [dt.date(2026, 11, 10), dt.date(2026, 11, 6)]
     assert seen == {"limit": 5}
+
+
+def test_tickers_rows_with_no_update_columns_are_inserted_only(fake_db):
+    """An empty update passed the checks but built ON CONFLICT DO UPDATE
+    with an empty SET, which SQLAlchemy refuses: upsert_tickers raised, and
+    save_run, whose default it is, raised inside its transaction after
+    sending the fetch (found in the full-diff review, 2026-11-12). A stored
+    row is now left as it is."""
+    assert trending.upsert_tickers([_ticker("SPCX")], ()) == 1
+    assert trending.upsert_tickers([_ticker("SPCX", short_name="Renamed")], ()) == 0
+    assert fake_db.tables["tickers"][0]["short_name"] is None
+    stored = trending.save_run(
+        [_snapshot("HIMS")], [_outcome("most_actives")], [_ticker("HIMS")]
+    )
+    assert stored == (1, 1, 1)

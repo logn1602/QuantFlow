@@ -244,10 +244,9 @@ def table_column_config() -> dict[str, Any]:
     importable without it."""
     import streamlit as st
 
-    return {
-        "Symbol": st.column_config.Column(pinned=True),
-        "Badges": st.column_config.Column(pinned=True, width="medium"),
-    }
+    config = {name: st.column_config.Column(pinned=True) for name in PINNED_COLUMNS}
+    config["Badges"] = st.column_config.Column(pinned=True, width="medium")
+    return config
 
 
 def _number(value: Any, digits: int) -> float | None:

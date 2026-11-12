@@ -756,3 +756,35 @@ def test_the_cap_flag_limits_the_discovered_symbols(command):
 def test_a_negative_cap_is_refused():
     with pytest.raises(SystemExit):
         trending.main(["--cap", "-1"])
+
+
+def test_a_failed_summary_write_is_red_and_the_news_still_runs(world, monkeypatch):
+    """The summaries were written outside any guard, so a failure there (a
+    column grant missing from the writer role, say) escaped run(), skipping
+    the news step and the run's last line (found in the full-diff review,
+    2026-11-12). It is now recorded, the news still runs, and the run ends
+    red."""
+
+    def refuse(rows, update):
+        raise OperationalError(
+            "UPDATE tickers", {}, Exception("permission denied for table tickers")
+        )
+
+    monkeypatch.setattr(db_trending, "upsert_tickers", refuse)
+    yahoo = FakeYahoo({s: _yahoo(DAYS) for s in ("SPCX", "HIMS")})
+    result = _run(_all_lists("HIMS"), yahoo)
+    assert result.summary_failed
+    assert result.exit_code == 1
+    assert {row["ticker"] for row in world.tables["trending_news"]} == {"SPCX", "HIMS"}
+
+
+def test_a_new_big_move_warns_is_stored_and_never_stops_the_run(world, caplog):
+    """The branch no fixture reached: a split-sized jump in the last ten
+    sessions is a warning and a badge, never a stop (section 7.3)."""
+    moved = _yahoo(DAYS)
+    moved.iloc[-3:, :5] *= 1.6
+    yahoo = FakeYahoo({"SPCX": _yahoo(DAYS), "HIMS": moved})
+    result = _run(_all_lists("HIMS"), yahoo)
+    assert result.exit_code == 0
+    assert _tickers(world)["HIMS"]["big_move_date"] is not None
+    assert any("HIMS: big move on" in r.getMessage() for r in caplog.records)
