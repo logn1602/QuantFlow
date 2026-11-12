@@ -1,24 +1,47 @@
-# Environment
+# What `COPY . .` in the Dockerfile must never put in the image. Docker
+# matches each pattern from the context's root only, unlike .gitignore, so a
+# pattern that must match below the root starts with **/
+# (tests/unit/test_dockerfile.py checks the paths that must stay out and
+# the ones the build needs).
+
+# Environment and secrets
 .env
 *.env
+.streamlit/secrets.toml
 
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
+# Local notes, review reports and tool settings, none of them in git
+WORK_*.md
+.claude/
+.gstack/
+
+# The evaluation's export of the live database, its runs and MLflow's stores
+eval_snapshots/
+eval_runs/
+mlflow.db
+mlruns/
+mlruns_artifacts/
+
+# Python builds, caches and environments
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
 .Python
-*.egg-info/
+build/
+dist/
 venv/
+venv*/
 .venv/
 env/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
 # Logs
 logs/
-*.log
-
-# MLflow
-mlruns/
-mlruns_artifacts/
+**/*.log
 
 # Git
 .git/
@@ -27,13 +50,11 @@ mlruns_artifacts/
 # IDE
 .vscode/
 .idea/
+*.code-workspace
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Streamlit
-.streamlit/secrets.toml
 
 # Test files
 tests/
