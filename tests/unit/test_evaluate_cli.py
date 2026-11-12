@@ -17,19 +17,24 @@ from quantflow.evaluation.snapshot import write_snapshot
 from quantflow.pipelines import evaluate
 from quantflow.utils.trading_calendar import TRADING_DAY
 
-DATES = pd.date_range("2024-01-02", periods=530, freq=TRADING_DAY)
+# The registered calendar: the 2026-11-06 snapshot's 648 trading dates, less
+# 2025-01-09's closure, since every command takes its windows by date
+# (splits.registered_grid, D21).
+DATES = pd.date_range("2024-04-10", "2026-11-06", freq=TRADING_DAY).drop(
+    pd.Timestamp("2025-01-09")
+)
 
 
-def _bars(seed):
+def _bars(seed, dates=DATES):
     rng = np.random.default_rng(seed)
-    close = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.01, len(DATES))))
+    close = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.01, len(dates))))
     return pd.DataFrame(
-        {"date": DATES, "open": close, "high": close + 1, "low": close - 1,
+        {"date": dates, "open": close, "high": close + 1, "low": close - 1,
          "close": close, "volume": 1e6}
     )  # fmt: skip
 
 
-def _snapshot(tmp_path, built=None):
+def _snapshot(tmp_path, built=None, dates=DATES):
     articles = pd.DataFrame(
         {"ticker": ["AAPL"], "source": ["rss"], "url_domain": ["finance.yahoo.com"],
          "published_at": [pd.Timestamp("2025-09-02 14:00", tz="UTC")],
@@ -40,9 +45,9 @@ def _snapshot(tmp_path, built=None):
     empty = pd.DataFrame(columns=["ticker", "date", "zscore"])
     return write_snapshot(
         tmp_path / "snap",
-        as_of=DATES[-1],
-        exported_at=pd.Timestamp("2026-01-01", tz="UTC"),
-        prices={"AAPL": _bars(1), "MSFT": _bars(2)},
+        as_of=dates[-1],
+        exported_at=dates[-1].tz_localize("UTC") + pd.Timedelta(days=1),
+        prices={"AAPL": _bars(1, dates), "MSFT": _bars(2, dates)},
         articles=articles,
         stored_indicators=empty.drop(columns="zscore"),
         stored_anomalies=empty,
@@ -221,12 +226,40 @@ def test_without_mlflow_the_files_are_written_and_the_run_fails(tmp_path, monkey
 def test_a_date_built_from_15min_bars_at_an_origin_is_refused(
     tmp_path, harness, capsys
 ):
-    from quantflow.evaluation.splits import origin_grid
+    from quantflow.evaluation.splits import registered_grid
 
-    origin = DATES[origin_grid(len(DATES)).validation[3]]
+    origin = DATES[registered_grid(DATES).validation[3]]
     _snapshot(tmp_path, built={"AAPL": [origin], "MSFT": []})
     assert _run(tmp_path) == 1
     assert "built from 15-min bars" in capsys.readouterr().err
+
+
+def test_a_newer_snapshot_scores_the_registered_dates(tmp_path, harness):
+    """The windows are fixed by date (D21). Counted back from a newer
+    snapshot's last date they moved: with data to 2026-11-20 the test
+    window reached 2026-11-11, inside the forward test's window, and the
+    validation window held test dates (full-diff review, 2026-11-12)."""
+    newer = pd.date_range(DATES[0], "2026-11-20", freq=TRADING_DAY)
+    _snapshot(tmp_path, dates=newer[newer != pd.Timestamp("2025-01-09")])
+    assert _run(tmp_path, "--window", "test", "--reason", "x") == 0
+    cells = pd.read_csv(tmp_path / "runs" / "r" / "cells.csv", parse_dates=["origin"])
+    first, last = cells["origin"].min(), cells["origin"].max()
+    assert (first.date().isoformat(), last.date().isoformat()) == (
+        "2026-05-07",
+        "2026-10-28",
+    )
+    assert cells["origin"].nunique() == 25
+
+
+def test_a_snapshot_whose_windows_cannot_be_matched_is_refused(
+    tmp_path, harness, capsys
+):
+    """A date lost inside the windows would shift them; the run refuses
+    before scoring anything."""
+    _snapshot(tmp_path, dates=DATES.delete(DATES.get_loc(pd.Timestamp("2025-09-02"))))
+    assert _run(tmp_path) == 2
+    assert "as registered" in capsys.readouterr().err
+    assert not (tmp_path / "runs" / "r").exists()
 
 
 def test_coverage_reports_the_news_ablation_status(tmp_path, capsys):
@@ -349,7 +382,8 @@ def test_compare_refuses_test_date_cells(tmp_path, harness, capsys):
 
 # ── tune (Phase 3, E3) ────────────────────────────────────────────────────────
 
-LONG = pd.date_range("2024-01-02", periods=600, freq=TRADING_DAY)
+# Long enough for the tuning window: the registered calendar itself.
+LONG = DATES
 
 
 def _long_snapshot(tmp_path, dates=LONG):
@@ -366,7 +400,8 @@ def _long_snapshot(tmp_path, dates=LONG):
                                      "inserted_at", "sentiment", "score_pos",
                                      "score_neg", "score_neu", "compound"])  # fmt: skip
     return write_snapshot(
-        tmp_path / "long", as_of=dates[-1], exported_at=pd.Timestamp("2026-01-01", tz="UTC"),
+        tmp_path / "long", as_of=dates[-1],
+        exported_at=dates[-1].tz_localize("UTC") + pd.Timedelta(days=1),
         prices=prices, articles=articles, stored_indicators=empty.drop(columns="zscore"),
         stored_anomalies=empty, built_dates={"AAPL": [], "MSFT": []},
     )  # fmt: skip
@@ -382,7 +417,8 @@ def _off_by(percent):
 def test_tune_scores_every_candidate_on_the_tuning_origins(
     tmp_path, harness, monkeypatch
 ):
-    from quantflow.evaluation.splits import origin_grid
+    from quantflow.evaluation.rolling_origin import calendar_mismatched
+    from quantflow.evaluation.splits import registered_grid
 
     _long_snapshot(tmp_path)
     fake = {
@@ -399,9 +435,10 @@ def test_tune_scores_every_candidate_on_the_tuning_origins(
     assert code == 0
     out = tmp_path / "runs" / "t"
     cells = pd.read_csv(out / "cells.csv", parse_dates=["origin", "target_date"])
-    grid = origin_grid(len(LONG))
+    grid = registered_grid(LONG)
+    closed = calendar_mismatched(LONG, grid.tuning)  # 2025-01-09, left out
     assert set(cells["window"]) == {"tuning"}
-    assert cells["origin"].nunique() == len(grid.tuning) > 0
+    assert cells["origin"].nunique() == len(grid.tuning) - len(closed) > 0
     # No tuning target reaches the validation warmup.
     assert cells["target_date"].max() < LONG[grid.validation_warmup[0]]
     table = pd.read_csv(out / "tuning.csv").set_index("candidate")
@@ -422,9 +459,10 @@ def test_tune_scores_every_candidate_on_the_tuning_origins(
 
 
 def test_tune_refuses_a_snapshot_with_no_tuning_origin(tmp_path, harness, capsys):
-    _snapshot(tmp_path)  # 530 dates: the grid leaves no room before its warmup
+    # History from 2024-10-02: the windows fit, with no room before the warmup.
+    _long_snapshot(tmp_path, dates=LONG[120:])
     code = evaluate.main(
-        ["tune", "--snapshot", str(tmp_path / "snap"), "--out", str(tmp_path / "runs")]
+        ["tune", "--snapshot", str(tmp_path / "long"), "--out", str(tmp_path / "runs")]
     )
     assert code == 2 and "no tuning origin" in capsys.readouterr().err
 
@@ -447,15 +485,16 @@ def test_the_tuning_candidates_are_the_current_settings_and_the_grid():
 def test_tune_leaves_out_an_origin_whose_days_hold_an_unknown_closure(
     tmp_path, harness, monkeypatch
 ):
-    """Like 2025-01-09 in the real tuning window: the data skips a day the
-    calendar trades, so the origin whose 7 days span it is left out and
+    """2025-01-09 in the real tuning window: the data skips a day the
+    calendar trades, so each origin whose 7 days span it is left out and
     named, instead of the run failing."""
-    from quantflow.evaluation.splits import origin_grid
+    from quantflow.evaluation.rolling_origin import calendar_mismatched
+    from quantflow.evaluation.splits import registered_grid
 
-    tuning = origin_grid(len(LONG)).tuning
-    origin = tuning[3]
-    full = pd.date_range(LONG[0], periods=len(LONG) + 1, freq=TRADING_DAY)
-    _long_snapshot(tmp_path, dates=full.delete(origin + 3))
+    tuning = registered_grid(LONG).tuning
+    left_out = calendar_mismatched(LONG, tuning)
+    assert left_out, "the registered calendar leaves 2025-01-09 out"
+    _long_snapshot(tmp_path)
     fake = {"xgboost#00": ("xgboost", {"max_depth": 4}, _off_by(1))}
     monkeypatch.setattr(evaluate, "tuning_candidates", lambda models: fake)
     code = evaluate.main(
@@ -464,10 +503,11 @@ def test_tune_leaves_out_an_origin_whose_days_hold_an_unknown_closure(
     )  # fmt: skip
     assert code == 0
     cells = pd.read_csv(tmp_path / "runs" / "t" / "cells.csv", parse_dates=["origin"])
-    assert cells["origin"].nunique() == len(tuning) - 1
-    assert full[origin] not in set(cells["origin"])
+    assert cells["origin"].nunique() == len(tuning) - len(left_out)
     report = (tmp_path / "runs" / "t" / "report.md").read_text("utf-8")
-    assert str(full[origin].date()) in report
+    for position in left_out:
+        assert LONG[position] not in set(cells["origin"])
+        assert str(LONG[position].date()) in report
 
 
 def _fails_every_other_origin(data):

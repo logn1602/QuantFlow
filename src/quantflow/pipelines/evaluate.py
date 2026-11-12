@@ -56,7 +56,7 @@ from quantflow.evaluation.snapshot import (
     read_snapshot,
     write_snapshot,
 )
-from quantflow.evaluation.splits import HORIZON, ORIGIN_STEP, origin_grid
+from quantflow.evaluation.splits import HORIZON, ORIGIN_STEP, registered_grid
 from quantflow.features.engineering import (
     INDICATOR_COLUMNS,
     build_features,
@@ -158,7 +158,7 @@ def stored_feature_check(snapshot: Snapshot) -> pd.DataFrame:
 
 def coverage_table(snapshot: Snapshot) -> pd.DataFrame:
     dates = snapshot.trading_dates
-    grid = origin_grid(len(dates))
+    grid = registered_grid(dates)
     windows = {
         "validation": list(dates[list(grid.validation)]),
         "test": list(dates[list(grid.test)]),
@@ -227,7 +227,11 @@ def run_evaluation(args) -> int:
 
     snapshot = read_snapshot(args.snapshot)
     dates = snapshot.trading_dates
-    scored, warmup = origin_grid(len(dates)).window(args.window)
+    try:
+        scored, warmup = registered_grid(dates).window(args.window)
+    except ValueError as e:
+        print(f"Refusing: {e}.", file=sys.stderr)
+        return 2
     tickers = args.tickers or snapshot.tickers
     known = {**FORECASTERS, **VARIANTS}
     forecasters = {m: f for m, f in known.items() if m in args.models}
@@ -400,7 +404,11 @@ def tune_boosters(args) -> int:
     commit, dirty = git_state()
     snapshot = read_snapshot(args.snapshot)
     dates = snapshot.trading_dates
-    origins, _ = origin_grid(len(dates)).window("tuning")
+    try:
+        origins, _ = registered_grid(dates).window("tuning")
+    except ValueError as e:
+        print(f"Refusing: {e}.", file=sys.stderr)
+        return 2
     if not origins:
         print(
             "Refusing: the snapshot has no tuning origin (too little history "

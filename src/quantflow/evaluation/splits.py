@@ -17,9 +17,12 @@ against a buy-and-hold benchmark.
 """
 
 import math
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 
 import pandas as pd
+
+from quantflow.utils.trading_calendar import next_trading_days
 
 # Trading days held out for evaluation. Roughly six calendar weeks.
 HOLDOUT_DAYS = 30
@@ -77,7 +80,9 @@ class OriginGrid:
     target falls before the first test target, so no choice made on the
     validation dates sees a test-date close. tuning (Phase 3's booster
     settings) lies wholly before the validation warmup: its targets are
-    training data for every validation and test origin.
+    training data for every validation and test origin. forward (D16) is
+    the forward test's window, empty until the data holds its last target,
+    since it is scored once (registered_grid).
     """
 
     test: tuple[int, ...]
@@ -85,18 +90,22 @@ class OriginGrid:
     validation: tuple[int, ...]
     validation_warmup: tuple[int, ...]
     tuning: tuple[int, ...] = ()
+    forward: tuple[int, ...] = ()
+    forward_warmup: tuple[int, ...] = ()
 
     def window(self, name: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        """(scored, warmup) origins of the "test", "validation" or "tuning"
-        window; tuning has no warmup."""
+        """(scored, warmup) origins of the "test", "validation", "tuning" or
+        "forward" window; tuning has no warmup."""
         if name == "test":
             return self.test, self.test_warmup
         if name == "validation":
             return self.validation, self.validation_warmup
         if name == "tuning":
             return self.tuning, ()
+        if name == "forward":
+            return self.forward, self.forward_warmup
         raise ValueError(
-            f"unknown window {name!r}; expected test, validation or tuning"
+            f"unknown window {name!r}; expected test, validation, tuning or forward"
         )
 
 
@@ -148,3 +157,94 @@ def origin_grid(
         tuple(validation_warmup),
         tuple(tuning[::-1]),
     )
+
+
+# ── The registered windows, by date (decision D21) ───────────────────────────
+#
+# origin_grid counts back from a series' last date. That is how the windows
+# were drawn, on the snapshot of 2026-11-06, but counted that way on a newer
+# snapshot they would move: with data to 2026-11-18 the last test origin
+# would be 2026-11-09, the forward test's first origin, and from 2026-11-20
+# the validation window would hold test dates, all without a trace. So every
+# command takes its grid from registered_grid, which anchors it at the last
+# test origin's date and checks each window against the dates below.
+
+# The snapshot the windows were drawn on (docs/evaluation.md, section 2).
+REGISTERED_AS_OF = pd.Timestamp("2026-11-06")
+# Each window's first and last origin (D1, D1a). The tuning window is left
+# to the data's first date, as it always was: it is every origin before the
+# validation warmup with MIN_ORIGIN_HISTORY rows behind it.
+REGISTERED_WINDOWS = {
+    "validation": (pd.Timestamp("2025-06-30"), pd.Timestamp("2026-04-23")),
+    "validation_warmup": (pd.Timestamp("2025-04-02"), pd.Timestamp("2025-06-23")),
+    "test": (pd.Timestamp("2026-05-07"), pd.Timestamp("2026-10-28")),
+    "test_warmup": (pd.Timestamp("2026-02-10"), pd.Timestamp("2026-04-30")),
+}
+# The forward test (D16): FORWARD_ORIGINS origins every ORIGIN_STEP trading
+# days from the first trading date after REGISTERED_AS_OF, scored once, when
+# the last one's day-HORIZON close is in.
+FIRST_FORWARD_ORIGIN = pd.Timestamp("2026-11-09")
+FORWARD_ORIGINS = 42
+
+
+def last_forward_target(closed: Iterable = ()) -> pd.Timestamp:
+    """The date of the forward window's last target: 2027-09-15 by the
+    calendar, one trading day later for each listed closure (closed, D22).
+    The forward test is scored once this close is in, and not before."""
+    days = (FORWARD_ORIGINS - 1) * ORIGIN_STEP + HORIZON + 1
+    return next_trading_days(REGISTERED_AS_OF, days, closed=closed)[-1]
+
+
+def registered_grid(dates) -> OriginGrid:
+    """The registered grid on a snapshot's trading dates: each window on its
+    registered dates, whatever date the snapshot ends on, and the forward
+    window (D16) once the data holds its last target (empty before, so no
+    command can score part of it).
+
+    Raises ValueError when the dates do not reach the last test origin's
+    day-HORIZON target, or when a window's first or last origin is not its
+    registered date, as when a snapshot's history inside the windows
+    differs from the 2026-11-06 snapshot's: the windows are fixed by date,
+    and a grid that cannot match them is refused rather than shifted.
+    """
+    dates = pd.DatetimeIndex(dates)
+    last_test = REGISTERED_WINDOWS["test"][1]
+    if last_test not in dates:
+        raise ValueError(
+            f"the snapshot's dates do not include {last_test.date()}, the last "
+            f"test origin; the windows are fixed by date"
+        )
+    position = dates.get_loc(last_test)
+    if position + HORIZON >= len(dates):
+        raise ValueError(
+            f"the snapshot ends {dates[-1].date()}, before the last test "
+            f"origin's day-{HORIZON} target"
+        )
+    grid = origin_grid(position + HORIZON + 1)
+    for name, registered in REGISTERED_WINDOWS.items():
+        positions = getattr(grid, name)
+        found = (dates[positions[0]], dates[positions[-1]])
+        if found != registered:
+            raise ValueError(
+                f"on this snapshot the {name} window would run "
+                f"{found[0].date()} to {found[1].date()}, not "
+                f"{registered[0].date()} to {registered[1].date()} as "
+                f"registered: its trading dates differ from the 2026-11-06 "
+                f"snapshot's inside the windows"
+            )
+    return replace(grid, **_forward(dates))
+
+
+def _forward(dates: pd.DatetimeIndex) -> dict[str, tuple[int, ...]]:
+    """The forward window's origins and warmup in dates, both empty while the
+    data does not hold the last origin's day-HORIZON close. Counted over the
+    dates in the data, which are the days the exchange opened: a closed day
+    (D22) is not one of them."""
+    if FIRST_FORWARD_ORIGIN not in dates:
+        return {"forward": (), "forward_warmup": ()}
+    first = dates.get_loc(FIRST_FORWARD_ORIGIN)
+    forward = tuple(first + ORIGIN_STEP * k for k in range(FORWARD_ORIGINS))
+    if forward[-1] + HORIZON >= len(dates):
+        return {"forward": (), "forward_warmup": ()}
+    warmup = tuple(first - ORIGIN_STEP * k for k in range(WARMUP_ORIGINS, 0, -1))
+    return {"forward": forward, "forward_warmup": warmup}
