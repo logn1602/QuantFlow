@@ -81,8 +81,9 @@ CONFLICT_KEYS = {
     "news_sentiment": ("ticker", "headline", "published_at"),
     "forecasts": ("ticker", "model", "forecast_date", "run_at"),
     "technical_indicators": ("ticker", "ts"),
-    # sql/schema.sql's key. The live table predates it and has none yet (see
-    # sql/migrations/001_dedupe_anomalies.sql), so nothing conflicts there.
+    # sql/schema.sql's key. The live table predates it and has none, and no
+    # duplicate either (001_dedupe_anomalies.sql is obsolete), so nothing
+    # conflicts there.
     "anomalies": ("ticker", "ts"),
     # sql/schema_trending.sql.
     "tickers": ("symbol",),

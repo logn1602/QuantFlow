@@ -954,7 +954,8 @@ about 3.5 minutes from the live ensemble refits, if D2 approves them (section 5)
 Resolves Known problems #1 (not like-for-like) and #2 (the reported error does not
 describe the published forecast), the single-holdout limitation, and #6 (the duplicated
 meta-learner loop). Leaves #3 (the backtest, Phase 4), #4 (the scheduler), #5 (the
-dashboard import) and #7 (the anomaly duplicates; migration 001 is still yours to run).
+dashboard import) and #7 (the anomaly duplicates; migration 001 is obsolete: the live
+table has none left, checked 2026-11-12).
 
 ---
 

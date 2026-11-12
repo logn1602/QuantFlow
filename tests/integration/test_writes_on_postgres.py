@@ -739,12 +739,11 @@ def _run_raw(engine, script):
         raw.invalidate()  # the connection's autocommit stays out of the pool
 
 
-def test_migration_001_keeps_the_newest_copy_adds_the_key_and_refuses_twice(
-    scratch_schema,
-):
-    """On the table as the live one was made, before schema.sql gained
-    UNIQUE (ticker, ts): the newest copy of each flag stays, the key is
-    added, and a second run stops at its first check, changing nothing."""
+def test_migration_001_is_obsolete_and_changes_nothing(scratch_schema):
+    """Obsolete since 2026-11-12, when the live table held no duplicate: on a
+    table that still has some, as the live one was made before schema.sql
+    gained UNIQUE (ticker, ts), a run stops at its first statement, and
+    every row stays, with no key added."""
     with scratch_schema() as (engine, _):
         with engine.begin() as conn:
             conn.exec_driver_sql("""
@@ -768,17 +767,14 @@ def test_migration_001_keeps_the_newest_copy_adds_the_key_and_refuses_twice(
                 "('MSFT', '2026-11-10 00:00+00', 5.0, 'LOW')"
             )
         script = MIGRATION_001.read_text(encoding="utf-8")
-        _run_raw(engine, script)
-        with engine.connect() as conn:
-            kept = conn.exec_driver_sql(
-                "SELECT ticker, close FROM anomalies ORDER BY ticker"
-            ).all()
-            key = conn.exec_driver_sql(
-                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-                "WHERE conname = 'anomalies_ticker_ts_key'"
-            ).scalar_one()
-        assert [(t, float(c)) for t, c in kept] == [("AAPL", 12.0), ("MSFT", 5.0)]
-        assert key == "UNIQUE (ticker, ts)"
-        with pytest.raises(Exception, match="migration already applied"):
+        with pytest.raises(Exception, match="is obsolete"):
             _run_raw(engine, script)
-        assert _count(engine, "SELECT count(*) FROM anomalies") == 2
+        assert _count(engine, "SELECT count(*) FROM anomalies") == 4
+        assert (
+            _count(
+                engine,
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'anomalies'::regclass AND contype = 'u'",
+            )
+            == 0
+        )
