@@ -1,61 +1,23 @@
-# What `COPY . .` in the Dockerfile must never put in the image. Docker
-# matches each pattern from the context's root only, unlike .gitignore, so a
-# pattern that must match below the root starts with **/
-# (tests/unit/test_dockerfile.py checks the paths that must stay out and
-# the ones the build needs).
+# Deny by default: COPY . . in the Dockerfile copies only what is let back
+# in below, so nothing kept out of git (the evaluation's export of the live
+# database, local notes and review reports, tools' settings, secrets) can
+# reach an image, whatever its name. tests/unit/test_dockerfile.py checks
+# both what stays out and what the build needs.
+*
 
-# Environment and secrets
-.env
-*.env
-.streamlit/secrets.toml
+# What the image needs: the package's build files (pyproject.toml names
+# README.md and LICENSE), its source, the dashboard's theme and the
+# committed lists.
+!pyproject.toml
+!README.md
+!LICENSE
+!requirements.txt
+!src/
+!config/
+!.streamlit/config.toml
 
-# Local notes, review reports and tool settings, none of them in git
-WORK_*.md
-.claude/
-.gstack/
-
-# The evaluation's export of the live database, its runs and MLflow's stores
-eval_snapshots/
-eval_runs/
-mlflow.db
-mlruns/
-mlruns_artifacts/
-
-# Python builds, caches and environments
+# Still out, inside what is let back in. Docker matches a pattern from the
+# context's root only, unlike .gitignore, so these start with **/
 **/__pycache__/
 **/*.py[cod]
 **/*.egg-info/
-.Python
-build/
-dist/
-venv/
-venv*/
-.venv/
-env/
-.coverage
-.coverage.*
-htmlcov/
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
-
-# Logs
-logs/
-**/*.log
-
-# Git
-.git/
-.gitignore
-
-# IDE
-.vscode/
-.idea/
-*.code-workspace
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Test files
-tests/
-*.test.py

@@ -159,10 +159,12 @@ def test_the_build_context_leaves_out_what_git_leaves_out():
     the install step (above), an image built from the owner's checkout
     would have carried the evaluation's export of the live database, the
     local review reports and notes, and the tools' settings, none of which
-    is in git (found in the full-diff review, 2026-11-12)."""
+    is in git (found in the full-diff review, 2026-11-12). The context is
+    now denied by default, so a file nobody thought to list stays out too:
+    the docs, the tests and the scripts, which the image does not need."""
     for path in (
         ".env",
-        ".claude/settings.local.json",
+        ".tool/settings.local.json",  # any tool's local settings, whatever its name
         ".gstack/browse-audit.jsonl",
         "WORK_BRIEF.md",
         "WORK_PROGRESS.md",
@@ -183,6 +185,10 @@ def test_the_build_context_leaves_out_what_git_leaves_out():
         ".pytest_cache/v/cache/lastfailed",
         ".ruff_cache/CACHEDIR.TAG",
         ".streamlit/secrets.toml",
+        "docs/evaluation.md",
+        "tests/conftest.py",
+        "scripts/diagnostics/run_1a_diagnostics.py",
+        "a_file_nobody_listed.txt",
     ):
         assert _excluded(path), path
 
