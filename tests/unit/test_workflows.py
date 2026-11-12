@@ -160,13 +160,27 @@ def test_daily_refresh_runs_one_at_a_time_without_cancelling():
     )
 
 
+# The data steps, by id, in order: each runs only if every step before it
+# succeeded (no condition of its own), and the models need all of them.
+DATA_STEPS = {
+    "fetch_intraday": "Fetch latest 15-min bars",
+    "fetch_daily": "Fetch daily bars",
+    "split_guard": "Check stored prices against Yahoo (split guard)",
+    "indicators": "Compute technical indicators",
+    "anomalies": "Detect anomalies",
+}
+AFTER_THE_TESTS = "${{ !cancelled() && steps.tests.outcome == 'success' }}"
+
+
 def test_a_failed_sentiment_step_fails_the_run_but_the_models_still_run():
-    """FinBERT not loading fails the sentiment step, and so the run, but the
-    models still train, on the sentiment already stored."""
+    """FinBERT not loading, or every feed failing, fails the sentiment step,
+    and so the run, but the models still train, on the sentiment already
+    stored: their condition names every data step and not the news."""
     assert re.search(r"^\s+id: sentiment$", STEPS[SENTIMENT], re.MULTILINE)
     assert "continue-on-error" not in STEPS[SENTIMENT]
+    needed = " && ".join(f"steps.{i}.outcome == 'success'" for i in DATA_STEPS)
     assert _condition("Run all 5 forecasting models") == (
-        "${{ !cancelled() && steps.sentiment.outcome != 'skipped' }}"
+        f"${{{{ !cancelled() && {needed} }}}}"
     )
     assert _condition("Run strategy backtest") == (
         "${{ !cancelled() && steps.models.outcome == 'success' }}"
@@ -174,14 +188,67 @@ def test_a_failed_sentiment_step_fails_the_run_but_the_models_still_run():
 
 
 def test_a_failed_split_guard_still_stops_every_stage_after_it():
-    """The models run after a failed sentiment step because that step ran, and
-    it runs only if every step before it succeeded. A plain !cancelled() on
-    the models would run them after a failed guard too."""
+    """The data steps chain: each runs only if every step before it
+    succeeded, so a failed guard stops the indicators and the anomalies, and
+    the models wait for all five. A plain !cancelled() on any of them would
+    run it after a failed guard."""
     names = list(STEPS)
-    guard = names.index("Check stored prices against Yahoo (split guard)")
-    for name in names[guard : names.index(SENTIMENT) + 1]:
+    for step_id, name in DATA_STEPS.items():
+        assert re.search(rf"^\s+id: {step_id}$", STEPS[name], re.MULTILINE), name
         assert _condition(name) is None, name
         assert "continue-on-error" not in STEPS[name], name
+    order = [names.index(name) for name in DATA_STEPS.values()]
+    assert order == sorted(order)
+    assert order[-1] < names.index("Run all 5 forecasting models")
+
+
+def test_the_news_still_runs_after_a_failed_data_step():
+    """Yahoo's RSS feeds show only current headlines, so a day not fetched is
+    lost for good, and the forward test needs a fetch every trading day. The
+    news ran only when every step before it had succeeded: a throttled split
+    guard or a failed fetch cost the day's news (full-diff review,
+    2026-11-12). It now needs only the tests, as does the model it loads."""
+    assert re.search(r"^\s+id: tests$", STEPS["Run tests"], re.MULTILINE)
+    assert _condition(SENTIMENT) == AFTER_THE_TESTS
+    assert _condition("Cache the FinBERT model") == AFTER_THE_TESTS
+    names = list(STEPS)
+    assert names.index("Detect anomalies") < names.index(SENTIMENT)
+
+
+DB_SECRETS = ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD")
+
+
+def test_the_refresh_gives_the_database_secrets_to_the_steps_that_connect_alone():
+    """The login is postgres, which owns every table and which row-level
+    security does not apply to. In the job's env every step held it:
+    setup-uv, the caches, the install that builds ta from its source, and
+    the test suite (full-diff review, 2026-11-12). Each step that connects
+    now names all five itself, and no other step has any; the tests get
+    CI's dummy password."""
+    assert "secrets." not in _job_header(DAILY_REFRESH)
+    connecting = [
+        name for name, step in STEPS.items() if "python -m quantflow." in step
+    ]
+    assert connecting == [*DATA_STEPS.values(), SENTIMENT,
+                          "Run all 5 forecasting models", "Run strategy backtest"]  # fmt: skip
+    for name, step in STEPS.items():
+        for secret in DB_SECRETS:
+            given = f"{secret}: ${{{{ secrets.{secret} }}}}" in step
+            assert given == (name in connecting), (name, secret)
+    assert "DB_PASSWORD: ci-not-a-real-password" in STEPS["Run tests"]
+
+
+def test_every_workflow_runs_the_same_pinned_uv():
+    """setup-uv installed the newest uv on every run, so a uv release could
+    change the install or `uv run` under the refresh with nothing in the
+    repository changing (full-diff review, 2026-11-12). Dependabot updates
+    the action, not this; it is raised by hand, in every workflow at once."""
+    versions = {}
+    for workflow, step in _setup_uv_steps():
+        found = re.search(r'^\s+version: "(\d+\.\d+\.\d+)"$', step, re.MULTILINE)
+        assert found, f"{workflow}: setup-uv without an exact version"
+        versions[found.group(1)] = workflow
+    assert len(versions) == 1, versions
 
 
 def test_the_finbert_model_is_cached_by_the_revision_the_code_pins():

@@ -575,9 +575,11 @@ table's models). CI runs the same tests on every pull request, so none of these 
 `main` unnoticed through a reviewed merge; the cost is the night it would: no prices,
 no models and none of the day's news, which RSS cannot give back. The writer role's
 checks live in a module of their own (`test_trending_writer_role.py`) so that the
-core's role checks import nothing of the tier. Fixes for the owner to weigh: an
-explicit list of the core's data-logic test paths for this step, the text checks in CI
-only, and the fetch and sentiment steps run when only the test step failed.
+core's role checks import nothing of the tier. A failed data step no longer costs the
+news (2026-11-12): the sentiment step needs only the tests. Fixes for the owner to
+weigh: an explicit list of the core's data-logic test paths for this step, the text
+checks in CI only, and the fetch and sentiment steps run when only the test step
+failed.
 
 ---
 

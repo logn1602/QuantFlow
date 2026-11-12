@@ -124,8 +124,10 @@ def news(monkeypatch):
 
     monkeypatch.setattr(
         sentiment,
-        "fetch_rss",
-        lambda ticker: fetched("Apple beats estimates", "UNSCORABLE headline"),
+        "read_feeds",
+        lambda ticker: sentiment.FeedRead(
+            fetched("Apple beats estimates", "UNSCORABLE headline"), feeds=1
+        ),
     )
     monkeypatch.setattr(sentiment, "fetch_newsapi", lambda ticker: [])
     monkeypatch.setattr(sentiment.time, "sleep", lambda seconds: None)
@@ -221,6 +223,113 @@ def test_fetch_rss_reads_the_same_articles_with_its_own_feeds_passed(parsed):
     default = sentiment.fetch_rss("MSFT")
     explicit = sentiment.fetch_rss("MSFT", feeds=sentiment.RSS_FEEDS["MSFT"])
     assert [a["headline"] for a in default] == [a["headline"] for a in explicit]
+
+
+# ── Failed feeds and the socket timeout (full-diff review, 2026-11-12) ────────
+# feedparser raises nothing for a refused connection or an error status, and
+# has no timeout of its own. The core counted neither: a total RSS outage gave
+# a green run with no news, and one stalled host could hold the refresh to its
+# 45-minute timeout. Not marked trending: these guard the core.
+
+
+def _failing(*urls_or_all):
+    """A feedparser.parse that answers 503 for these URLs (all with none
+    given) and one headline for the rest."""
+    import feedparser
+
+    def parse(url):
+        if not urls_or_all or url in urls_or_all:
+            return feedparser.FeedParserDict(status=503, entries=[], bozo=0)
+        return _feed(f"headline from {url}")
+
+    return parse
+
+
+def test_every_core_feed_is_read_with_a_socket_timeout_put_back_after(monkeypatch):
+    import socket
+
+    seen = []
+
+    def parse(url):
+        seen.append(socket.getdefaulttimeout())
+        return _feed("a headline")
+
+    monkeypatch.setattr(sentiment.feedparser, "parse", parse)
+    before = socket.getdefaulttimeout()
+    sentiment.fetch_rss("AAPL")
+    assert seen == [sentiment.RSS_TIMEOUT_SECONDS] * len(sentiment.RSS_FEEDS["AAPL"])
+    assert socket.getdefaulttimeout() == before
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"status": 503, "entries": [], "bozo": 0},
+        {"status": 429, "entries": [], "bozo": 1},
+        {"entries": [], "bozo": 1, "bozo_exception": OSError("connection refused")},
+    ],
+)
+def test_an_error_status_or_an_unreadable_feed_is_a_failed_feed(monkeypatch, answer):
+    import feedparser
+
+    monkeypatch.setattr(
+        sentiment.feedparser, "parse", lambda url: feedparser.FeedParserDict(answer)
+    )
+    read = sentiment.read_feeds("AAPL")
+    assert read.articles == [] and read.failed == sentiment.RSS_FEEDS["AAPL"]
+
+
+def test_a_feed_that_raises_is_a_failed_feed(monkeypatch):
+    def parse(url):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(sentiment.feedparser, "parse", parse)
+    assert sentiment.read_feeds("AAPL").failed == sentiment.RSS_FEEDS["AAPL"]
+
+
+def test_a_quiet_feed_is_not_a_failed_one(monkeypatch):
+    """No entries and no error: a day without news, not an outage."""
+    import feedparser
+
+    monkeypatch.setattr(
+        sentiment.feedparser,
+        "parse",
+        lambda url: feedparser.FeedParserDict(status=200, entries=[], bozo=0),
+    )
+    read = sentiment.read_feeds("AAPL")
+    assert read.articles == [] and read.failed == []
+    assert read.feeds == len(sentiment.RSS_FEEDS["AAPL"])
+
+
+@pytest.fixture
+def quiet_run(monkeypatch):
+    """The sentiment run with FinBERT faked, no NewsAPI and no pauses."""
+    monkeypatch.setattr(sentiment, "get_finbert", FakeFinBERT)
+    monkeypatch.setattr(sentiment, "fetch_newsapi", lambda ticker: [])
+    monkeypatch.setattr(sentiment.time, "sleep", lambda seconds: None)
+
+
+def test_every_feed_failing_turns_the_sentiment_step_red(
+    fake_db, quiet_run, monkeypatch, capsys
+):
+    """It exited 0 with no news read, so the daily refresh stayed green."""
+    monkeypatch.setattr(sentiment.feedparser, "parse", _failing())
+    assert sentiment.main([]) == 1
+    assert "every RSS feed failed" in capsys.readouterr().err
+    assert fake_db.tables["news_sentiment"] == []
+
+
+def test_some_feeds_failing_is_a_warning_and_the_rest_are_stored(
+    fake_db, quiet_run, monkeypatch, caplog
+):
+    monkeypatch.setattr(
+        sentiment.feedparser, "parse", _failing(*sentiment.RSS_FEEDS["AAPL"])
+    )
+    results = sentiment.run(["AAPL", "MSFT"])
+    assert results == {"AAPL": 0, "MSFT": len(sentiment.RSS_FEEDS["MSFT"])}
+    assert any(
+        "feeds failed; the rest were read" in r.getMessage() for r in caplog.records
+    )
 
 
 def test_save_sentiment_writes_news_sentiment_by_default(fake_db):

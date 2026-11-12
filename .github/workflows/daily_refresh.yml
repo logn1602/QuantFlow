@@ -1,7 +1,7 @@
 name: QuantFlow Daily Data Refresh
 
 on:
-  # Run daily at 22:30 UTC (6:30 PM ET — after market close)
+  # Run daily at 22:30 UTC (6:30 PM ET, after market close)
   schedule:
     - cron: '30 22 * * 1-5'   # Mon-Fri only (weekdays)
 
@@ -25,14 +25,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
-    # Shared by every step below. Previously each step re-declared these, so a
-    # variable missed in one step became a silent breakage.
+    # Shared by every step below, and no secret among them. The database
+    # login is postgres, which owns every table and which row-level security
+    # does not apply to, so each step that connects names the five DB_*
+    # secrets itself: setup-uv, the caches, the install (which builds ta from
+    # its source) and the test suite never hold them, as in trending.yml.
+    # tests/unit/test_workflows.py checks that every step that connects has
+    # all five and that no other step has any, so none can be missed.
     env:
-      DB_HOST: ${{ secrets.DB_HOST }}
-      DB_PORT: ${{ secrets.DB_PORT }}
-      DB_NAME: ${{ secrets.DB_NAME }}
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       TICKERS: AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,JPM
       LOG_LEVEL: INFO
 
@@ -43,9 +43,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # prune-cache: v9 of setup-uv stopped pruning before saving; see ci.yml.
+      # version: uv itself, pinned as in every workflow, so a uv release
+      # cannot change the install or `uv run` under the refresh. Dependabot
+      # updates the action, not this; raise it by hand, in every workflow.
       - name: Set up uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.8"
           enable-cache: true
           prune-cache: true
 
@@ -67,18 +71,27 @@ jobs:
 
       # Runs before any data step so a logic regression fails fast, before
       # touching the database. The suite is offline by design: no DB and no
-      # network (tests/conftest.py refuses both), although the job's DB_*
-      # secrets are in this step's environment too. CI's selection, which
-      # leaves the eval and integration suites out, less the trending tier's
-      # tests: they run in CI and in trending.yml, so a failing trending test
-      # does not stop the core's data steps. A trending module that cannot be
-      # imported still can, since pytest imports every module it collects
-      # before deselecting (docs/architecture.md, Known problem 16).
+      # network (tests/conftest.py refuses both), and it holds no secret: CI's
+      # dummy password, for the URL config builds at import. CI's selection,
+      # which leaves the eval and integration suites out, less the trending
+      # tier's tests: they run in CI and in trending.yml, so a failing
+      # trending test does not stop the core's data steps. A trending module
+      # that cannot be imported still can, since pytest imports every module
+      # it collects before deselecting (docs/architecture.md, Known problem 16).
       - name: Run tests
+        id: tests
+        env:
+          DB_PASSWORD: ci-not-a-real-password
         run: uv run pytest -m "not eval and not integration and not trending"
 
       - name: Fetch latest 15-min bars
+        id: fetch_intraday
         env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           # yfinance needs no key. ALPHA_VANTAGE_API_KEY is kept here because
           # this is the ingestion step that would consume it if the Alpha
           # Vantage fetcher were enabled; no step reads it today.
@@ -90,6 +103,13 @@ jobs:
       # 22:30 UTC is after 17:00 New York in both EST and EDT, so today's bar
       # is final by the time this runs. Five days heals any missed run.
       - name: Fetch daily bars
+        id: fetch_daily
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: uv run python -m quantflow.ingestion.yfinance_fetcher --daily
 
       # Fails the refresh before any stage reads prices if stored closes no
@@ -99,42 +119,87 @@ jobs:
       # confirmed by Yahoo), or if any ticker could not be checked. Threshold:
       # SPLIT_GUARD_THRESHOLD, default 0.15.
       - name: Check stored prices against Yahoo (split guard)
+        id: split_guard
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: uv run python -m quantflow.ingestion.split_guard
 
       - name: Compute technical indicators
+        id: indicators
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: uv run python -m quantflow.features.indicators
 
       - name: Detect anomalies
+        id: anomalies
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: uv run python -m quantflow.features.anomalies
 
       # FinBERT, about 440 MB, downloads from Hugging Face on first use. The key
       # is the revision the code pins (FINBERT_REVISION in
       # features/sentiment.py), so a new revision downloads once. actions/cache
-      # saves only when the whole job succeeds.
+      # saves only when the whole job succeeds. It runs when the news does.
       - name: Cache the FinBERT model
+        if: ${{ !cancelled() && steps.tests.outcome == 'success' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/huggingface
           key: finbert-${{ runner.os }}-4556d13015211d73dccd3fdd39d39232506f3e43
 
-      # Exits 1 when FinBERT cannot be loaded, which fails the run. Reads
-      # Yahoo's RSS feeds only: NewsAPI's free plan is for development and
-      # testing, so no key is passed (docs/evaluation.md, section 4).
+      # Runs once the tests have passed, even when a data step before it
+      # failed: Yahoo's RSS feeds show only current headlines, so a day not
+      # fetched is lost for good, and the forward test of the news needs a
+      # fetch every trading day (docs/evaluation.md, section 4). Exits 1 when
+      # FinBERT cannot be loaded or when every RSS feed failed, which fails
+      # the run. Reads Yahoo's RSS feeds only: NewsAPI's free plan is for
+      # development and testing, so no key is passed.
       - name: Analyze news sentiment
         id: sentiment
+        if: ${{ !cancelled() && steps.tests.outcome == 'success' }}
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: uv run python -m quantflow.features.sentiment
 
-      # Runs after a failed sentiment step too, on the sentiment already
-      # stored; the run still shows as failed. It requires that the sentiment
-      # step ran rather than only !cancelled(): sentiment runs only when every
-      # step before it succeeded, so a failed split guard still stops this.
+      # Runs only when every data step before it succeeded, whatever the news
+      # step did: a failed split guard still stops it, and a failed sentiment
+      # step does not (the models train on the sentiment already stored, and
+      # the run still shows as failed).
       - name: Run all 5 forecasting models
         id: models
-        if: ${{ !cancelled() && steps.sentiment.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.fetch_intraday.outcome == 'success' && steps.fetch_daily.outcome == 'success' && steps.split_guard.outcome == 'success' && steps.indicators.outcome == 'success' && steps.anomalies.outcome == 'success' }}
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: uv run python -m quantflow.pipelines.run_models
 
       - name: Run strategy backtest
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: uv run python -m quantflow.pipelines.backtest
 
       - name: Summary

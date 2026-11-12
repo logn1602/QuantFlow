@@ -32,11 +32,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
-import socket
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,12 +62,9 @@ FIRST_SIGHT_PERIOD = "6mo"
 # trending_prices' prices are NUMERIC(12, 4): a value this large cannot be
 # stored (a heavily reverse-split name's adjusted history can reach it).
 MAX_STORABLE_PRICE = 1e8
-# Between RSS fetches, as the core's sentiment stage does.
+# Between RSS fetches, as the core's sentiment stage does. Each feed read
+# has its socket timeout in sentiment.read_feeds, the core's too.
 RSS_PAUSE_SECONDS = 1.0
-# Each wait for a feed's data. feedparser has no timeout of its own: it reads
-# through urllib, which waits as long as the socket default allows, which is
-# forever unless one is set.
-RSS_TIMEOUT_SECONDS = 20
 
 
 @dataclass
@@ -385,17 +380,6 @@ def _prices_and_analytics(
             result.summary_failed = True
 
 
-@contextmanager
-def _socket_timeout(seconds: float) -> Iterator[None]:
-    """The socket default timeout set for a block, and put back after."""
-    previous = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(seconds)
-    try:
-        yield
-    finally:
-        socket.setdefaulttimeout(previous)
-
-
 def _news(selection, result: RunResult, *, pause: float) -> None:
     """Step 5: RSS only (D18), FinBERT loaded once, trending_news. A feed or
     the model failing for a symbol is a warning; the write failing is a
@@ -406,8 +390,7 @@ def _news(selection, result: RunResult, *, pause: float) -> None:
         return
     for symbol in selection.active:
         try:
-            with _socket_timeout(RSS_TIMEOUT_SECONDS):
-                articles = sentiment.fetch_rss(symbol, feeds=[rules.rss_feed(symbol)])
+            articles = sentiment.fetch_rss(symbol, feeds=[rules.rss_feed(symbol)])
             scores = sentiment.analyze_batch([a["headline"] for a in articles])
             scored = [
                 {**article, **score}

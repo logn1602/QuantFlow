@@ -23,9 +23,13 @@ Usage:
 """
 
 import argparse
+import socket
 import sys
 import time
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import feedparser
@@ -48,6 +52,11 @@ logger = get_logger("sentiment")
 
 class FinBERTUnavailableError(RuntimeError):
     """FinBERT could not be loaded, so no headline can be scored."""
+
+
+class AllFeedsFailedError(RuntimeError):
+    """Every RSS feed read failed, so no headline was read at all: the
+    day's news is missing, not quiet."""
 
 
 # ── FinBERT model ─────────────────────────────────────────────────────────────
@@ -214,23 +223,72 @@ def analyze_batch(headlines: list[str]) -> list[dict | None]:
 # ── News fetchers ─────────────────────────────────────────────────────────────
 
 
-def fetch_rss(ticker: str, feeds: list[str] | None = None) -> list[dict]:
+# Each wait for a feed's data. feedparser has no timeout of its own: it reads
+# through urllib, which waits as long as the socket default allows, forever
+# unless one is set, so one stalled host would hold the daily refresh to its
+# 45-minute timeout, which cancels the models too (full-diff review).
+RSS_TIMEOUT_SECONDS = 20
+
+
+@contextmanager
+def _socket_timeout(seconds: float) -> Iterator[None]:
+    """The socket default timeout set for a block, and put back after."""
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(previous)
+
+
+@dataclass
+class FeedRead:
+    """What reading a ticker's feeds found: its articles, how many feeds it
+    read, and the ones that failed."""
+
+    articles: list[dict] = field(default_factory=list)
+    feeds: int = 0
+    failed: list[str] = field(default_factory=list)
+
+
+def _failure(feed) -> str | None:
+    """Why a parsed feed failed, or None. feedparser raises nothing for a
+    refused connection or an error status: it returns a result with an HTTP
+    status of 400 or more, or with bozo set, the exception it caught, and no
+    entries. A feed that answered with no entries and no error is quiet, not
+    failed."""
+    status = feed.get("status")
+    if isinstance(status, int) and status >= 400:
+        return f"HTTP {status}"
+    if feed.get("bozo") and not feed.get("entries"):
+        return f"unreadable: {feed.get('bozo_exception')}"
+    return None
+
+
+def read_feeds(ticker: str, feeds: list[str] | None = None) -> FeedRead:
     """
-    Fetch headlines from Yahoo Finance RSS for a ticker.
-    Completely free, no API key needed.
-    Returns list of {headline, url, published_at, source} dicts.
+    Read a ticker's Yahoo Finance RSS feeds, each with a socket timeout.
+    Completely free, no API key needed. Returns a FeedRead: the articles
+    ({headline, url, published_at, source} dicts), and the feeds that
+    failed, each logged as a warning.
 
     feeds: the feed URLs to read. None, the default and the core's path,
     reads the ticker's RSS_FEEDS entry. The trending tier passes the feed it
     builds for a symbol not in RSS_FEEDS (docs/trending.md, section 7.5).
     """
     feeds = RSS_FEEDS.get(ticker, []) if feeds is None else feeds
-    articles = []
+    read = FeedRead(feeds=len(feeds))
     cutoff = datetime.now(UTC) - timedelta(days=7)
 
     for feed_url in feeds:
         try:
-            feed = feedparser.parse(feed_url)
+            with _socket_timeout(RSS_TIMEOUT_SECONDS):
+                feed = feedparser.parse(feed_url)
+            failure = _failure(feed)
+            if failure:
+                logger.warning(f"RSS fetch failed for {ticker} ({feed_url}): {failure}")
+                read.failed.append(feed_url)
+                continue
             for entry in feed.entries:
                 # Parse published date
                 published = None
@@ -249,7 +307,7 @@ def fetch_rss(ticker: str, feeds: list[str] | None = None) -> list[dict]:
                 if not headline:
                     continue
 
-                articles.append(
+                read.articles.append(
                     {
                         "headline": headline,
                         "url": entry.get("link", ""),
@@ -260,9 +318,16 @@ def fetch_rss(ticker: str, feeds: list[str] | None = None) -> list[dict]:
 
         except Exception as e:
             logger.warning(f"RSS fetch failed for {ticker} ({feed_url}): {e}")
+            read.failed.append(feed_url)
 
-    logger.info(f"  RSS: {len(articles)} articles for {ticker}")
-    return articles
+    logger.info(f"  RSS: {len(read.articles)} articles for {ticker}")
+    return read
+
+
+def fetch_rss(ticker: str, feeds: list[str] | None = None) -> list[dict]:
+    """The articles read_feeds finds, for a caller that judges a feed by what
+    it returned (the trending tier counts the headlines it scored)."""
+    return read_feeds(ticker, feeds).articles
 
 
 def fetch_newsapi(ticker: str) -> list[dict]:
@@ -464,11 +529,15 @@ def run(tickers: list[str] | None = None) -> dict:
             "FinBERT could not be loaded, so no sentiment rows were written"
         )
 
+    feeds_read = feeds_failed = 0
     for ticker in tickers:
         logger.info(f"Processing sentiment for {ticker}...")
 
         # Fetch from both sources
-        rss_articles = fetch_rss(ticker)
+        rss = read_feeds(ticker)
+        feeds_read += rss.feeds
+        feeds_failed += len(rss.failed)
+        rss_articles = rss.articles
         newsapi_articles = fetch_newsapi(ticker)
         all_articles = rss_articles + newsapi_articles
 
@@ -502,6 +571,17 @@ def run(tickers: list[str] | None = None) -> dict:
         # Small delay to be polite to APIs
         time.sleep(1)
 
+    # Every feed failing is an outage, not a day without news. Raised after
+    # the loop, so whatever another source returned is still stored.
+    if feeds_read and feeds_failed == feeds_read:
+        raise AllFeedsFailedError(
+            f"every RSS feed failed ({feeds_failed} of {feeds_read}): no news "
+            f"was read in this run"
+        )
+    if feeds_failed:
+        logger.warning(
+            f"RSS: {feeds_failed} of {feeds_read} feeds failed; the rest were read"
+        )
     return results
 
 
@@ -509,8 +589,9 @@ def run(tickers: list[str] | None = None) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Exits 1 when FinBERT cannot be loaded, so the daily refresh shows a
-    failed run; its later steps still run, on the sentiment already stored."""
+    """Exits 1 when FinBERT cannot be loaded or every RSS feed failed, so the
+    daily refresh shows a failed run; its models still run, on the sentiment
+    already stored."""
     parser = argparse.ArgumentParser(description="News sentiment analysis engine")
     parser.add_argument("--ticker", type=str, help="Single ticker (e.g. AAPL)")
     parser.add_argument("--show", type=str, help="Print sentiment for a ticker")
@@ -530,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Running sentiment pipeline for all tickers...")
     try:
         results = run(tickers)
-    except FinBERTUnavailableError as e:
+    except (FinBERTUnavailableError, AllFeedsFailedError) as e:
         logger.error(str(e))
         print(f"SENTIMENT FAILED: {e}", file=sys.stderr)
         return 1

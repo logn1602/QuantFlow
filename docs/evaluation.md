@@ -484,7 +484,9 @@ gets its test on dates still to come, with the plan fixed before any of them exi
   depends on the daily workflow fetching every trading day until then: GitHub disables
   a scheduled workflow after 60 days without repository activity (it did on
   2026-11-03), and under D6 a day without a fetch has every sentiment feature
-  missing.
+  missing. Since 2026-11-12 the news step runs once the tests have passed, even when
+  a data step before it failed, each feed read has a 20-second timeout, and the step
+  turns the run red when every feed failed, so a lost day shows the night it happens.
 - **Comparison**: the boosters with and without the sentiment features (R6's pair), on
   the code of that day, against each other with the primary test of section 3
   (per-origin APE difference, Newey-West, Holm across the two boosters), and both
