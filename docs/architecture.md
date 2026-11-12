@@ -377,7 +377,7 @@ visit.
 
 Ordered by how much they would change the reported results. Updated 2026-11-12
 (Phase 7): items 1, 2, 6 and 8 are fixed; 8 to 13 were found in Phase 4, 13 was seen on
-the live app on 2026-11-12, and 14 and 15 are new.
+the live app on 2026-11-12, and 14 to 16 are new.
 
 ### 1. The base-model comparison was not like-for-like (fixed in Phase 2)
 
@@ -546,6 +546,22 @@ chosen each day for its recent moves is selected on the outcome, which is why th
 is never forecast or scored. The caps (15 discovered symbols, 5 new a run) keep it
 inside yfinance's informal rate limits and FinBERT on the runner's CPU, so on a busy day
 the lists' further names wait.
+
+### 16. The daily refresh's test step can stop on something that is not core logic
+
+The refresh runs the offline suite before any data step, less the tests marked
+`trending`, so a failing trending test never stops the core. But pytest imports every
+test module it collects before it deselects, so a trending module that cannot be
+imported, or a trending file a test module reads at import (`test_workflows.py` reads
+`trending.yml`), fails the step all the same, and so do the repository-text checks in
+the selection (the commands named in the docs, `make help`, the published accuracy
+table's models). CI runs the same tests on every pull request, so none of these reaches
+`main` unnoticed through a reviewed merge; the cost is the night it would: no prices,
+no models and none of the day's news, which RSS cannot give back. The writer role's
+checks live in a module of their own (`test_trending_writer_role.py`) so that the
+core's role checks import nothing of the tier. Fixes for the owner to weigh: an
+explicit list of the core's data-logic test paths for this step, the text checks in CI
+only, and the fetch and sentiment steps run when only the test step failed.
 
 ---
 

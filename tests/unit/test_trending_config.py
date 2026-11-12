@@ -229,13 +229,15 @@ def test_clean_text_removes_control_and_format_characters():
 
 
 def test_the_committed_listing_dates_parse_with_the_shared_parser():
+    """The file parses and keeps SPCX's entry. Not its whole contents: it is
+    the procedure for every symbol Yahoo reuses (docs/trending.md, section
+    5), and a test pinned to one line would turn CI and every trending run
+    red the day the owner adds a second."""
     import datetime as dt
 
     listed = config_module.split_jump_acknowledged(
         config_module.TRENDING_LISTING_DATES_FILE
     )
-    assert listed == {
-        ("SPCX", dt.date(2026, 6, 12)): (
-            "the symbol was a Tuttle Capital ETF's before this listing"
-        )
-    }
+    assert listed[("SPCX", dt.date(2026, 6, 12))] == (
+        "the symbol was a Tuttle Capital ETF's before this listing"
+    )
