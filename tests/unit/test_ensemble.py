@@ -194,7 +194,7 @@ def test_oof_mape_is_not_better_than_in_sample_mape(stacked):
     regression check, but it is not the general property.
 
     The general property is asserted as an aggregate over 40 seeds in
-    tests/evals/test_ensemble_evaluation.py. Do not promote this one to a
+    tests/unit/test_ensemble_out_of_fold.py. Do not promote this one to a
     parametrized sweep — it will fail.
     """
     preds, actuals = out_of_fold_meta_predictions(stacked)
