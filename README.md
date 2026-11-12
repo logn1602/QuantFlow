@@ -191,6 +191,10 @@ Its storage is its own: five tables, prices included (`trending_prices`, not `ra
 
 **Badges.** *Pinned*; *promotion-eligible* (20 sessions on the lists and two years of history; moving a name into `TICKERS` stays a manual watchlist decision); *big move*, a one-day close at or above 1.35 times or at or below 0.733 times the day before, which warns and never blocks. INTC's badge for 2026-10-30 marks a real move: Yahoo's and Alpha Vantage's bars agree that its close fell 28.6%, from $92.07 to $65.76, on 455.6 million shares, the day after Intel gave a weak fourth-quarter outlook.
 
+![The dashboard's Trending tab: when each Yahoo list last succeeded, then the tracked symbols with Symbol and Badges pinned at the left](docs/images/dashboard_trending.png)
+
+*The live dashboard's Trending tab (data from the 2026-11-12 03:15 UTC run, taken 2026-11-12). The table scrolls right to each symbol's news sentiment and article count, anomaly flags, RSI, last close and session, with Symbol and Badges kept in view.*
+
 The design, its decisions and every failure mode: [docs/trending.md](docs/trending.md).
 
 ---
