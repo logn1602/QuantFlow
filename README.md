@@ -17,7 +17,7 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 
 ![The dashboard's Forecasts tab for AAPL: each model's 7-day forecast beside "no change", with the measured coverage of every band](docs/images/dashboard_forecasts.png)
 
-*The dashboard's Forecasts tab (AAPL, data to 2026-11-06). Taken before the news switched to RSS only on 2026-11-09, so its sentiment card and the boosted trees' and the ensemble's lines still include NewsAPI's articles; its band figures equal the current ones.*
+*The live dashboard's Forecasts tab (AAPL, data to 2026-11-11, taken 2026-11-12), news from RSS only, with the Trending tab beside the six core tabs. The band figures are the published validation / test coverage.*
 
 ---
 
