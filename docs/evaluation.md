@@ -1409,10 +1409,10 @@ Every command runs from the repo root with `uv run`; outputs land in
    ```
 
    It refuses runs that differ in snapshot, tickers or models, or ran on uncommitted
-   code. Streamlit Cloud installs the package from `requirements.txt` and, by its
-   documentation, needs a reboot for a fresh build after a change to a file it does not
-   monitor: after committing a new table, reboot the app from its workspace unless
-   `requirements.txt` changed too (docs/architecture.md, Known problem 13).
+   code. Streamlit Cloud installs the package (from `uv.lock`, by its documentation)
+   and needs a reboot for a fresh build after a change to a file it does not monitor:
+   after committing a new table, reboot the app from its workspace unless `uv.lock`
+   changed too (docs/architecture.md, Known problem 13).
 
 6. Phase 3's keep-or-drop rule between two runs, for example:
 

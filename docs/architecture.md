@@ -379,8 +379,8 @@ visit.
 ## Known problems
 
 Ordered by how much they would change the reported results. Updated 2026-11-12
-(Phase 7): items 1, 2, 6 and 8 are fixed; 8 to 13 were found in Phase 4, 13 was seen on
-the live app on 2026-11-12, and 14 to 16 are new.
+(Phase 7, and its follow-ups): items 1, 2, 6, 8 and 14 are fixed; 8 to 13 were found in
+Phase 4, 13 was seen on the live app on 2026-11-12, and 14 to 16 are new.
 
 ### 1. The base-model comparison was not like-for-like (fixed in Phase 2)
 
@@ -505,15 +505,18 @@ where two would do, so reading once per ticker per process would save about half
 
 ### 13. A push may not reach the live dashboard
 
-Streamlit Cloud installs `quantflow` from `requirements.txt`, whose `.` line makes an
-ordinary (not editable) install, and `dashboard.py` runs that installed copy. By
-Streamlit's documentation, the app copies committed files but needs a reboot for a fresh
-build after a change to a file it does not monitor; the installed package is such a
-case. So a change to the package, the dashboard's code or its published accuracy table,
-reaches the live app when `requirements.txt` also changes (which rebuilds the
-environment) or after a reboot from the app's workspace. Fixes for the owner to weigh:
-an editable install (`-e .`), or `dashboard.py` putting the checkout's `src/` first on
-the import path.
+Streamlit Cloud installs from the first dependency file it finds, and by its
+documentation (read 2026-11-12) `uv.lock` comes first, before `requirements.txt`; this
+repository has both at its root, so the live app's environment is `uv.lock`'s, installed
+with uv. (This page said `requirements.txt` until then; the app's build log, in its
+workspace, shows which file it used.) The documentation does not say how it installs the
+`quantflow` package itself, and `dashboard.py` runs the installed copy. By the same
+documentation, the app copies committed files but needs a reboot for a fresh build after
+a change to a file it does not monitor, and the installed package is such a case. So a
+change to the package, the dashboard's code or its published accuracy table reaches the
+live app when its dependency file (`uv.lock`) also changes, which rebuilds the
+environment, or after a reboot from the app's workspace. A fix for the owner to weigh:
+`dashboard.py` putting the checkout's `src/` first on the import path.
 
 **Seen on the live app (2026-11-12), and worse than stale.** PR #27 changed `app.py`
 and `dashboard/trending_view.py` together: `app.py` began calling a function added to
@@ -529,21 +532,23 @@ again (the 2026-11-11 wake ran PR #25's new tab), so a reboot should be the reme
 until a fix above is in, reboot the app from its workspace after any merge that changes
 the package.
 
-### 14. A fresh install from `requirements.txt` drifts from the lock
+### 14. A fresh install from `requirements.txt` drifted from the lock (fixed 2026-11-12)
 
 CI, the daily refresh, the trending workflow and the evaluation install `uv.lock`'s exact
-versions (`uv sync --locked`). The deployed dashboard and the Docker image install
-`requirements.txt`, which pins only pandas, NumPy and SQLAlchemy and gives floors for the
-rest. Resolved fresh on 2026-11-12 (Linux, Python 3.11), it differs from the lock on 106
-of 173 packages, among them torch (2.15 against 2.13), transformers, huggingface-hub (2.4
-against 1.29), protobuf (7 against 6) and Streamlit (1.67.0 against 1.66.1). One of them
-breaks the dashboard outright: pyarrow 26.0.1 (released 2026-11-03), which refuses to
-import beside the pinned NumPy 1.26.4 ("pyarrow requires NumPy 2.0 or newer"), and
-`st.dataframe` needs pyarrow, so every table fails. The live app is unaffected while its
-environment is the one installed earlier (its tables rendered on 2026-11-12, after a
-restart on 2026-11-11); a fresh environment, or a `docker build` today, gets 26.0.1.
-Fixes for the owner to weigh: a `pyarrow<26` constraint, or a `requirements.txt` made
-from the lock (`uv export`) and kept equal to it by a test.
+versions (`uv sync --locked`), and so, by Streamlit's documentation, does the live app
+(see 13). The Docker image and `make install` install `requirements.txt` with pip, and it
+pinned only pandas, NumPy and SQLAlchemy, with floors for the rest. Resolved fresh on
+2026-11-12 (Linux, Python 3.11), it differed from the lock on 106 of 173 packages, among
+them torch (2.15 against 2.13), transformers, huggingface-hub (2.4 against 1.29),
+protobuf (7 against 6) and Streamlit (1.67.0 against 1.66.1). One of them broke the
+dashboard outright: pyarrow 26.0.1 (released 2026-11-03), which refuses to import beside
+the pinned NumPy 1.26.4 ("pyarrow requires NumPy 2.0 or newer"), and `st.dataframe`
+needs pyarrow, so every table failed.
+
+`requirements.txt` is now `uv.lock` exported (`make requirements`): every version exact,
+the dev tools included, as CI installs them, and `.` for the package.
+`tests/unit/test_requirements.py` fails while the two differ, so a change to the lock
+comes with its export.
 
 ### 15. The trending tier rests on unofficial endpoints, and measures little
 

@@ -61,8 +61,8 @@ LOCKED_INSTALL = "uv sync --locked --extra dev"
 
 
 def test_the_daily_refresh_installs_the_versions_in_uv_lock_as_ci_does():
-    """The evaluation ran on uv.lock's versions. requirements.txt sets floors,
-    so pip installed whatever was newest on the runner, and a different
+    """The evaluation ran on uv.lock's versions. requirements.txt set floors
+    then, so pip installed whatever was newest on the runner, and a different
     library version can give a different forecast from the same data.
     --locked fails the install, in CI first, if uv.lock no longer matches
     pyproject.toml."""

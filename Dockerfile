@@ -20,11 +20,12 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (layer caching). Its last line is ".", the
-# quantflow package itself, for Streamlit Cloud; "." cannot be installed
-# before the source is here, and installing it from this layer stopped every
-# build. So this layer installs every other line, and is reused until
-# requirements.txt changes, and the package goes in below, after the code.
+# Copy requirements first (layer caching). It is uv.lock's exact versions
+# (make requirements), with one line, ".", for the quantflow package itself;
+# "." cannot be installed before the source is here, and installing it from
+# this layer stopped every build. So this layer installs every other line,
+# and is reused until requirements.txt changes, and the package goes in
+# below, after the code.
 COPY requirements.txt .
 
 # Install the third-party dependencies
