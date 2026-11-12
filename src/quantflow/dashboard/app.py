@@ -1021,7 +1021,12 @@ with tab7:
                 if shown.empty:
                     st.info(trending_view.EMPTY)
                 else:
-                    st.dataframe(shown, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        shown,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config=trending_view.table_column_config(),
+                    )
                     chosen = st.selectbox(
                         "Chart", list(shown["Symbol"]), key="trending_symbol"
                     )

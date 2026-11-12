@@ -748,7 +748,9 @@ A seventh tab, "Trending", captioned **"Discovery only: not forecast or backtest
 - a table of the active symbols: best rank, the lists it is on, % change, volume, days
   trending, 7-day sentiment (mean compound and article count, from `trending_news`), the
   anomaly flags of the last 10 trading days, and badges: pinned, promotion-eligible, big
-  move (7.3);
+  move (7.3). The symbol and its badges come first, pinned at the left, so they stay in
+  view while the other columns scroll: last of fourteen, the badges were cut off on the
+  right in a 1,400-pixel window (2026-11-11);
 - for the selected row, the price and indicator charts the core tabs use
   (`price_chart`, `rsi_macd_chart`), on its latest 260 rows in `trending_prices` (about
   a year; a symbol's history grows a bar a day for as long as it is tracked), with

@@ -213,8 +213,13 @@ def badges(row: pd.Series, *, settings: rules.TrendingSettings, today: dt.date) 
     return ", ".join(words)
 
 
+# Symbol and Badges first, and pinned there by app.py (table_column_config):
+# with Badges last of fourteen, a 1,400-pixel window showed about nine
+# columns, and the badges were cut off on the right (2026-11-11). Pinned, the
+# two stay in view while the other twelve scroll.
+PINNED_COLUMNS = ("Symbol", "Badges")
 TABLE_COLUMNS = [
-    "Symbol",
+    *PINNED_COLUMNS,
     "Name",
     "Best rank",
     "Lists",
@@ -227,8 +232,22 @@ TABLE_COLUMNS = [
     "RSI (14)",
     "Last close",
     "Session",
-    "Badges",
 ]
+
+
+def table_column_config() -> dict[str, Any]:
+    """st.dataframe's column_config for the table: PINNED_COLUMNS pinned at
+    the left, and Badges 200 pixels wide ("medium"). Left to itself, the
+    grid sizes a column to its first rows, which mostly carry no badge, and
+    cut "big move 2026-10-30" to "big move"; at 200 pixels two badges fit.
+    Streamlit is imported here, not at the top, so the module stays
+    importable without it."""
+    import streamlit as st
+
+    return {
+        "Symbol": st.column_config.Column(pinned=True),
+        "Badges": st.column_config.Column(pinned=True, width="medium"),
+    }
 
 
 def _number(value: Any, digits: int) -> float | None:
