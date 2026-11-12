@@ -95,11 +95,18 @@ jobs:
       # storing what the others returned (T8), when a write or FinBERT
       # failed, when a step did nothing for any active symbol, or when the
       # tables are not there yet, so GitHub's failure notice goes out.
+      #
+      # It logs in as the tier's own role, quantflow_trending
+      # (sql/schema_roles.sql, steps 11 to 14), not as the daily refresh's
+      # postgres, which owns every table: the role can write the five
+      # trending tables only, in the commands a run uses, and no core table.
+      # The same database; TRENDING_DB_USER is quantflow_trending.<project-ref>
+      # on Supabase's pooler, as DB_USER is postgres.<project-ref>.
       - name: Run the trending tier
         run: uv run python -m quantflow.pipelines.trending
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT }}
           DB_NAME: ${{ secrets.DB_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_USER: ${{ secrets.TRENDING_DB_USER }}
+          DB_PASSWORD: ${{ secrets.TRENDING_DB_PASSWORD }}

@@ -460,10 +460,22 @@ every table and sequence. Now:
   (`db.readonly.require_rows`), naming the tables and the missing policy, instead of
   reporting them empty. The dashboard, read as the role without the policies, showed
   only "No data found": its secrets move to the role once the policies are in place.
-- The tier's own writer role (decision 4 at Checkpoint 6, after the merge) will need
-  SELECT and INSERT on the five tables, UPDATE on `tickers`, DELETE on
-  `trending_prices`, USAGE on `trending_news_id_seq`, and a policy for each of those
-  commands; the migration's header lists them.
+- The tier's own writer (decision 4 at Checkpoint 6, after the merge):
+  `quantflow_trending`, `sql/schema_roles.sql` steps 11 to 14, which the owner runs.
+  It owns nothing, so row-level security applies to it, and holds only the commands one
+  run uses: SELECT and INSERT on the five tables, on `tickers` only in the columns the
+  run writes (never `tier` or `promoted_at`, which change by hand at a promotion),
+  UPDATE of those columns but `symbol` and `first_seen`, DELETE on `trending_prices`,
+  USAGE on `trending_news_id_seq`, and a policy for each command. Nothing on a core
+  table, no TRUNCATE, no default privileges. `trending.yml` logs in as it through its
+  own `TRENDING_DB_USER` and `TRENDING_DB_PASSWORD` secrets; the daily refresh keeps
+  `postgres`. A unit test takes the lists from `db/trending.py`, and an integration test
+  runs two whole runs logged in as the role on Postgres after step 13 as written, then
+  checks that every other command is refused (each grant and policy removed in turn
+  fails it).
+- Step 10 of the same file records what the owner ran on 2026-11-11: `postgres`'s
+  default privileges in `public` grant `anon` and `authenticated` nothing on tables,
+  sequences and functions created later.
 
 ## 7. Pipeline
 
@@ -800,9 +812,11 @@ the reason `split_jump_acknowledged.txt` is: a commit carries its list everywher
   owner would notice there first. The job runs by hand, or after a refresh this
   repository ran on its own schedule or by hand (the event's head repository and
   event), never for one a fork's branch set off.
-- **Job**: its own `timeout-minutes: 30` and concurrency group; the same database
-  secrets, on the run step alone, so setup-uv, the caches and the tests never hold them
-  (the tests get CI's dummy password); checkout keeps no token
+- **Job**: its own `timeout-minutes: 30` and concurrency group; its own login,
+  `quantflow_trending` ("Access", above), from the `TRENDING_DB_USER` and
+  `TRENDING_DB_PASSWORD` secrets on the database the other `DB_*` secrets name, on the
+  run step alone, so setup-uv, the caches and the tests never hold them (the tests get
+  CI's dummy password); checkout keeps no token
   (`persist-credentials: false`); the FinBERT model from the same `actions/cache` key
   the daily refresh saves.
 - **Steps**: install from `uv.lock`; the offline test suite; the run (7.1), with its

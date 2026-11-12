@@ -349,13 +349,27 @@ def test_trending_gives_the_database_secrets_to_the_run_step_alone():
     """The write credentials are in no step but the one that writes: not in
     the job's env, where setup-uv, the cache and the test suite would see
     them too. The tests get CI's dummy password."""
-    assert "secrets.DB_" not in _job_header(TRENDING)
-    holding = [name for name, step in TRENDING_STEPS.items() if "secrets.DB_" in step]
+    assert "secrets." not in _job_header(TRENDING)
+    holding = [name for name, step in TRENDING_STEPS.items() if "secrets." in step]
     assert holding == ["Run the trending tier"]
     run = TRENDING_STEPS["Run the trending tier"]
-    for name in ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+    for name in ("DB_HOST", "DB_PORT", "DB_NAME"):
         assert f"{name}: ${{{{ secrets.{name} }}}}" in run, name
     assert "DB_PASSWORD: ci-not-a-real-password" in TRENDING_STEPS["Run tests"]
+
+
+@pytest.mark.trending
+def test_trending_logs_in_as_its_own_writer_never_as_the_refresh():
+    """The daily refresh's login is postgres, which owns every table, the
+    core's included, and which row-level security does not apply to. The
+    tier's, quantflow_trending (sql/schema_roles.sql, steps 11 to 14), can
+    write the five trending tables only: its own two secrets, on the same
+    database."""
+    run = TRENDING_STEPS["Run the trending tier"]
+    assert "DB_USER: ${{ secrets.TRENDING_DB_USER }}" in run
+    assert "DB_PASSWORD: ${{ secrets.TRENDING_DB_PASSWORD }}" in run
+    assert "secrets.DB_USER" not in TRENDING
+    assert "secrets.DB_PASSWORD" not in TRENDING
 
 
 @pytest.mark.trending
