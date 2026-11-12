@@ -239,6 +239,39 @@ def test_a_row_reads_as_text_ready_values():
     assert row["Badges"] == ""
 
 
+def _dataframe_calls(tab):
+    """The argument text of each st.dataframe(...) call in the tab, its
+    parentheses balanced."""
+    calls = []
+    for start in [m.end() for m in re.finditer(r"st\.dataframe\(", tab)]:
+        depth, end = 1, start
+        while depth:
+            depth += {"(": 1, ")": -1}.get(tab[end], 0)
+            end += 1
+        calls.append(" ".join(tab[start : end - 1].split()))
+    return calls
+
+
+def test_symbol_and_badges_come_first_and_stay_in_view_on_any_width():
+    """Fourteen columns with Badges last: a 1,400-pixel window showed about
+    nine of them, so the badges were cut off on the right and needed a
+    scroll inside the table (2026-11-11). Symbol and Badges now come first,
+    and app.py pins both, so they stay in view while the other twelve
+    scroll. Sized to its header, the grid's choice when the first rows carry
+    no badge, the column cut "big move 2026-10-30" to "big move": its width
+    is set."""
+    assert view.TABLE_COLUMNS[:2] == ["Symbol", "Badges"]
+    config = view.table_column_config()
+    assert set(config) <= set(view.TABLE_COLUMNS)
+    pinned = {name for name, column in config.items() if column.get("pinned")}
+    assert pinned == {"Symbol", "Badges"}
+    assert config["Badges"].get("width") == "medium"
+    (table,) = [
+        call for call in _dataframe_calls(_tab(APP)) if call.startswith("shown")
+    ]
+    assert "column_config=trending_view.table_column_config()" in table
+
+
 def test_a_pinned_symbol_off_the_lists_has_no_rank_and_the_pinned_badge():
     raw = _raw(
         symbol="SPCX",
