@@ -31,17 +31,34 @@ function, and the only fitter in the project is the NNLS meta-learner in
 `fit_fn` as a parameter and `models.ensemble` binds it:
 
 ```python
-# evaluation/out_of_fold.py — generic
+# evaluation/out_of_fold.py: generic
 def expanding_window_predictions(stacked_df, feature_cols, fit_fn, warmup): ...
 
 
-# models/ensemble.py — bound to this project's meta-learner
+# models/ensemble.py: bound to this project's meta-learner
 def out_of_fold_meta_predictions(stacked_df, warmup=META_WARMUP_DAYS):
     return expanding_window_predictions(stacked_df, BASE_MODELS, _fit_nnls, warmup)
 ```
 
 This looks like unnecessary indirection until you notice it is the only thing
 stopping the dependency arrow from reversing.
+
+### The trending tier, beside the core
+
+```
+ingestion/trending_sources ──┐
+ingestion/trending_rules ────┼──> pipelines/trending ──> db/trending ──> its five tables
+features/trending_analytics ─┘                                               │
+                                       dashboard/trending_view <─────────────┘
+```
+
+The tier ([trending.md](trending.md)) reuses the core's indicator, anomaly and
+sentiment functions, the split guard's size check and the fetcher's bar shaping, by
+calling them, never their stages' `run()`, which read and write the core's tables.
+Two rules hold in both directions, and `tests/unit/test_package_boundaries.py`
+fails on either: no core module imports the tier, and the tier never imports
+`models` or `evaluation`. So nothing it stores or computes can reach a forecast or a
+score.
 
 ---
 
@@ -67,7 +84,7 @@ negative weight amplifies rather than dampens.
 
 NNLS constrains `w_i >= 0`, and normalising to `sum(w) == 1` makes the ensemble
 a convex combination. It therefore cannot predict outside
-`[min(base_preds), max(base_preds)]` for any given day — a hard bound on how
+`[min(base_preds), max(base_preds)]` for any given day: a hard bound on how
 wrong it can be relative to its inputs. The trade is expressiveness: a convex
 combination cannot learn that one base model is systematically biased and
 correct for it.
@@ -88,7 +105,7 @@ data favours. Presenting it as a general improvement would not be.
 
 `regression_metrics` rounds before returning. Rounding at each call site
 instead means the value written to `model_metrics`, the value logged to MLflow,
-and the value printed to the console can disagree in the last digit — which is
+and the value printed to the console can disagree in the last digit, which is
 exactly the kind of discrepancy that costs an hour when two dashboards
 disagree and neither is wrong.
 
@@ -246,7 +263,9 @@ dashboard. Projecting one shape is cheap at this size. What must exist exactly
 once is the rule for combining daily and 15-minute bars, because two copies of
 it would let the models and the dashboard disagree about a day's close.
 `load_bar_timestamps` serves the backfill, which only needs to know which dates
-already have a daily bar.
+already have a daily bar. The trending tier keeps to the same rule: its run's reads
+and writes are in `db/trending.py`, and its tab's display queries in
+`dashboard/trending_view.py`, beside the dashboard's other display queries.
 
 ---
 
@@ -333,6 +352,13 @@ the default lookback costs about 0.33 MB an hour per ticker at most, under 8 MB 
 ticker a day. The daily run's whole-history price reads are the larger line, and the
 one the trending tier would multiply, so the Phase 5 design states the reads it adds.
 
+**The trending tier (measured 2026-11-10, on a local copy through the same proxy).** A
+full-size run read 14.5 KB from the database; the Trending tab reads about 2 KB for its
+table and 11 KB for one symbol's chart, cached for an hour like every loader. Its tables
+grow by about 50 to 60 MB in their first year, mostly first-sight price histories and
+articles ([trending.md](trending.md), section 9): with the core's growth, the database
+would reach the free plan's 500 MB in roughly four years instead of ten.
+
 **What a visit can find mid-run (fixed 2026-11-09).** The daily run deleted every
 ticker's forecasts before fitting anything and wrote each model's as it finished, so a
 visit during those minutes found some of a ticker's models or none, and the cache then
@@ -349,8 +375,9 @@ visit.
 
 ## Known problems
 
-Ordered by how much they would change the reported results. Updated 2026-11-09
-(Phase 4): items 1, 2, 6 and 8 are fixed; 8 to 13 were found in Phase 4.
+Ordered by how much they would change the reported results. Updated 2026-11-12
+(Phase 7): items 1, 2, 6 and 8 are fixed; 8 to 13 were found in Phase 4, 13 was seen on
+the live app on 2026-11-12, and 14 and 15 are new.
 
 ### 1. The base-model comparison was not like-for-like (fixed in Phase 2)
 
@@ -399,6 +426,10 @@ the daily run replaces each ticker's set in one transaction instead.
 imported without live credentials and therefore cannot be unit tested. Its coverage is
 0% and is excluded from the coverage report rather than counted as a gap. The accuracy
 it shows is computed in `dashboard/accuracy.py`, which reads no database and is tested.
+The Trending tab is the pattern for the rest: its reads take a connection and live in
+`dashboard/trending_view.py`, tested offline with a fake one and on Postgres; `app.py`
+only draws what they return, and tests read it as text where it must call them a
+certain way.
 
 ### 6. Duplicated work in the backtest (fixed in Phase 2)
 
@@ -469,9 +500,52 @@ Streamlit's documentation, the app copies committed files but needs a reboot for
 build after a change to a file it does not monitor; the installed package is such a
 case. So a change to the package, the dashboard's code or its published accuracy table,
 reaches the live app when `requirements.txt` also changes (which rebuilds the
-environment) or after a reboot from the app's workspace. Not verified on the live app
-yet. Fixes for the owner to weigh: an editable install (`-e .`), or `dashboard.py`
-putting the checkout's `src/` first on the import path.
+environment) or after a reboot from the app's workspace. Fixes for the owner to weigh:
+an editable install (`-e .`), or `dashboard.py` putting the checkout's `src/` first on
+the import path.
+
+**Seen on the live app (2026-11-12), and worse than stale.** PR #27 changed `app.py`
+and `dashboard/trending_view.py` together: `app.py` began calling a function added to
+`trending_view`. About twenty minutes after the merge, the live Trending tab showed its
+error message ("The trending data could not be loaded right now.") while the six core
+tabs and the tab's own list lines worked. Every Streamlit release from the 1.61.0 floor
+to 1.67.0 renders the new code, and so does the new code locally, so the evidence points
+to a half-updated app: the new `app.py`, which `dashboard.py` runs afresh on every
+rerun, calling into the `trending_view` module the process had imported before the
+push. A push that changes two modules together can therefore break a page, not just
+leave it stale, until the app restarts. Wakes from sleep and reboots install the package
+again (the 2026-11-11 wake ran PR #25's new tab), so a reboot should be the remedy;
+until a fix above is in, reboot the app from its workspace after any merge that changes
+the package.
+
+### 14. A fresh install from `requirements.txt` drifts from the lock
+
+CI, the daily refresh, the trending workflow and the evaluation install `uv.lock`'s exact
+versions (`uv sync --locked`). The deployed dashboard and the Docker image install
+`requirements.txt`, which pins only pandas, NumPy and SQLAlchemy and gives floors for the
+rest. Resolved fresh on 2026-11-12 (Linux, Python 3.11), it differs from the lock on 106
+of 173 packages, among them torch (2.15 against 2.13), transformers, huggingface-hub (2.4
+against 1.29), protobuf (7 against 6) and Streamlit (1.67.0 against 1.66.1). One of them
+breaks the dashboard outright: pyarrow 26.0.1 (released 2026-11-03), which refuses to
+import beside the pinned NumPy 1.26.4 ("pyarrow requires NumPy 2.0 or newer"), and
+`st.dataframe` needs pyarrow, so every table fails. The live app is unaffected while its
+environment is the one installed earlier (its tables rendered on 2026-11-12, after a
+restart on 2026-11-11); a fresh environment, or a `docker build` today, gets 26.0.1.
+Fixes for the owner to weigh: a `pyarrow<26` constraint, or a `requirements.txt` made
+from the lock (`uv export`) and kept equal to it by a test.
+
+### 15. The trending tier rests on unofficial endpoints, and measures little
+
+Yahoo's predefined screeners and its trending list are not a documented API: they can
+change shape, rate-limit or disappear without notice. The tier fails soft and loudly: a
+failed list is recorded, the others are stored and used, nothing is deactivated on that
+fetch, the run ends red, and the tab shows each list's last success
+([trending.md](trending.md), sections 3 and 14). What the lists measure is what moved and
+traded most today among large US stocks, a proxy for attention, not attention. A set
+chosen each day for its recent moves is selected on the outcome, which is why the tier
+is never forecast or scored. The caps (15 discovered symbols, 5 new a run) keep it
+inside yfinance's informal rate limits and FinBERT on the runner's CPU, so on a busy day
+the lists' further names wait.
 
 ---
 
@@ -498,7 +572,7 @@ Past a few dozen tickers, per-ticker training becomes a job queue.
 
 **Orchestration.** The wall-clock offsets are the first thing to go. Airflow,
 Dagster or Prefect give completion-signalled dependencies, retries with
-backoff, and backfill — all of which the current scheduler simulates with
+backoff, and backfill, all of which the current scheduler simulates with
 `sleep`-equivalents and does not actually provide.
 
 **Model management.** MLflow is used for tracking only. At the point where a
@@ -508,8 +582,8 @@ answer "which model produced this prediction" after the fact.
 
 **Storage.** One Postgres instance holds raw prices, indicators, sentiment,
 forecasts and backtest results. The natural split is a time-series store for
-`raw_prices` and indicators — where the access pattern is append-heavy and
-range-scanned — leaving relational storage for the low-volume result tables.
+`raw_prices` and indicators, where the access pattern is append-heavy and
+range-scanned, leaving relational storage for the low-volume result tables.
 
 **Evaluation.** The rolling-origin evaluation refits every model at every origin:
 about 16 minutes for eight tickers and 42 origins with 3 worker processes on an 8 GB
