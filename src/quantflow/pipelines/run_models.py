@@ -3,8 +3,8 @@ pipelines/run_models.py
 -----------------------
 Runs the full forecasting pipeline in one command:
   1. ARIMA + Prophet  (statistical time series models)
-  2. XGBoost + LightGBM (ML models with 33 engineered features)
-  3. Stacking Ensemble  (NNLS meta-learner over all 4 base models)
+  2. XGBoost + LightGBM (ML models with 34 engineered features)
+  3. Stacking Ensemble  (NNLS meta-learner over the 4 base models and no change)
 
 Every forecast is held until the last model is done (db.forecasts
 .ForecastSet), then each ticker's stored forecasts are replaced by the new

@@ -33,9 +33,9 @@ help:
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
-# -e . installs the quantflow package itself. Without it every target below
-# fails with ModuleNotFoundError, because they invoke python -m quantflow.*
-# and requirements.txt only brings in third-party dependencies.
+# requirements.txt's last line, ".", installs a copy of the quantflow
+# package; -e . replaces it with an editable install, so the targets below
+# (python -m quantflow.*) run the checkout's code and read its config/ files.
 install:
 	pip install -r requirements.txt
 	pip install -e . --no-deps

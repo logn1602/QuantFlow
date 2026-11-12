@@ -47,8 +47,9 @@ stopping the dependency arrow from reversing.
 
 ```
 ingestion/trending_sources ──┐
-ingestion/trending_rules ────┼──> pipelines/trending ──> db/trending ──> its five tables
-features/trending_analytics ─┘                                               │
+ingestion/trending_rules ────┼──> pipelines/trending ──> db/trending ──> four of its tables
+features/trending_analytics ─┤           │                                   │
+features/sentiment ─────────┘           └──> db/sentiment ──> trending_news   │
                                        dashboard/trending_view <─────────────┘
 ```
 
@@ -264,8 +265,10 @@ once is the rule for combining daily and 15-minute bars, because two copies of
 it would let the models and the dashboard disagree about a day's close.
 `load_bar_timestamps` serves the backfill, which only needs to know which dates
 already have a daily bar. The trending tier keeps to the same rule: its run's reads
-and writes are in `db/trending.py`, and its tab's display queries in
-`dashboard/trending_view.py`, beside the dashboard's other display queries.
+and writes are in `db/trending.py`, its news goes to `trending_news` through
+`db/sentiment.py` (the core's own write, with the table named), and its tab's display
+queries are in `dashboard/trending_view.py`, beside the dashboard's other display
+queries.
 
 ---
 
@@ -481,7 +484,13 @@ The scored holdout fit and the live fit (models step), the ensemble's 30-day sta
 the backtest's holdout predictions each fit XGBoost, whose tuned settings (600 trees,
 depth 6, one thread) take about 7 times as long as the earlier ones. On the manual run
 of 2026-11-09 the models step took 110 s and the backtest 39 s, against 30 s and 14 s on
-2026-11-07. Fitting fewer times must leave every forecast unchanged.
+2026-11-07. Fitting fewer times must leave every forecast unchanged. It is not XGBoost
+alone (full-diff review, 2026-11-12): the ensemble step and the backtest rebuild the
+same 30-day stack, refitting all four base models on the frames the models step has
+just used, so each holdout fit runs three times per ticker, two of them exact
+repeats (about 60 s of that run's 74 s of ensemble and backtest). In the evaluation,
+the live ensemble's stack at each origin refits fits made six origins earlier, about
+40% of a run.
 
 ### 12. Every stage rereads each ticker's whole price history
 
@@ -490,7 +499,9 @@ and keeps one row per date; the indicators, anomalies, split guard, models and b
 each call it. That is most of the daily run's database egress (about 33 MB a run, see
 "Running on free tiers"), and it grows with the stored bars, about 570 rows a ticker a
 month. Reading only the window a stage needs, or the daily bars only where they exist,
-would cut it.
+would cut it. Cheaper still (full-diff review, 2026-11-12): within one process the same
+rows are read again, seven times a ticker across the models step and the backtest
+where two would do, so reading once per ticker per process would save about half.
 
 ### 13. A push may not reach the live dashboard
 

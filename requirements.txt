@@ -1,12 +1,14 @@
 # QuantFlow dependencies
 #
 # NOTE: pyproject.toml is the source of truth. This file is kept in sync by
-# hand because the Dockerfile and `make install` both install with
-# `pip install -r requirements.txt`. Change both or neither. The daily
-# workflow and CI install the exact versions in uv.lock instead.
+# hand because Streamlit Cloud and `make install` install it with
+# `pip install -r requirements.txt`, and the Dockerfile installs every line
+# of it but the last ("."), then the package. Change both or neither. CI
+# and the workflows install the exact versions in uv.lock instead
+# (docs/architecture.md, Known problem 14).
 #
 # Policy: `>=` floors are set at the versions verified working in the project
-# venv (Python 3.11.9). Floors stop silent downward drift — a `pip install` of
+# venv (Python 3.11.9). Floors stop silent downward drift: a `pip install` of
 # one package once resolved pandas back to 1.5.3, which segfaulted LightGBM's
 # C extension. A few packages are hard-pinned where the exact version is
 # load-bearing rather than merely a minimum.
@@ -65,5 +67,5 @@ pytest>=9.1.1
 
 # Install the quantflow package itself (src/ layout). Streamlit Cloud only runs
 # `pip install -r requirements.txt`, so without this line the dashboard entry
-# point cannot `import quantflow` — src/ never lands on sys.path.
+# point cannot `import quantflow`: src/ never lands on sys.path.
 .

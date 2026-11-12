@@ -55,10 +55,12 @@ class FinBERTUnavailableError(RuntimeError):
 # people usually cite for unpinned models does not apply here: trust_remote_code
 # is unset and torch is >= 2.6, so weights load with weights_only=True.
 #
-# The real risk is quieter. Sentiment scores feed 6 of the 33 XGBoost features,
-# so an upstream reweight of this checkpoint would silently shift every feature
-# vector and therefore the MAPE figures this project publishes — with nothing in
-# the repo changing. Pinning means a model change is a visible, deliberate diff.
+# The real risk is quieter. Sentiment scores feed 6 of the boosted trees' 34
+# features (has_news, a seventh news feature, only marks whether a day had
+# any), so an upstream reweight of this checkpoint would silently shift every
+# feature vector and therefore the MAPE figures this project publishes, with
+# nothing in the repo changing. Pinning means a model change is a visible,
+# deliberate diff.
 #
 # Resolved from the HF API on 2026-08-05; the checkpoint itself dates to
 # 2023-05-23. Update deliberately after re-measuring.

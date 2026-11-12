@@ -46,8 +46,9 @@ def main():
         f"Seed complete. yFinance: {total_yf} rows | Alpha Vantage: {total_av} rows"
     )
     logger.info(
-        "Next: the split guard, then the stages (make all runs them in "
-        "order; make help lists each), then make dashboard"
+        "Next: python -m quantflow.ingestion.split_guard, then the stages "
+        "(make all runs them in order; make help lists each), then make "
+        "dashboard"
     )
 
 

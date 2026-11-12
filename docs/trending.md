@@ -870,7 +870,7 @@ deactivated until a run without it), listed in `make help`. `make promote` waits
 |---|---|
 | `ingestion/trending_sources.py` | `TrendingItem`, `ListFetch`, `TrendingSource`, `YahooScreenerSource`, `YahooTrendingSource` |
 | `ingestion/trending_rules.py` | Pure functions: validation, filters, dedupe, session dates, the active set, deactivation, eligibility |
-| `db/trending.py` | Reads and batched writes for `tickers`, `trending_snapshots`, `trending_news`, `trending_prices`; the price replacement |
+| `db/trending.py` | Reads and batched writes for `tickers`, `trending_snapshots`, `trending_fetches`, `trending_prices`; the price replacement. `trending_news` is written by `db/sentiment.py`, with the table named |
 | `pipelines/trending.py` | The run (7.1) and the CLI behind `make trending` |
 | `dashboard/trending_view.py` | The tab's queries and shaping, testable |
 
