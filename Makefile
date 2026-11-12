@@ -2,7 +2,7 @@
 # Run any pipeline stage with a single command.
 # Usage: make <target>
 
-.PHONY: help install setup seed indicators anomalies models forecast train ensemble sentiment backtest evaluate trending dashboard scheduler test eval all clean clean-dry
+.PHONY: help install requirements setup seed indicators anomalies models forecast train ensemble sentiment backtest evaluate trending dashboard scheduler test eval all clean clean-dry
 
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
@@ -10,6 +10,7 @@ help:
 	@echo "  QuantFlow: Pipeline Commands"
 	@echo "  ─────────────────────────────────────────────"
 	@echo "  make install      Install all dependencies"
+	@echo "  make requirements Write requirements.txt from uv.lock (after any lock change)"
 	@echo "  make setup        Create DB tables (run once)"
 	@echo "  make seed         Seed 2 years of historical data"
 	@echo "  make indicators   Compute RSI, MACD, Bollinger Bands"
@@ -33,12 +34,18 @@ help:
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
-# requirements.txt's last line, ".", installs a copy of the quantflow
+# requirements.txt is uv.lock's exact versions, the dev tools included, so
+# pip installs what CI tests. Its "." line installs a copy of the quantflow
 # package; -e . replaces it with an editable install, so the targets below
 # (python -m quantflow.*) run the checkout's code and read its config/ files.
 install:
 	pip install -r requirements.txt
 	pip install -e . --no-deps
+
+# Rewrite requirements.txt from uv.lock, after any change to the lock (uv
+# lock, uv add). tests/unit/test_requirements.py fails while the two differ.
+requirements:
+	uv export --format requirements.txt --frozen --no-hashes --no-editable --extra dev --output-file requirements.txt
 
 setup:
 	psql -U postgres -d stock_pipeline -f sql/schema.sql

@@ -1,8 +1,8 @@
 """tests/unit/test_dockerfile.py
 
-The Dockerfile, read as text. requirements.txt ends with ".", the quantflow
-package itself (Streamlit Cloud installs nothing else), and "." can only be
-installed once the source is in the image. The Dockerfile installed
+The Dockerfile, read as text. requirements.txt (uv.lock, exported) holds
+".", the quantflow package itself, and "." can only be installed once the
+source is in the image. The Dockerfile installed
 requirements.txt with only that file copied, so `docker build` stopped at
 that step and the README's Docker Quickstart could not work (found in the
 release read-through, 2026-11-12).
@@ -29,14 +29,15 @@ def _instructions():
     return found
 
 
-def test_requirements_txt_still_ends_with_the_package_itself():
-    """What the Dockerfile has to allow for; if this changes, so can it."""
+def test_requirements_txt_still_installs_the_package_itself():
+    """What the Dockerfile has to allow for, wherever the line is (uv's
+    export puts it first); if this changes, so can it."""
     lines = [
         line.strip()
         for line in REQUIREMENTS.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    assert lines[-1] == "."
+    assert lines.count(".") == 1
 
 
 def test_nothing_installs_the_package_before_its_source_is_copied():
@@ -56,7 +57,7 @@ def test_nothing_installs_the_package_before_its_source_is_copied():
             if "-r" in words:
                 target = words[words.index("-r") + 1]
                 assert target != "requirements.txt", (
-                    f"installs requirements.txt, whose last line is '.', "
+                    f"installs requirements.txt, which holds '.', "
                     f"before the source is copied: {command.strip()}"
                 )
             assert "." not in words, f"installs '.' before the source: {command}"

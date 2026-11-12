@@ -54,7 +54,8 @@ jobs:
 
       # The exact versions in uv.lock, as CI installs them: the evaluation ran
       # on these, and a different library version can give a different
-      # forecast from the same data. requirements.txt only sets floors.
+      # forecast from the same data. requirements.txt is the same versions,
+      # exported for pip (make requirements).
       # --locked stops here if uv.lock no longer matches pyproject.toml.
       # Installs the quantflow package itself too (editable), which the src/
       # layout needs. Every command below runs through `uv run`, in this

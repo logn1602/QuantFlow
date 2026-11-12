@@ -1,8 +1,8 @@
 # ── QuantFlow project + tooling configuration ────────────────────────────────
 #
-# Dependency policy (carried over from requirements.txt):
+# Dependency policy (requirements.txt is uv.lock exported: make requirements):
 #   `>=` floors are set at the versions verified working in venv-311 (Python
-#   3.11.9). Floors stop silent downward drift — a `pip install` of one package
+#   3.11.9). Floors stop silent downward drift: a `pip install` of one package
 #   once resolved pandas back to 1.5.3, which segfaulted LightGBM's C
 #   extension. A few packages are hard-pinned where the exact version is
 #   load-bearing rather than merely a minimum.
@@ -79,9 +79,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# The dashboard's published accuracy table (dashboard/accuracy.py). Streamlit
-# Cloud installs the package from requirements.txt rather than running from
-# the checkout, so a data file reaches it only if it ships in the package.
+# The dashboard's published accuracy table (dashboard/accuracy.py). An
+# install from requirements.txt's "." line is not editable, and how Streamlit
+# Cloud installs the package from uv.lock is not documented, so a data file
+# reaches the dashboard for certain only if it ships in the package.
 [tool.setuptools.package-data]
 "quantflow.dashboard" = ["published_accuracy.csv"]
 

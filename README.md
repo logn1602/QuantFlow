@@ -211,7 +211,7 @@ docker build -t quantflow .
 docker run -p 8501:8501 --env-file .env quantflow
 ```
 
-Serves the dashboard on http://localhost:8501. Requires a reachable PostgreSQL instance and a populated `.env`: the image ships no data. The dashboard only reads, so on a hosted database give it a file of its own whose `DB_USER` and `DB_PASSWORD` are the read-only role's (`sql/schema_roles.sql`), not `.env`'s table-owning login. The image installs `requirements.txt`, which sets minimum versions rather than the lock's: see [Known problem 14](docs/architecture.md#14-a-fresh-install-from-requirementstxt-drifts-from-the-lock) before relying on a fresh build.
+Serves the dashboard on http://localhost:8501. Requires a reachable PostgreSQL instance and a populated `.env`: the image ships no data. The dashboard only reads, so on a hosted database give it a file of its own whose `DB_USER` and `DB_PASSWORD` are the read-only role's (`sql/schema_roles.sql`), not `.env`'s table-owning login. The image installs `requirements.txt`, which is `uv.lock`'s exact versions, exported by `make requirements`.
 
 ### Local
 
@@ -231,7 +231,7 @@ Install the exact versions CI, the workflows and the evaluation run, from `uv.lo
 uv sync --locked --extra dev
 ```
 
-Activate it (`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on macOS and Linux) for the commands below. Without uv, `python -m venv .venv`, activate it, then `make install` installs from `requirements.txt`, which sets minimum versions only: a fresh install of it on 2026-11-12 resolved pyarrow 26.0.1, which refuses the pinned NumPy 1.26.4, so the dashboard's tables fail ([Known problem 14](docs/architecture.md#14-a-fresh-install-from-requirementstxt-drifts-from-the-lock)).
+Activate it (`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on macOS and Linux) for the commands below. Without uv, `python -m venv .venv`, activate it, then `make install`: it installs `requirements.txt`, the same exact versions, exported from `uv.lock` ([Known problem 14](docs/architecture.md#14-a-fresh-install-from-requirementstxt-drifted-from-the-lock-fixed-2026-11-12) says why).
 
 Create the database, then apply all five schema files. Skipping `schema_backtest.sql` breaks the Backtest tab; without `schema_metrics.sql` the model runs log a warning instead of recording their holdout metrics; without `schema_trending.sql` the Trending tab shows its empty state and `make trending` stops before fetching anything:
 
