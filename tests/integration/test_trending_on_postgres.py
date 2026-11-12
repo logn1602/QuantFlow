@@ -1242,3 +1242,104 @@ def test_two_whole_runs_work_as_the_writer_and_nothing_else_does(
     assert news == 4 * 2 + 3
     assert seen == stored and all(stored.values()), (seen, stored)
     assert core == {"raw_prices": 0, "news_sentiment": 0, "forecasts": 0}
+
+
+def _undo_script():
+    """Step 15, the written undo, as the owner would paste it: the block
+    from its BEGIN to its COMMIT, without the comment markers."""
+    block = ROLES.read_text(encoding="utf-8").split("-- 15. Undo", 1)[1]
+    start = block.index("-- BEGIN;")
+    end = block.index("-- COMMIT;") + len("-- COMMIT;")
+    return "\n".join(
+        line.removeprefix("--").strip() for line in block[start:end].splitlines()
+    )
+
+
+@pytest.mark.usefixtures("migration_roles")
+def test_step_10_leaves_a_table_made_later_to_no_api_role(scratch_schema):
+    """Step 10 as written, for this schema and its owner: a default grant to
+    anon and authenticated, as Supabase's are, is taken back, so a table or
+    sequence made after it gives them nothing; one made before keeps its
+    grant (step 10 never touches what exists: the migrations revoke that)."""
+    statements = [
+        s
+        for s in _sql_statements(ROLES.read_text(encoding="utf-8"))
+        if s.startswith("ALTER DEFAULT PRIVILEGES") and " REVOKE " in s
+    ]
+    assert len(statements) == 3
+    with scratch_schema() as (engine, schema), engine.begin() as conn:
+        me = conn.exec_driver_sql("SELECT current_user").scalar_one()
+        for kind in ("TABLES", "SEQUENCES"):
+            conn.exec_driver_sql(
+                f"ALTER DEFAULT PRIVILEGES FOR ROLE {me} IN SCHEMA {schema} "
+                f"GRANT ALL ON {kind} TO anon, authenticated"
+            )
+        conn.exec_driver_sql("CREATE TABLE made_before (a int)")
+        for statement in statements:
+            conn.exec_driver_sql(
+                statement.replace(
+                    "FOR ROLE postgres IN SCHEMA public",
+                    f"FOR ROLE {me} IN SCHEMA {schema}",
+                )
+            )
+        conn.exec_driver_sql("CREATE TABLE made_after (a int)")
+        conn.exec_driver_sql("CREATE SEQUENCE made_after_seq")
+        held = conn.execute(
+            text("""
+                SELECT has_table_privilege('anon', 'made_before', 'SELECT'),
+                       has_table_privilege('anon', 'made_after', 'SELECT'),
+                       has_table_privilege('authenticated', 'made_after', 'INSERT'),
+                       has_sequence_privilege('anon', 'made_after_seq', 'USAGE')
+            """)
+        ).one()
+    assert tuple(held) == (True, False, False, False)
+
+
+@pytest.mark.usefixtures("migration_roles")
+def test_the_written_undo_leaves_nothing_that_names_the_writer(pg_url, scratch_schema):
+    """Steps 11 and 13 as written, under a name of their own, then the
+    undo: DROP ROLE fails while any grant or policy still names the role, so
+    it succeeding proves the undo complete (12 policies, the table, column
+    and sequence grants, CONNECT and USAGE)."""
+    other = f"qf_undo_{uuid.uuid4().hex[:8]}"
+
+    def renamed(sql):
+        return re.sub(rf"\b{WRITER}\b", other, sql)
+
+    step_11 = [
+        renamed(s)
+        for s in _writer_statements()
+        if s.startswith(("CREATE ROLE", "ALTER ROLE", "GRANT CONNECT", "GRANT USAGE ON SCHEMA"))
+    ]  # fmt: skip
+    admin = create_engine(pg_url)
+    try:
+        with admin.begin() as conn:
+            for statement in step_11:
+                conn.exec_driver_sql(statement)
+        with scratch_schema() as (engine, _):
+            _run_script(engine, MIGRATION)
+            _run_script(engine, None, renamed(_step_13()))
+            with engine.connect() as conn:
+                named = conn.execute(
+                    text("SELECT count(*) FROM pg_policies WHERE :r = ANY (roles)"),
+                    {"r": other},
+                ).scalar_one()
+            assert named == 12
+            _run_script(engine, None, renamed(_undo_script()))
+            with admin.begin() as conn:
+                conn.exec_driver_sql(f"DROP ROLE {other}")
+                gone = conn.execute(
+                    text("SELECT count(*) FROM pg_roles WHERE rolname = :r"),
+                    {"r": other},
+                ).scalar_one()
+            assert gone == 0
+    finally:
+        with admin.begin() as conn:
+            leftover = conn.execute(
+                text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": other}
+            ).first()
+        if leftover:  # the test failed before its DROP ROLE: tidy up
+            with admin.begin() as conn:
+                conn.exec_driver_sql(f"DROP OWNED BY {other}")
+                conn.exec_driver_sql(f"DROP ROLE {other}")
+        admin.dispose()

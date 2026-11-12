@@ -720,3 +720,65 @@ def test_the_news_sums_the_live_run_reads_are_the_evaluations(
             fetched_at=rows["inserted_at"],
         )
         pd.testing.assert_frame_equal(live, built)
+
+
+# ── sql/migrations/001_dedupe_anomalies.sql ───────────────────────────────────
+
+MIGRATION_001 = ROOT / "sql" / "migrations" / "001_dedupe_anomalies.sql"
+
+
+def _run_raw(engine, script):
+    """A SQL script as Supabase's editor or psql runs it: its own BEGIN and
+    COMMIT, on a connection outside any SQLAlchemy transaction."""
+    raw = engine.raw_connection()
+    try:
+        raw.driver_connection.autocommit = True
+        with raw.cursor() as cursor:
+            cursor.execute(script)
+    finally:
+        raw.invalidate()  # the connection's autocommit stays out of the pool
+
+
+def test_migration_001_keeps_the_newest_copy_adds_the_key_and_refuses_twice(
+    scratch_schema,
+):
+    """On the table as the live one was made, before schema.sql gained
+    UNIQUE (ticker, ts): the newest copy of each flag stays, the key is
+    added, and a second run stops at its first check, changing nothing."""
+    with scratch_schema() as (engine, _):
+        with engine.begin() as conn:
+            conn.exec_driver_sql("""
+                CREATE TABLE anomalies (
+                    id          BIGSERIAL PRIMARY KEY,
+                    ticker      VARCHAR(10)     NOT NULL,
+                    ts          TIMESTAMPTZ     NOT NULL,
+                    close       NUMERIC(12, 4),
+                    zscore      NUMERIC(8, 4),
+                    flag        VARCHAR(10)     NOT NULL,
+                    inserted_at TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+                )
+            """)
+            for close in (10.0, 11.0, 12.0):
+                conn.exec_driver_sql(
+                    "INSERT INTO anomalies (ticker, ts, close, flag) VALUES "
+                    f"('AAPL', '2026-11-10 00:00+00', {close}, 'HIGH')"
+                )
+            conn.exec_driver_sql(
+                "INSERT INTO anomalies (ticker, ts, close, flag) VALUES "
+                "('MSFT', '2026-11-10 00:00+00', 5.0, 'LOW')"
+            )
+        script = MIGRATION_001.read_text(encoding="utf-8")
+        _run_raw(engine, script)
+        with engine.connect() as conn:
+            kept = conn.exec_driver_sql(
+                "SELECT ticker, close FROM anomalies ORDER BY ticker"
+            ).all()
+            key = conn.exec_driver_sql(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'anomalies_ticker_ts_key'"
+            ).scalar_one()
+        assert [(t, float(c)) for t, c in kept] == [("AAPL", 12.0), ("MSFT", 5.0)]
+        assert key == "UNIQUE (ticker, ts)"
+        with pytest.raises(Exception, match="migration already applied"):
+            _run_raw(engine, script)
+        assert _count(engine, "SELECT count(*) FROM anomalies") == 2

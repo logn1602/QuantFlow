@@ -1,40 +1,23 @@
-# Environment
-.env
-*.env
+# Deny by default: COPY . . in the Dockerfile copies only what is let back
+# in below, so nothing kept out of git (the evaluation's export of the live
+# database, local notes and review reports, tools' settings, secrets) can
+# reach an image, whatever its name. tests/unit/test_dockerfile.py checks
+# both what stays out and what the build needs.
+*
 
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-.Python
-*.egg-info/
-venv/
-.venv/
-env/
+# What the image needs: the package's build files (pyproject.toml names
+# README.md and LICENSE), its source, the dashboard's theme and the
+# committed lists.
+!pyproject.toml
+!README.md
+!LICENSE
+!requirements.txt
+!src/
+!config/
+!.streamlit/config.toml
 
-# Logs
-logs/
-*.log
-
-# MLflow
-mlruns/
-mlruns_artifacts/
-
-# Git
-.git/
-.gitignore
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Streamlit
-.streamlit/secrets.toml
-
-# Test files
-tests/
-*.test.py
+# Still out, inside what is let back in. Docker matches a pattern from the
+# context's root only, unlike .gitignore, so these start with **/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/

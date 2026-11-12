@@ -37,16 +37,17 @@ jobs:
       LOG_LEVEL: INFO
 
     steps:
-      # NOTE: actions/checkout is intentionally left on a major-version tag
-      # rather than SHA-pinned, as are the actions in ci.yml. Pinning adds
-      # churn without meaningful risk reduction here.
+      # Every action is pinned to a commit, with its release in the comment
+      # Dependabot reads (.github/dependabot.yml).
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # prune-cache: v9 of setup-uv stopped pruning before saving; see ci.yml.
       - name: Set up uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
+          prune-cache: true
 
       - name: Set up Python 3.11
         run: uv python install 3.11
@@ -64,11 +65,14 @@ jobs:
         run: uv sync --locked --extra dev
 
       # Runs before any data step so a logic regression fails fast, before
-      # touching the database. The suite is offline by design: no secrets,
-      # no DB, no network. CI's selection, which leaves the eval and
-      # integration suites out, less the trending tier's tests: they run in
-      # CI and in trending.yml, so one can never stop the core's data steps
-      # (docs/trending.md, section 12).
+      # touching the database. The suite is offline by design: no DB and no
+      # network (tests/conftest.py refuses both), although the job's DB_*
+      # secrets are in this step's environment too. CI's selection, which
+      # leaves the eval and integration suites out, less the trending tier's
+      # tests: they run in CI and in trending.yml, so a failing trending test
+      # does not stop the core's data steps. A trending module that cannot be
+      # imported still can, since pytest imports every module it collects
+      # before deselecting (docs/architecture.md, Known problem 16).
       - name: Run tests
         run: uv run pytest -m "not eval and not integration and not trending"
 

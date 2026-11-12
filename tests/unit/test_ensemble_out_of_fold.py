@@ -1,13 +1,9 @@
-"""tests/evals/test_ensemble_evaluation.py
+"""tests/unit/test_ensemble_out_of_fold.py
 
-End-to-end evaluation of the stacking ensemble, marked @pytest.mark.eval so the
-default suite and CI skip it.
-
-These run on synthetic base-model predictions rather than a seeded database, so
-they are reproducible anywhere and assert properties that must hold for any
-input. They are marked eval rather than unit because they exercise the whole
-scoring path — stack, fit, out-of-fold loop, comparison — instead of one
-function, and because that is slow enough not to belong in the commit loop.
+The stacking ensemble's scoring path, end to end: stack, fit, out-of-fold
+loop, comparison. On synthetic base-model predictions rather than a seeded
+database, so they are reproducible anywhere and assert properties that must
+hold for any input.
 
 What they defend is the claim the README makes: that the ensemble's reported
 figures are out-of-fold, and that the comparison against base models is
@@ -15,7 +11,10 @@ like-for-like. The earlier version of this project reported the ensemble as
 best on all eight tickers by scoring it in-sample. These assertions are what
 make that regression impossible to reintroduce silently.
 
-Run with:  uv run pytest -m eval
+They were in tests/evals, marked eval, as too slow for the commit loop, so no
+automated run ever ran them: CI, both workflows and make test leave eval out.
+They take about a tenth of a second, so they are unit tests now (found in the
+full-diff review, 2026-11-12).
 """
 
 import numpy as np
@@ -28,8 +27,6 @@ from quantflow.models.ensemble import STACK_COLUMNS, _fit_nnls, tune_and_train_m
 
 # The columns the meta-learner weighs: the base models and naive.
 COLUMNS = STACK_COLUMNS
-
-pytestmark = pytest.mark.eval
 
 
 def _stack(n=30, seed=7, noise=(3.0, 2.0, 1.0, 1.2, 4.0)):

@@ -1,6 +1,6 @@
 # QuantFlow
 
-A stock analytics pipeline that ingests market data, engineers features from price, sentiment and anomaly signals, and forecasts 8 stocks 7 trading days ahead with five models, each measured against a "no change" baseline under a leakage-controlled evaluation harness.
+A stock analytics pipeline that ingests market data, engineers features from price, sentiment and anomaly signals, and forecasts 8 stocks 7 trading days ahead with five models, each measured against a "no change" baseline under a leakage-controlled evaluation harness. A separate, discovery-only tier tracks the stocks trending right now.
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-quantflow--analytics.streamlit.app-red)](https://quantflow-analytics.streamlit.app)
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
@@ -17,7 +17,7 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 
 ![The dashboard's Forecasts tab for AAPL: each model's 7-day forecast beside "no change", with the measured coverage of every band](docs/images/dashboard_forecasts.png)
 
-*The dashboard's Forecasts tab (AAPL, data to 2026-11-06). Taken before the news switched to RSS only on 2026-11-09, so its sentiment card and the boosted trees' and the ensemble's lines still include NewsAPI's articles; its band figures equal the current ones.*
+*The live dashboard's Forecasts tab (AAPL, data to 2026-11-11, taken 2026-11-12), news from RSS only, with the Trending tab beside the six core tabs. The band figures are the published validation / test coverage.*
 
 ---
 
@@ -27,6 +27,7 @@ A stock analytics pipeline that ingests market data, engineers features from pri
 - **Computes** RSI(14), MACD(12/26/9), Bollinger Bands(20), rolling Z-score and IQR anomaly flags, and FinBERT sentiment over Yahoo Finance RSS headlines (NewsAPI's, fetched until 2026-11-09, no longer count).
 - **Forecasts** 7 trading days ahead with five models: ARIMA, Prophet, XGBoost, LightGBM, and an NNLS stacking ensemble over the four and "no change", the boosted trees from a 34-column feature matrix.
 - **Evaluates** every model on that 7-day task from 67 rolling start dates against "no change", and runs a long/flat strategy backtest on the ensemble.
+- **Discovers** the stocks people are watching and trading heavily, from Yahoo's trending, most-active, gainer and loser lists, in a [trending tier](#trending-tier-discovery-only) of its own: daily prices, indicators, anomaly flags and sentiment for up to 15 of them, never forecast, ensembled, backtested or evaluated.
 
 ---
 
@@ -72,9 +73,13 @@ flowchart TD
     RES --> UI
     PUB --> UI
     ENS --> ML[MLflow tracking]
+
+    LISTS[Yahoo trending and<br/>screener lists] --> TT[(Trending tier<br/>tables of its own)]
+    TT --> TAB[Trending tab<br/>discovery only]
+    TAB --> UI
 ```
 
-Data flows one way. `quantflow.models` depends on `quantflow.evaluation`, never the reverse, so scoring cannot come to depend on training internals.
+Data flows one way. `quantflow.models` depends on `quantflow.evaluation`, never the reverse, so scoring cannot come to depend on training internals. The trending tier reads and writes only its own tables, so nothing it stores can reach a model or the evaluation.
 
 ---
 
@@ -171,6 +176,29 @@ The leakage test is worth reading directly: it perturbs every input column from 
 
 ---
 
+## Trending tier (discovery only)
+
+The stocks people are watching and trading heavily right now, apart from the eight above. After each daily refresh, [trending.yml](.github/workflows/trending.yml) reads four Yahoo lists (trending tickers, most actives, day gainers, day losers), keeps US equities at $5 or more that are not in the core watchlist, and tracks up to 15 of them, at most 5 new in a run, plus the pinned ones (`TRENDING_PINNED`, SPCX). Each gets about six months of daily bars, RSI, MACD and Bollinger Bands, anomaly flags and FinBERT sentiment from its own Yahoo RSS feed, and the dashboard's Trending tab shows them. A symbol off every list for 5 counted sessions is dropped from the active set; its history stays.
+
+**Never forecast, ensembled, backtested or evaluated**, on purpose:
+- **History.** Many trending names are recent listings; the evaluation's first validation start date already needs 306 trading days of training data.
+- **Selection bias.** A stock trends *because* it just moved. Scoring models on a set chosen each day for its moves would measure the choice, not the models.
+- **Churn.** The lists change daily, so results over "the trending stocks" would describe a different set every run.
+
+Its storage is its own: five tables, prices included (`trending_prices`, not `raw_prices`), so no core query and nothing in the evaluation can pick its rows up by missing a filter. A test checks that a run sends no statement naming a core table, and the tier logs in as its own database role, which can write those five tables only and is refused every core one (`sql/schema_roles.sql`, steps 11 to 14).
+
+**Limits, stated plainly.** The lists come from Yahoo's unofficial endpoints: a list that fails is recorded, the others are still stored and used, the run ends red, and the tab shows when each list last succeeded. They measure what moved and traded most today among large US stocks, a fair proxy for "watched" but not attention itself. The caps keep each run inside yfinance's informal rate limits and FinBERT on the runner's CPU: a full run reads about 15 KB from the database.
+
+**Badges.** *Pinned*; *promotion-eligible* (20 sessions on the lists and two years of history; moving a name into `TICKERS` stays a manual watchlist decision); *big move*, a one-day close at or above 1.35 times or at or below 0.733 times the day before, which warns and never blocks. INTC's badge for 2026-10-30 marks a real move: Yahoo's and Alpha Vantage's bars agree that its close fell 28.6%, from $92.07 to $65.76, on 455.6 million shares, the day after Intel gave a weak fourth-quarter outlook.
+
+![The dashboard's Trending tab: when each Yahoo list last succeeded, then the tracked symbols with Symbol and Badges pinned at the left](docs/images/dashboard_trending.png)
+
+*The live dashboard's Trending tab (data from the 2026-11-12 03:15 UTC run, taken 2026-11-12). The table scrolls right to each symbol's news sentiment and article count, anomaly flags, RSI, last close and session, with Symbol and Badges kept in view.*
+
+The design, its decisions and every failure mode: [docs/trending.md](docs/trending.md).
+
+---
+
 ## Quickstart
 
 ### Docker
@@ -183,7 +211,7 @@ docker build -t quantflow .
 docker run -p 8501:8501 --env-file .env quantflow
 ```
 
-Serves the dashboard on http://localhost:8501. Requires a reachable PostgreSQL instance and a populated `.env` — the image ships no data.
+Serves the dashboard on http://localhost:8501. Requires a reachable PostgreSQL instance and a populated `.env`: the image ships no data. The dashboard only reads, so on a hosted database give it a file of its own whose `DB_USER` and `DB_PASSWORD` are the read-only role's (`sql/schema_roles.sql`), not `.env`'s table-owning login. The image installs `requirements.txt`, which sets minimum versions rather than the lock's: see [Known problem 14](docs/architecture.md#14-a-fresh-install-from-requirementstxt-drifts-from-the-lock) before relying on a fresh build.
 
 ### Local
 
@@ -197,17 +225,15 @@ git clone https://github.com/logn1602/QuantFlow.git
 cd QuantFlow
 ```
 
-```bash
-python -m venv .venv
-```
-
-Activate it — `.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on macOS and Linux — then install. `make install` installs both the dependencies and the `quantflow` package itself, which the pipeline commands need:
+Install the exact versions CI, the workflows and the evaluation run, from `uv.lock`, with [uv](https://docs.astral.sh/uv/). It makes `.venv` and installs the `quantflow` package in it, which the pipeline commands need:
 
 ```bash
-make install
+uv sync --locked --extra dev
 ```
 
-Create the database, then apply all four schema files. Skipping `schema_backtest.sql` breaks the Backtest tab; without `schema_metrics.sql` the model runs log a warning instead of recording their holdout metrics:
+Activate it (`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on macOS and Linux) for the commands below. Without uv, `python -m venv .venv`, activate it, then `make install` installs from `requirements.txt`, which sets minimum versions only: a fresh install of it on 2026-11-12 resolved pyarrow 26.0.1, which refuses the pinned NumPy 1.26.4, so the dashboard's tables fail ([Known problem 14](docs/architecture.md#14-a-fresh-install-from-requirementstxt-drifts-from-the-lock)).
+
+Create the database, then apply all five schema files. Skipping `schema_backtest.sql` breaks the Backtest tab; without `schema_metrics.sql` the model runs log a warning instead of recording their holdout metrics; without `schema_trending.sql` the Trending tab shows its empty state and `make trending` stops before fetching anything:
 
 ```bash
 psql -U postgres -c "CREATE DATABASE stock_pipeline;"
@@ -216,6 +242,8 @@ psql -U postgres -c "CREATE DATABASE stock_pipeline;"
 ```bash
 make setup
 ```
+
+On a local Postgres the pipeline and the dashboard log in as the role that owns the tables, and nothing more is needed. On a hosted database, the public dashboard should hold no credential that can write: [sql/schema_roles.sql](sql/schema_roles.sql), run by hand, creates a read-only role for it (and for `--live` reads), the trending tier's own writer, and the row-level security policies for both. Its header says which steps to run; an existing Supabase database with the core tables gets the trending tables from [sql/migrations/002_trending.sql](sql/migrations/002_trending.sql) instead of `make setup`.
 
 Copy the environment template and set `DB_PASSWORD`. Neither API key is needed: Alpha Vantage is unused by the default ingestion path, and the features count Yahoo Finance's RSS headlines only:
 
@@ -239,6 +267,12 @@ make all
 make dashboard
 ```
 
+The trending tier runs on its own, against the same database. `CAP=3` tracks at most 3 discovered symbols, for a first look; it is a run like any other, so the active symbols past the cap are deactivated until a run without it:
+
+```bash
+make trending CAP=3
+```
+
 The offline test suite needs no database, network or model training, and can be run at any point:
 
 ```bash
@@ -259,9 +293,9 @@ make test
 
 **Tooling**: MLflow, matplotlib (the README chart), Ruff, mypy, pytest, pre-commit, gitleaks, Docker, GitHub Actions
 
-MLflow is used for experiment tracking only. The Model Registry is not used — there is no `register_model`, `log_model` or `MlflowClient` call in the codebase.
+MLflow is used for experiment tracking only. The Model Registry is not used: there is no `register_model`, `log_model` or `MlflowClient` call in the codebase.
 
-Production runs once a day in GitHub Actions ([daily_refresh.yml](.github/workflows/daily_refresh.yml)), each stage after the last; the dependencies are audited weekly in their own workflow. The local alternative is APScheduler in a single process ([pipelines/scheduler.py](src/quantflow/pipelines/scheduler.py)): in-memory job store, no retries, no backfill, and stage ordering implied by wall-clock offsets rather than a dependency graph. It is a scheduler, not an orchestrator.
+Production runs once a day in GitHub Actions ([daily_refresh.yml](.github/workflows/daily_refresh.yml)), each stage after the last; the trending tier runs after it in its own workflow ([trending.yml](.github/workflows/trending.yml)), so a red trending run never turns the refresh red; the dependencies are audited weekly in a third. The local alternative is APScheduler in a single process ([pipelines/scheduler.py](src/quantflow/pipelines/scheduler.py)): in-memory job store, no retries, no backfill, and stage ordering implied by wall-clock offsets rather than a dependency graph. It is a scheduler, not an orchestrator.
 
 ---
 
@@ -270,23 +304,25 @@ Production runs once a day in GitHub Actions ([daily_refresh.yml](.github/workfl
 ```
 src/quantflow/
 ├── config.py              Environment loading and startup validation
-├── db/                    Data access: prices, forecasts, metrics, read-only use (most SQL; see docs/architecture.md)
-├── ingestion/             yFinance and Alpha Vantage fetchers, split guard, backfill
-├── features/              indicators, anomalies, sentiment, engineering
+├── db/                    Data access: prices, forecasts, metrics, the trending tables, read-only use (most SQL; see docs/architecture.md)
+├── ingestion/             yFinance and Alpha Vantage fetchers, split guard, backfill; the trending lists and their rules
+├── features/              indicators, anomalies, sentiment, engineering; the trending tier's analytics
 ├── models/                statistical (ARIMA/Prophet), boosting, ensemble, forecasters
 ├── evaluation/            splits, metrics, rolling_origin, report, publish, out_of_fold, backtest
-├── pipelines/             seed, run_models, backtest, evaluate, scheduler
-└── dashboard/             Streamlit app, and the published accuracy it shows
+├── pipelines/             seed, run_models, backtest, evaluate, scheduler, trending
+└── dashboard/             Streamlit app, its Trending tab's reads, and the published accuracy it shows
 
-sql/                       Schema DDL and migrations
+sql/                       Schema DDL, roles and policies, migrations
 scripts/diagnostics/       Read-only queries against the database
+config/                    Acknowledged price moves, and the trending tier's listing dates
 tests/
 ├── unit/                  Offline: no database, network or training
 ├── integration/           A disposable local Postgres (--pg-url)
 └── evals/                 Full scoring path, @pytest.mark.eval
 docs/architecture.md       Design decisions, free tiers, known problems
 docs/evaluation.md         The evaluation: design, decisions, results
-docs/images/               The README's chart and screenshot
+docs/trending.md           The trending tier: design, decisions, failure modes
+docs/images/               The README's chart and screenshots
 ```
 
 ---
@@ -307,15 +343,32 @@ docs/images/               The README's chart and screenshot
 | `SPLIT_GUARD_THRESHOLD` | no | Fraction, default `0.15`. The daily refresh fails if stored daily closes differ from Yahoo's raw closes by more than this on three or more consecutive dates (a stock split after the rows were stored) |
 | `LOG_LEVEL` | no | Default `INFO` |
 | `LOG_DIR` | no | Where log files go; default `logs/` in the working directory |
+| `TRENDING_PINNED` | no | Always tracked by the trending tier, outside its cap; default `SPCX`, at most 10 read |
+| `TRENDING_LISTS` | no | The Yahoo lists to read, in priority order for equal ranks; default all four: `trending_tickers,most_actives,day_gainers,day_losers` |
+| `TRENDING_MAX_ACTIVE` / `TRENDING_MAX_NEW_PER_RUN` | no | Discovered symbols tracked at once, default 15, and how many with no stored history may join in one run, default 5 |
+| `TRENDING_INACTIVE_AFTER_DAYS` | no | Counted sessions off every list before a symbol is deactivated, default 5 |
+| `TRENDING_MIN_PRICE` / `TRENDING_MIN_MARKET_CAP` | no | Floors in dollars: price default 5 (0 turns it off), market cap off by default |
+| `TRENDING_PROMOTION_MIN_DAYS` / `PROMOTION_MIN_HISTORY_DAYS` | no | Promotion eligibility: sessions on the lists, default 20, and trading days of history, default 504 |
+
+The trending settings are read when the tier runs, not at import, so a typo stops that run (and turns the Trending tab off with a general warning) and nothing else.
+
+**Where the deployed copies get theirs.** GitHub Actions and Streamlit Community Cloud read secrets, not `.env`. On Supabase's pooler every user is `<role>.<project-ref>`, the same 20-letter suffix as the `postgres.<project-ref>` in its connection string.
+
+| Secret | Read by | Value |
+|---|---|---|
+| `DB_HOST`, `DB_PORT`, `DB_NAME` | both workflows | the database |
+| `DB_USER`, `DB_PASSWORD` | `daily_refresh.yml` | the pipeline's login, which owns the tables |
+| `TRENDING_DB_USER`, `TRENDING_DB_PASSWORD` | `trending.yml` | `quantflow_trending`, which writes the five trending tables only |
+| `DB_USER`, `DB_PASSWORD` (Streamlit's) | the dashboard | `quantflow_readonly`, which can only read |
 
 **Acknowledged price moves.** The split guard also fails on any split-sized one-day move: a stored daily close at or below 0.733 times, or at or above 1.35 times, the one before it. That catches a split of any ratio from 3-for-2 up, and a real fall of 26.7% or more, or rise of 35% or more, fails it too. Once a move is confirmed real, list it in [config/split_jump_acknowledged.txt](config/split_jump_acknowledged.txt), one `TICKER:YYYY-MM-DD  # reason` per line. An entry counts only on a run where Yahoo's raw closes agree with the stored ones on that date and the day before, so it cannot excuse a bad stored row, and on a day Yahoo cannot be reached the move fails again. It is a committed file rather than a variable: the daily workflow reads the list of the commit it runs on, a local run the one in its checkout.
 
-**Database TLS.** `DB_SSLMODE` defaults to `require` rather than libpq's `prefer`, because `prefer` falls back to cleartext silently — no exception, no log line — if the peer declines TLS, and this database is a public endpoint reached from a laptop, a CI runner and Streamlit Cloud. `require` encrypts but does not authenticate the peer. `verify-full` is the recommended upgrade; it needs `DB_SSLROOTCERT` pointing at Supabase's CA file, because the pooler certificate is signed by a private CA present in neither the system trust store nor certifi.
+**Database TLS.** `DB_SSLMODE` defaults to `require` rather than libpq's `prefer`, because `prefer` falls back to cleartext silently (no exception, no log line) if the peer declines TLS, and this database is a public endpoint reached from a laptop, a CI runner and Streamlit Cloud. `require` encrypts but does not authenticate the peer. `verify-full` is the recommended upgrade; it needs `DB_SSLROOTCERT` pointing at Supabase's CA file, because the pooler certificate is signed by a private CA present in neither the system trust store nor certifi.
 
 ---
 
 ## Author
 
-**Shubh Dave** — MS Data Analytics, Northeastern University
+**Shubh Dave**, MS Data Analytics, Northeastern University
 
 [LinkedIn](https://linkedin.com/in/shubh-dave) · [GitHub](https://github.com/logn1602)

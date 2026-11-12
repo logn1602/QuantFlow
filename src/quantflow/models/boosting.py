@@ -624,5 +624,5 @@ if __name__ == "__main__":
         for ticker, model_results in results.items():
             for model, n in model_results.items():
                 print(f"  {ticker} [{model}]: {n} forecast rows saved")
-        print("\nTo view forecasts:   python xgboost_model.py --show AAPL")
-        print("To compare models:   python xgboost_model.py --compare AAPL")
+        print("\nTo view forecasts:   python -m quantflow.models.boosting --show AAPL")
+        print("To compare models:   python -m quantflow.models.boosting --compare AAPL")

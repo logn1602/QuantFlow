@@ -53,6 +53,7 @@ Integration support (tests/integration, a disposable local Postgres):
 
 import copy
 import functools
+import os
 import re
 import sys
 import uuid
@@ -65,6 +66,14 @@ import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.elements import TextClause
+
+# Tests that assert on a log line expect INFO and up to be recorded, and
+# get_logger gives each project logger the level LOG_LEVEL names when it is
+# first made. Set before anything imports quantflow (nothing above does), so
+# that a developer's .env, which load_dotenv never lets override the
+# environment, or shell cannot quiet them: with LOG_LEVEL=ERROR, 12 tests
+# failed (found in the full-diff review, 2026-11-12).
+os.environ["LOG_LEVEL"] = "INFO"
 
 # Unique keys of the tables the write paths touch, as declared in sql/*.sql.
 CONFLICT_KEYS = {

@@ -202,6 +202,15 @@ def run_evaluation(args) -> int:
     if unknown:
         print(f"Refusing: no model named {', '.join(unknown)}.", file=sys.stderr)
         return 2
+    # Every figure the report makes is a comparison with "no change": without
+    # it a run scored every origin and then failed on the missing skill.
+    if report.BASELINE not in args.models:
+        print(
+            f"Refusing: --models must include {report.BASELINE}, the baseline "
+            f"every model is scored against.",
+            file=sys.stderr,
+        )
+        return 2
     if args.window == "test" and not args.reason:
         print(
             "Refusing: a test-date run needs --reason (it is counted).", file=sys.stderr

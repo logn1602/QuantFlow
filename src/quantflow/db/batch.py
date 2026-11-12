@@ -23,7 +23,8 @@ from sqlalchemy import column, table
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # Postgres allows 65,535 bind parameters per statement. 1,000 rows of the
-# widest table written here (10 columns) stays well inside that.
+# widest rows written in chunks of it (tickers', 14 columns: 14,000
+# parameters) stays well inside that.
 CHUNK_ROWS = 1000
 
 

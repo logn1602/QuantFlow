@@ -1,24 +1,25 @@
 """
-ensemble.py
------------
-Level 3 — Stacking Ensemble
+models/ensemble.py
+------------------
+Level 3: Stacking Ensemble
 
 Trains a non-negative least squares (NNLS) meta-learner on out-of-fold holdout
-predictions from ARIMA, Prophet, XGBoost, and LightGBM. The meta-learner learns
-data-driven combination weights per ticker.
+predictions from ARIMA, Prophet, XGBoost and LightGBM, and on "no change" (the
+last training close, STACK_COLUMNS' fifth column, kept in Phase 3). The
+meta-learner learns data-driven combination weights per ticker.
 
 NNLS replaced Ridge because Ridge can assign negative coefficients to base
-models and lean on the intercept to compensate — fine in-sample, but it
+models and lean on the intercept to compensate: fine in-sample, but it
 extrapolates badly once live predictions drift outside the training price
 range. NNLS constrains weights to w_i >= 0 summing to 1, so the ensemble is
 always a convex combination and can never predict outside the range of its
 base models. See the NNLSMeta docstring for the full rationale.
 
 Whether the ensemble beats the best single base model is measured, not
-assumed — see out_of_fold_meta_predictions. It does not always win.
+assumed: see out_of_fold_meta_predictions. It does not always win.
 
 Architecture:
-  Layer 1 (base models):  ARIMA · Prophet · XGBoost · LightGBM
+  Layer 1 (base models):  ARIMA · Prophet · XGBoost · LightGBM · no change
          ↓  30-day out-of-fold holdout predictions
   Layer 2 (meta-learner): NNLS convex combination, evaluated with an
                           expanding-window out-of-fold loop
@@ -34,9 +35,9 @@ MLflow tracks:
   - Full forecast + holdout stack artifacts
 
 Usage:
-    python ensemble.py                  # run all tickers
-    python ensemble.py --ticker AAPL    # run single ticker
-    python ensemble.py --show AAPL      # print ensemble forecasts
+    python -m quantflow.models.ensemble                # run all tickers
+    python -m quantflow.models.ensemble --ticker AAPL  # run single ticker
+    python -m quantflow.models.ensemble --show AAPL    # print ensemble forecasts
 """
 
 import argparse
@@ -692,4 +693,4 @@ if __name__ == "__main__":
         print("\n--- Ensemble Results ---")
         for ticker, n in results.items():
             print(f"  {ticker} [ensemble_stack]: {n} forecast rows saved")
-        print("\nTo view forecasts:  python ensemble.py --show AAPL")
+        print("\nTo view forecasts:  python -m quantflow.models.ensemble --show AAPL")

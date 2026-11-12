@@ -229,13 +229,26 @@ def test_clean_text_removes_control_and_format_characters():
 
 
 def test_the_committed_listing_dates_parse_with_the_shared_parser():
+    """The file parses and keeps SPCX's entry. Not its whole contents: it is
+    the procedure for every symbol Yahoo reuses (docs/trending.md, section
+    5), and a test pinned to one line would turn CI and every trending run
+    red the day the owner adds a second."""
     import datetime as dt
 
     listed = config_module.split_jump_acknowledged(
         config_module.TRENDING_LISTING_DATES_FILE
     )
-    assert listed == {
-        ("SPCX", dt.date(2026, 6, 12)): (
-            "the symbol was a Tuttle Capital ETF's before this listing"
-        )
-    }
+    assert listed[("SPCX", dt.date(2026, 6, 12))] == (
+        "the symbol was a Tuttle Capital ETF's before this listing"
+    )
+
+
+def test_a_pinned_entry_that_only_upper_cases_into_a_symbol_is_left_out(caplog):
+    """str.upper() maps some letters outside ASCII onto ASCII ones (the
+    dotless i to I, the sharp s to SS, the ff ligature to FF), so a pasted
+    or mistyped entry pinned a different, real symbol: an entry must be
+    ASCII before it is upcased (found in the full-diff review, 2026-11-12)."""
+    raw = "\u0131bm,stra\u00dfe,\ufb00,SPCX"
+    assert rules.pinned_symbols(raw, CORE) == ("SPCX",)
+    warnings = [r.getMessage() for r in caplog.records]
+    assert sum("is not a symbol" in w for w in warnings) == 3

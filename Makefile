@@ -7,7 +7,7 @@
 # ── Default: show help ────────────────────────────────────────────────────────
 help:
 	@echo ""
-	@echo "  QuantFlow — Pipeline Commands"
+	@echo "  QuantFlow: Pipeline Commands"
 	@echo "  ─────────────────────────────────────────────"
 	@echo "  make install      Install all dependencies"
 	@echo "  make setup        Create DB tables (run once)"
@@ -21,7 +21,7 @@ help:
 	@echo "  make sentiment    Fetch + analyze news sentiment"
 	@echo "  make backtest     Run strategy backtest (run models first)"
 	@echo "  make evaluate     Rolling-origin evaluation, validation dates (SNAPSHOT=dir)"
-	@echo "  make trending     One trending run, on .env's database (CAP=n: see below)"
+	@echo "  make trending     One trending run, on .env's database (CAP=n: at most n discovered)"
 	@echo "  make dashboard    Launch Streamlit dashboard"
 	@echo "  make scheduler    Start the live data scheduler"
 	@echo "  make test         Run the offline test suite (no DB needed)"
@@ -33,9 +33,9 @@ help:
 	@echo ""
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
-# -e . installs the quantflow package itself. Without it every target below
-# fails with ModuleNotFoundError, because they invoke python -m quantflow.*
-# and requirements.txt only brings in third-party dependencies.
+# requirements.txt's last line, ".", installs a copy of the quantflow
+# package; -e . replaces it with an editable install, so the targets below
+# (python -m quantflow.*) run the checkout's code and read its config/ files.
 install:
 	pip install -r requirements.txt
 	pip install -e . --no-deps
@@ -58,7 +58,7 @@ indicators:
 anomalies:
 	python -m quantflow.features.anomalies
 
-# Run all 4 models in one command (recommended)
+# Every model, the ensemble included, in one command (recommended)
 models:
 	python -m quantflow.pipelines.run_models
 
@@ -125,7 +125,7 @@ all:
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 # Delegates to a Python script so this works on Windows too. The old target
 # shelled out to find/rm, which do not exist in PowerShell.
-# Keeps mlflow.db by default — see scripts/clean.py --mlflow.
+# Keeps mlflow.db by default; see scripts/clean.py --mlflow.
 clean:
 	python scripts/clean.py
 

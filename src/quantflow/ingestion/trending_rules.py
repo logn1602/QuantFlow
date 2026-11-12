@@ -155,6 +155,12 @@ def pinned_symbols(raw: str, core: list[str] | tuple[str, ...]) -> tuple[str, ..
     text = raw if raw.strip() else config.DEFAULT_TRENDING_PINNED
     kept: list[str] = []
     for entry in text.split(","):
+        # ASCII first: upper() maps some letters outside it onto ASCII ones
+        # (a dotless i to I, a sharp s to SS), which would pin a different,
+        # real symbol.
+        if not entry.strip().isascii():
+            logger.warning(f"TRENDING_PINNED: {shown(entry.strip())} is not a symbol")
+            continue
         symbol = entry.strip().upper()
         if not symbol or symbol in kept:
             continue
@@ -312,6 +318,12 @@ class Candidate:
     first_trade_date: dt.date | None
 
 
+# The reason rejection() gives a core ticker, which offering_nobody() reads:
+# a list of core tickers alone is no failure. One constant, so the log's
+# wording and the rule cannot drift apart.
+CORE_TICKER = "a core ticker"
+
+
 def rejection(
     item: TrendingItem, *, core: Iterable[str], settings: TrendingSettings
 ) -> str | None:
@@ -322,7 +334,7 @@ def rejection(
     if item.quote_type != "EQUITY":
         return "not EQUITY"
     if item.symbol in set(core):
-        return "a core ticker"
+        return CORE_TICKER
     if settings.min_price > 0 and (
         item.price is None or item.price < settings.min_price
     ):
@@ -418,7 +430,7 @@ def offering_nobody(
         reasons: dict[str, int] = {}
         for item in fetch.items:
             reason = rejection(item, core=core, settings=settings)
-            if item.symbol in settings.pinned or reason in (None, "a core ticker"):
+            if item.symbol in settings.pinned or reason in (None, CORE_TICKER):
                 reasons = {}
                 break
             reasons[reason] = reasons.get(reason, 0) + 1

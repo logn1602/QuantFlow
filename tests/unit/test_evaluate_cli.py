@@ -158,6 +158,18 @@ def test_an_unknown_model_is_refused_before_reading_anything(tmp_path, harness):
     assert harness.calls == []
 
 
+def test_a_run_without_the_naive_baseline_is_refused_before_reading_anything(
+    tmp_path, harness, capsys
+):
+    """Every figure is a comparison with "no change": without it the run
+    scored every origin, wrote its cells, then failed on the missing skill
+    column with no report (found in the full-diff review, 2026-11-12)."""
+    assert _run(tmp_path, "--models", "drift") == 2  # no snapshot exists
+    assert harness.calls == []
+    assert "naive" in capsys.readouterr().err
+    assert not (tmp_path / "runs" / "r").exists()
+
+
 def test_a_test_run_without_a_reason_is_refused_before_reading_anything(
     tmp_path, harness
 ):
@@ -186,7 +198,10 @@ def test_a_run_that_raises_is_logged_as_failed(tmp_path, harness, monkeypatch):
     monkeypatch.setattr(
         evaluate,
         "FORECASTERS",
-        {"short": lambda data: ro.naive_forecast(data).iloc[:3]},
+        {
+            "naive": ro.naive_forecast,
+            "short": lambda data: ro.naive_forecast(data).iloc[:3],
+        },
     )
     assert _run(tmp_path) == 1
     assert harness.call("text") == [("text", "traceback.txt")]

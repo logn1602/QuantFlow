@@ -452,10 +452,11 @@ every table and sequence. Now:
   roles a fresh database may not have; `schema_roles.sql`, step 8, adds the policies on
   a fresh install, and a unit test keeps those statements and the migration's the same.
 - `postgres` owns every table, and a table's owner is not subject to its row-level
-  security, so the core's writes and the tier's are unchanged. Checked on a local copy
-  of the 2026-11-11 backup with row-level security on: a capped run stored its lists,
-  bars and articles as before, and the read-only role then read every row and wrote
-  none.
+  security, so the core's writes were unchanged, and so were the tier's while it
+  wrote as `postgres`. Checked on a local copy of the 2026-11-11 backup with
+  row-level security on: a capped run stored its lists, bars and articles as before,
+  and the read-only role then read every row and wrote none. The tier now writes as
+  its own role, through policies of its own (below).
 - A `--live` read that finds a table it expects rows in empty now stops
   (`db.readonly.require_rows`), naming the tables and the missing policy, instead of
   reporting them empty. The dashboard, read as the role without the policies, showed
@@ -869,7 +870,7 @@ deactivated until a run without it), listed in `make help`. `make promote` waits
 |---|---|
 | `ingestion/trending_sources.py` | `TrendingItem`, `ListFetch`, `TrendingSource`, `YahooScreenerSource`, `YahooTrendingSource` |
 | `ingestion/trending_rules.py` | Pure functions: validation, filters, dedupe, session dates, the active set, deactivation, eligibility |
-| `db/trending.py` | Reads and batched writes for `tickers`, `trending_snapshots`, `trending_news`, `trending_prices`; the price replacement |
+| `db/trending.py` | Reads and batched writes for `tickers`, `trending_snapshots`, `trending_fetches`, `trending_prices`; the price replacement. `trending_news` is written by `db/sentiment.py`, with the table named |
 | `pipelines/trending.py` | The run (7.1) and the CLI behind `make trending` |
 | `dashboard/trending_view.py` | The tab's queries and shaping, testable |
 
@@ -891,7 +892,8 @@ of 7.5 (a test, beside the existing boundary tests).
 | A symbol's news write | Rolled back; the next symbol still runs; then the run exits 1 | An error, and a failed run |
 | A database error | The run fails; a fetch and the selection made from it are stored together or not at all | A failed trending run; the core is unaffected |
 | The migration not yet applied | The run exits 1 before fetching, naming `002_trending.sql`; the tab shows its empty state | A failed trending run until the owner runs it |
-| A read policy missing (row-level security hides every row from the read-only role, with no error) | A `--live` diagnostics run or a snapshot export stops before reading on, naming the tables (`db.readonly.require_rows`); the tier, which writes as the tables' owner, is unaffected | "no row visible to quantflow_readonly ... (sql/schema_roles.sql, step 7)", exit 1 |
+| A read policy missing (row-level security hides every row from the read-only role, with no error) | A `--live` diagnostics run or a snapshot export stops before reading on, naming the tables (`db.readonly.require_rows`); the tier, which writes through its own role's policies, is unaffected | "no row visible to quantflow_readonly ... (sql/schema_roles.sql, step 7)", exit 1 |
+| A grant or policy of the tier's role missing (`sql/schema_roles.sql`, step 13) | A write fails, or a read finds no row with no error: the integration test (two whole runs logged in as the role), run with each of 12 grants and policies removed in turn, failed every time | A failed trending run; the core is unaffected |
 | A feed that never answers | Each feed read has a 20-second socket timeout; the job's 30-minute timeout is the backstop | A warning, or at worst a failed trending run; the daily refresh had already finished |
 | An invalid symbol, pinned or listed | Dropped | A warning naming it |
 | A big move on a trending name | Logged, a badge on the tab | The badge |

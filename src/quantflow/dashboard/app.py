@@ -1,6 +1,6 @@
 """
-dashboard.py
-------------
+dashboard/app.py
+----------------
 QuantFlow: stock analytics dashboard
 
 Streamlit app visualizing the full pipeline:
@@ -90,8 +90,9 @@ def load_latest_closes(tickers: tuple[str, ...]) -> pd.DataFrame:
 # date the price candles carry (db.prices.daily_bars). A bare ts::date follows
 # the session's TimeZone instead: UTC on Supabase, but on a session west of UTC
 # every indicator and anomaly stored at 00:00 UTC sat one day left of its
-# candle. No regression test yet: this module cannot be imported in tests
-# (Known problem #5 in docs/architecture.md).
+# candle. tests/unit/test_dashboard_dates.py checks these casts, reading this
+# module as text, since it cannot be imported in tests (Known problem #5 in
+# docs/architecture.md).
 @cached
 def load_indicators(ticker: str, days: int = 180) -> pd.DataFrame:
     engine = get_engine()

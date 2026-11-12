@@ -221,6 +221,58 @@ def test_every_action_is_pinned_to_a_full_commit_with_its_release():
     assert all(len(found) == 1 for found in commits.values()), commits
 
 
+def _list_items(text):
+    """Each YAML list item's text: from its "- " line through every line
+    indented deeper (blank lines included), so a step whose uses: is not its
+    first key is whole too."""
+    lines = text.splitlines(keepends=True)
+    items = []
+    for i, line in enumerate(lines):
+        marker = re.match(r"^( *)- ", line)
+        if not marker:
+            continue
+        depth = len(marker.group(1))
+        end = i + 1
+        while end < len(lines) and (
+            not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > depth
+        ):
+            end += 1
+        items.append("".join(lines[i:end]))
+    return items
+
+
+def _setup_uv_steps():
+    """(workflow, step text) for every astral-sh/setup-uv step."""
+    return [
+        (path.name, item)
+        for path in sorted(WORKFLOWS.glob("*.yml"))
+        for item in _list_items(path.read_text(encoding="utf-8"))
+        if re.search(r"^\s*(?:- )?uses: astral-sh/setup-uv@", item, re.MULTILINE)
+    ]
+
+
+def test_setup_uv_still_prunes_the_cache_it_saves():
+    """setup-uv v9 stopped pruning its cache before saving it (PR #24 took
+    it to v10). uv.lock pins PyPI's torch with its CUDA libraries, so an
+    unpruned cache could hold gigabytes of wheels PyPI serves as fast,
+    against the repository's 10 GB of Actions cache, the FinBERT model's
+    386 MB included. Pruned, it keeps what was built from source."""
+    steps = _setup_uv_steps()
+    assert len(steps) == 6, [name for name, _ in steps]
+    caching = [(name, step) for name, step in steps if "enable-cache: true" in step]
+    assert len(caching) == 5
+    for name, step in caching:
+        assert re.search(r"^\s+prune-cache: true$", step, re.MULTILINE), (name, step)
+
+
+def test_no_workflow_says_its_actions_are_left_on_tags():
+    """A note from before PR #23 said checkout stayed on a major-version tag;
+    every action is pinned to a commit now (the test above)."""
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        assert "major-version tag" not in text, path.name
+
+
 def test_dependabot_proposes_the_pinned_actions_updates_weekly():
     dependabot = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
     assert "package-ecosystem: github-actions" in dependabot

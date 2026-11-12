@@ -174,10 +174,15 @@ def _upsert(conn, rows: list[dict[str, Any]], update: Sequence[str]) -> int:
     written = 0
     for start in range(0, len(rows), CHUNK_ROWS):
         stmt = pg_insert(target).values(rows[start : start + CHUNK_ROWS])
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol"],
-            set_={name: stmt.excluded[name] for name in update},
-        )
+        if update:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["symbol"],
+                set_={name: stmt.excluded[name] for name in update},
+            )
+        else:
+            # Nothing to overwrite: a stored row stays as it is. (DO UPDATE
+            # with an empty SET is refused by SQLAlchemy.)
+            stmt = stmt.on_conflict_do_nothing(index_elements=["symbol"])
         written += conn.execute(stmt).rowcount
     return written
 

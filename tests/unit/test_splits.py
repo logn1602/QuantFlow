@@ -204,3 +204,14 @@ def test_a_window_is_chosen_by_name():
 def test_too_little_history_is_refused():
     with pytest.raises(ValueError, match="too few"):
         splits.origin_grid(400)
+
+
+def test_the_warmup_origins_cover_the_rolling_weights_window():
+    """The rolling ensemble fits its weights on the WINDOW_ORIGINS origins
+    before each scored one, and WARMUP_ORIGINS exist for exactly that: two
+    literals for one requirement. Raised alone, the window would give the
+    first scored origins thinner windows than the rest (found in the
+    full-diff review, 2026-11-12)."""
+    from quantflow.evaluation.out_of_fold import WINDOW_ORIGINS
+
+    assert splits.WARMUP_ORIGINS >= WINDOW_ORIGINS

@@ -1,9 +1,11 @@
 # QuantFlow Dockerfile
-# Builds a container for GCP Cloud Run deployment
-# Usage: docker build -t quantflow . && docker run -p 8501:8501 quantflow
+# Builds an image that serves the Streamlit dashboard, for running it
+# anywhere Docker runs. The live app is on Streamlit Community Cloud, which
+# does not use this file.
+# Usage: docker build -t quantflow . && docker run -p 8501:8501 --env-file .env quantflow
 
 # 3.11 everywhere: runtime.txt (Streamlit Cloud), the CI workflow, and the
-# README prerequisites all target 3.11. No dependency requires 3.12 — the
+# README prerequisites all target 3.11. No dependency requires 3.12: the
 # highest floor across the requirements is >=3.10.
 FROM python:3.11.15-slim
 
@@ -18,12 +20,17 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (layer caching)
+# Copy requirements first (layer caching). Its last line is ".", the
+# quantflow package itself, for Streamlit Cloud; "." cannot be installed
+# before the source is here, and installing it from this layer stopped every
+# build. So this layer installs every other line, and is reused until
+# requirements.txt changes, and the package goes in below, after the code.
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Install the third-party dependencies
+RUN grep -vx '\.' requirements.txt > /tmp/third-party.txt && \
+    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/third-party.txt
 
 # Copy application code
 COPY . .

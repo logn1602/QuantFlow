@@ -1,7 +1,7 @@
 -- ============================================================
 -- schema_backtest.sql
 -- Backtest results for the stacking ensemble trading strategy.
--- Command: psql -U postgres -d stock_pipeline -f db/schema_backtest.sql
+-- Command: psql -U postgres -d stock_pipeline -f sql/schema_backtest.sql
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS backtest_results (

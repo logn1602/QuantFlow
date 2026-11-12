@@ -224,3 +224,25 @@ def test_a_model_held_twice_keeps_its_latest_forecast():
 
     base = held.base("AAPL", ["arima"])
     assert list(base["forecast_date"]) == [d.date() for d in NEW_DATES]
+
+
+# ── clear_forecasts: the laptop scheduler's path ──────────────────────────────
+
+
+def test_clearing_named_models_keeps_every_other_models_forecasts(stored):
+    """A scheduler job clears only the models it is about to rewrite: a job
+    must never blank another model's forecasts (Known problem 4). No test
+    reached this path before the full-diff review (2026-11-12)."""
+    cleared = db_forecasts.clear_forecasts(["AAPL"], ["arima", "prophet"])
+    assert cleared == 2 * len(OLD_DATES)
+    found = _found(stored)
+    assert found["AAPL"] == set(MODELS) - {"arima", "prophet"}
+    assert found["MSFT"] == set(MODELS)
+
+
+def test_clearing_without_models_clears_every_model_of_those_tickers_only(stored):
+    cleared = db_forecasts.clear_forecasts(["MSFT"])
+    assert cleared == len(MODELS) * len(OLD_DATES)
+    found = _found(stored)
+    assert found["AAPL"] == set(MODELS)
+    assert "MSFT" not in found or found["MSFT"] == set()

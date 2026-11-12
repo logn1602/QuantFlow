@@ -3,10 +3,8 @@ db/connection.py
 ----------------
 Database connection helpers.
 Use get_engine() for SQLAlchemy (DataFrames).
-Use get_conn() for raw psycopg2 (custom SQL).
 """
 
-import psycopg2
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.exc import OperationalError
 
@@ -52,17 +50,6 @@ def engine_as(user: str, password: str):
         database=config.DB_NAME,
     )
     return create_engine(url, pool_pre_ping=True, connect_args=_ssl_args())
-
-
-def get_conn():
-    """Return a raw psycopg2 connection. Caller is responsible for closing it.
-
-    Hands the DSN to libpq intact rather than rebuilding it from urlparse
-    fields. The old version passed only host/port/dbname/user/password, so any
-    query string on DATABASE_URL — '?sslmode=verify-full', say — was dropped
-    with no error, leaving this path silently weaker than get_engine().
-    """
-    return psycopg2.connect(DATABASE_URL, **_ssl_args())
 
 
 def test_connection() -> bool:

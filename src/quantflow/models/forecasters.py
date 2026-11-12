@@ -17,6 +17,7 @@ import pandas as pd
 from quantflow.evaluation.out_of_fold import rolling_origin_fit, rolling_origin_stack
 from quantflow.evaluation.rolling_origin import (
     BASELINES,
+    FORECAST_COLUMNS,
     Combiner,
     Forecaster,
     OriginData,
@@ -46,8 +47,6 @@ from quantflow.models.statistical import (
     prophet_forecast,
     prophet_settings,
 )
-
-FORECAST_COLUMNS = ["yhat", "yhat_lower", "yhat_upper"]
 
 # The news features the ablation leaves out (docs/evaluation.md, section 4).
 NEWS_FEATURES = [
