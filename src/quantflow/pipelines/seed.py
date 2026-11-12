@@ -1,11 +1,11 @@
 """
-seed_db.py
-----------
+pipelines/seed.py
+-----------------
 Run this ONCE to seed the database with 2 years of historical daily prices.
 After seeding, use the scheduler for ongoing intraday updates.
 
 Usage:
-    python seed_db.py
+    python -m quantflow.pipelines.seed
 """
 
 import sys
@@ -35,7 +35,7 @@ def main():
 
     # --- Alpha Vantage: last 100 trading days ---
     logger.info("=== Seeding from Alpha Vantage (last 100 days daily) ===")
-    logger.info("Note: Free tier is 25 req/day — this will take a few minutes...")
+    logger.info("Note: Free tier is 25 req/day: this will take a few minutes...")
     av_results = fetch_daily(TICKERS)
     for ticker, n in av_results.items():
         logger.info(f"  {ticker}: {n} rows")
@@ -45,7 +45,10 @@ def main():
     logger.info(
         f"Seed complete. yFinance: {total_yf} rows | Alpha Vantage: {total_av} rows"
     )
-    logger.info("You can now run: python scheduler/job_runner.py")
+    logger.info(
+        "Next: the split guard, then the stages (make all runs them in "
+        "order; make help lists each), then make dashboard"
+    )
 
 
 if __name__ == "__main__":

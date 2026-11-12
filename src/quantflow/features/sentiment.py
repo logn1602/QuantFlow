@@ -1,7 +1,7 @@
 """
-sentiment.py
-------------
-Phase 6 — News Sentiment Analysis Engine
+features/sentiment.py
+---------------------
+Phase 6: News Sentiment Analysis Engine
 
 Pulls financial news from two sources:
   1. NewsAPI       : Structured API, 100 req/day free tier
@@ -16,10 +16,10 @@ Stores results in news_sentiment table.
 Sentiment scores can then be used as features in forecasting models.
 
 Usage:
-    python sentiment.py                    # fetch + analyze all tickers
-    python sentiment.py --ticker AAPL      # one ticker only
-    python sentiment.py --show AAPL        # print latest sentiment for AAPL
-    python sentiment.py --summary          # market-wide sentiment overview
+    python -m quantflow.features.sentiment                # every ticker
+    python -m quantflow.features.sentiment --ticker AAPL  # one ticker only
+    python -m quantflow.features.sentiment --show AAPL    # its latest sentiment
+    python -m quantflow.features.sentiment --summary      # market overview
 """
 
 import argparse
@@ -389,7 +389,7 @@ def show_sentiment(ticker: str, n: int = 15):
 
     if df.empty:
         print(
-            f"No sentiment data for {ticker}. Run: python sentiment.py --ticker {ticker}"
+            f"No sentiment data for {ticker}. Run: python -m quantflow.features.sentiment --ticker {ticker}"
         )
         return
 
@@ -429,7 +429,7 @@ def show_summary():
         df = pd.read_sql(query, conn)
 
     if df.empty:
-        print("No sentiment data yet. Run: python sentiment.py")
+        print("No sentiment data yet. Run: python -m quantflow.features.sentiment")
         return
 
     print(f"\n{'=' * 75}")
@@ -540,8 +540,8 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f"Complete. Total sentiment rows saved: {total}")
     for ticker, n in results.items():
         print(f"  {ticker}: {n} rows")
-    print("\nTo view results:  python sentiment.py --show AAPL")
-    print("Market overview:  python sentiment.py --summary")
+    print("\nTo view results:  python -m quantflow.features.sentiment --show AAPL")
+    print("Market overview:  python -m quantflow.features.sentiment --summary")
     return 0
 
 

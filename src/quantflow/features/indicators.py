@@ -1,7 +1,7 @@
 """
-indicators.py
--------------
-Phase 2 — Technical Indicator Engine
+features/indicators.py
+----------------------
+Phase 2: Technical Indicator Engine
 
 Reads raw OHLCV data from raw_prices, computes:
   - RSI (14)         : Relative Strength Index — momentum indicator
@@ -15,9 +15,9 @@ Reads raw OHLCV data from raw_prices, computes:
 Writes results to technical_indicators table.
 
 Usage:
-    python indicators.py                  # compute for all tickers
-    python indicators.py --ticker AAPL    # compute for one ticker
-    python indicators.py --show AAPL      # print latest indicators for a ticker
+    python -m quantflow.features.indicators                # every ticker
+    python -m quantflow.features.indicators --ticker AAPL  # one ticker
+    python -m quantflow.features.indicators --show AAPL    # its latest values
 """
 
 import argparse
@@ -210,7 +210,7 @@ def show_latest(ticker: str, n: int = 10):
 
     if df.empty:
         print(
-            f"No indicators found for {ticker}. Run: python indicators.py --ticker {ticker}"
+            f"No indicators found for {ticker}. Run: python -m quantflow.features.indicators --ticker {ticker}"
         )
         return
 

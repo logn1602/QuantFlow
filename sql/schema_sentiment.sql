@@ -1,6 +1,6 @@
 -- ============================================================
 -- Add this to your existing schema by running:
--- psql -U postgres -d stock_pipeline -f db/schema_sentiment.sql
+-- psql -U postgres -d stock_pipeline -f sql/schema_sentiment.sql
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS news_sentiment (

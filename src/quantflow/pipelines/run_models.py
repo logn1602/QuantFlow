@@ -1,6 +1,6 @@
 """
-run_models.py
--------------
+pipelines/run_models.py
+-----------------------
 Runs the full forecasting pipeline in one command:
   1. ARIMA + Prophet  (statistical time series models)
   2. XGBoost + LightGBM (ML models with 33 engineered features)
@@ -15,9 +15,9 @@ nothing for keeps the forecasts it had, and a model the run did not make for
 a ticker is left out of its new set rather than kept from the previous run.
 
 Usage:
-    python run_models.py                  # all tickers, all models
-    python run_models.py --ticker AAPL    # one ticker only
-    python run_models.py --no-clear       # keep existing forecasts (rarely wanted)
+    python -m quantflow.pipelines.run_models                # every ticker and model
+    python -m quantflow.pipelines.run_models --ticker AAPL  # one ticker only
+    python -m quantflow.pipelines.run_models --no-clear     # keep stored forecasts
 """
 
 import argparse

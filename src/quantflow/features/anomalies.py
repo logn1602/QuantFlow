@@ -1,7 +1,7 @@
 """
-anomaly_detection.py
---------------------
-Phase 3 — Anomaly Detection Engine
+features/anomalies.py
+---------------------
+Phase 3: Anomaly Detection Engine
 
 Detects unusual price movements using two methods:
   1. Z-Score       : How many standard deviations from the rolling mean
@@ -13,10 +13,10 @@ Flags are written to the anomalies table with:
   - Flag type: 'HIGH' (spike up) or 'LOW' (spike down)
 
 Usage:
-    python anomaly_detection.py               # run for all tickers
-    python anomaly_detection.py --ticker TSLA # run for one ticker
-    python anomaly_detection.py --show TSLA   # print anomalies for a ticker
-    python anomaly_detection.py --summary     # show anomaly counts per ticker
+    python -m quantflow.features.anomalies                # every ticker
+    python -m quantflow.features.anomalies --ticker TSLA  # one ticker
+    python -m quantflow.features.anomalies --show TSLA    # print its anomalies
+    python -m quantflow.features.anomalies --summary      # counts per ticker
 """
 
 import argparse
@@ -188,10 +188,10 @@ def save_anomalies(df: pd.DataFrame) -> int:
 
     This deliberately does not depend on a UNIQUE (ticker, ts) constraint.
     The live table carries only PRIMARY KEY (id): it was created before the
-    UNIQUE clause was added to db/schema.sql, and CREATE TABLE IF NOT EXISTS
+    UNIQUE clause was added to sql/schema.sql, and CREATE TABLE IF NOT EXISTS
     cannot retrofit a constraint. The previous `ON CONFLICT DO NOTHING` had no
     unique index to detect, so it never fired and every run appended another
-    full copy of the flags. See db/migrations/001_dedupe_anomalies.sql.
+    full copy of the flags. See sql/migrations/001_dedupe_anomalies.sql.
 
     The delete and the inserts share one transaction, so a failure part-way
     rolls back the delete too: the table is either fully replaced or left
@@ -292,7 +292,9 @@ def show_summary():
         df = pd.read_sql(query, conn)
 
     if df.empty:
-        print("No anomalies in database yet. Run: python anomaly_detection.py")
+        print(
+            "No anomalies in database yet. Run: python -m quantflow.features.anomalies"
+        )
         return
 
     print(f"\n{'=' * 65}")

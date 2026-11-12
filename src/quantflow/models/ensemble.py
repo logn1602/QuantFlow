@@ -1,7 +1,7 @@
 """
-ensemble.py
------------
-Level 3 — Stacking Ensemble
+models/ensemble.py
+------------------
+Level 3: Stacking Ensemble
 
 Trains a non-negative least squares (NNLS) meta-learner on out-of-fold holdout
 predictions from ARIMA, Prophet, XGBoost, and LightGBM. The meta-learner learns
@@ -34,9 +34,9 @@ MLflow tracks:
   - Full forecast + holdout stack artifacts
 
 Usage:
-    python ensemble.py                  # run all tickers
-    python ensemble.py --ticker AAPL    # run single ticker
-    python ensemble.py --show AAPL      # print ensemble forecasts
+    python -m quantflow.models.ensemble                # run all tickers
+    python -m quantflow.models.ensemble --ticker AAPL  # run single ticker
+    python -m quantflow.models.ensemble --show AAPL    # print ensemble forecasts
 """
 
 import argparse
@@ -692,4 +692,4 @@ if __name__ == "__main__":
         print("\n--- Ensemble Results ---")
         for ticker, n in results.items():
             print(f"  {ticker} [ensemble_stack]: {n} forecast rows saved")
-        print("\nTo view forecasts:  python ensemble.py --show AAPL")
+        print("\nTo view forecasts:  python -m quantflow.models.ensemble --show AAPL")

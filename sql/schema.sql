@@ -1,7 +1,7 @@
 -- ============================================================
 -- schema.sql
 -- Run once to set up your database tables.
--- Command: psql -U postgres -d stock_pipeline -f db/schema.sql
+-- Command: psql -U postgres -d stock_pipeline -f sql/schema.sql
 -- ============================================================
 
 -- Raw OHLCV prices from any source

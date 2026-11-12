@@ -3,7 +3,7 @@
 --
 -- Problem
 --   The live `anomalies` table carries only PRIMARY KEY (id). The
---   UNIQUE (ticker, ts) declared in db/schema.sql was never applied,
+--   UNIQUE (ticker, ts) declared in sql/schema.sql was never applied,
 --   because the table already existed by the time that clause was added
 --   and CREATE TABLE IF NOT EXISTS cannot retrofit a constraint.
 --
@@ -29,7 +29,7 @@
 --   point-in-time snapshot before running.
 --
 -- Run once:
---   psql "$DATABASE_URL" -f db/migrations/001_dedupe_anomalies.sql
+--   psql "$DATABASE_URL" -f sql/migrations/001_dedupe_anomalies.sql
 -- ============================================================
 
 BEGIN;

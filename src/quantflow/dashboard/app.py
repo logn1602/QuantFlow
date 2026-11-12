@@ -1,6 +1,6 @@
 """
-dashboard.py
-------------
+dashboard/app.py
+----------------
 QuantFlow: stock analytics dashboard
 
 Streamlit app visualizing the full pipeline:

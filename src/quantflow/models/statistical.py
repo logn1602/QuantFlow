@@ -1,7 +1,7 @@
 """
-forecasting.py
---------------
-Phase 4 — Forecasting Engine
+models/statistical.py
+---------------------
+Phase 4: Forecasting Engine
 
 Trains two models per ticker and saves 7-day price forecasts:
   1. ARIMA      : Classical time series baseline (statsmodels)
@@ -16,11 +16,11 @@ MLflow tracks every experiment run:
 Forecasts are written to the forecasts table.
 
 Usage:
-    python forecasting.py                   # forecast all tickers, both models
-    python forecasting.py --ticker AAPL     # one ticker, both models
-    python forecasting.py --model prophet   # all tickers, prophet only
-    python forecasting.py --show AAPL       # print saved forecasts for AAPL
-    python forecasting.py --compare AAPL    # compare ARIMA vs Prophet for AAPL
+    python -m quantflow.models.statistical                  # every ticker, both models
+    python -m quantflow.models.statistical --ticker AAPL    # one ticker, both models
+    python -m quantflow.models.statistical --model prophet  # Prophet only
+    python -m quantflow.models.statistical --show AAPL      # saved forecasts
+    python -m quantflow.models.statistical --compare AAPL   # ARIMA against Prophet
 """
 
 import argparse
@@ -439,6 +439,10 @@ if __name__ == "__main__":
             for model, n in model_results.items():
                 print(f"  {ticker} [{model}]: {n} forecast rows saved")
 
-        print("\nTo view forecasts:  python forecasting.py --show AAPL")
-        print("To compare models:  python forecasting.py --compare AAPL")
+        print(
+            "\nTo view forecasts:  python -m quantflow.models.statistical --show AAPL"
+        )
+        print(
+            "To compare models:  python -m quantflow.models.statistical --compare AAPL"
+        )
         print("To open MLflow UI:  mlflow ui  (then open http://localhost:5000)")

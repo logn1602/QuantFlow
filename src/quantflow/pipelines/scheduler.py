@@ -1,6 +1,6 @@
 """
-scheduler/job_runner.py
-------------------------
+pipelines/scheduler.py
+----------------------
 APScheduler job runner. Runs the full QuantFlow pipeline on schedule.
 
 Jobs:
@@ -17,7 +17,7 @@ Jobs:
   - Backtesting            : daily after ensemble (5:15 PM ET)
 
 Usage:
-    python scheduler/job_runner.py
+    python -m quantflow.pipelines.scheduler
 """
 
 import sys
