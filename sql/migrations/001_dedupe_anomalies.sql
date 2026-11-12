@@ -8,14 +8,19 @@
 --   and CREATE TABLE IF NOT EXISTS cannot retrofit a constraint.
 --
 --   With no unique index, the bare `ON CONFLICT DO NOTHING` in
---   anomaly_detection.save_anomalies had nothing to detect, so every run
---   appended another full copy of every flag:
+--   features.anomalies.save_anomalies had nothing to detect, so every run
+--   appended another full copy of every flag. On 2026-08-04:
 --
 --     269,350 rows  /  4,993 distinct (ticker, ts)  =  ~54 copies each
 --                                                      (max 82)
 --
---   Dashboard anomaly counts are inflated by the same factor. The flagged
---   timestamps themselves are correct.
+--   Dashboard anomaly counts were inflated by the same factor. The flagged
+--   timestamps themselves were correct.
+--
+--   Since Phase 1, save_anomalies replaces each ticker's flags inside a
+--   transaction, so the table holds one row per key again (769 rows in
+--   the 2026-11-11 backup): this script now deletes few rows or none, and
+--   what it still adds is the constraint.
 --
 -- Which duplicate to keep
 --   Copies are NOT identical: 2,300 keys have differing close/zscore/flag,
@@ -24,15 +29,26 @@
 --   estimate and therefore the one derived from the most price history,
 --   so that is the row we keep.
 --
--- Effect
---   Deletes 264,357 rows. Irreversible — take a Supabase backup /
---   point-in-time snapshot before running.
+-- Check first (expected: rows equal to keys, so nothing to delete):
+--   SELECT count(*) AS rows, count(DISTINCT (ticker, ts)) AS keys
+--   FROM anomalies;
 --
--- Run once:
---   psql "$DATABASE_URL" -f sql/migrations/001_dedupe_anomalies.sql
+-- Effect
+--   Deletes every row but the newest of each (ticker, ts), then adds the
+--   constraint. Irreversible: take a backup first (pg_dump; Supabase's
+--   free plan keeps none of its own).
+--
+-- Run once, by hand: in Supabase's SQL editor, as postgres, outside the
+-- daily refresh (weekdays from 22:30 UTC until it has finished). The ALTER
+-- TABLE takes an exclusive lock on anomalies, which the refresh's anomaly
+-- step and the dashboard use; the lock timeout below stops the script
+-- rather than leave them queued behind it. A second run stops at its first
+-- check. On a local database:
+--   psql -U postgres -d stock_pipeline -f sql/migrations/001_dedupe_anomalies.sql
 -- ============================================================
 
 BEGIN;
+SET LOCAL lock_timeout = '10s';
 
 -- Fail loudly rather than silently doing nothing if this has already run.
 DO $$
@@ -46,7 +62,7 @@ BEGIN
           AND pg_get_constraintdef(con.oid) = 'UNIQUE (ticker, ts)'
     ) THEN
         RAISE EXCEPTION
-            'anomalies already has UNIQUE (ticker, ts) — migration already applied';
+            'anomalies already has UNIQUE (ticker, ts): migration already applied';
     END IF;
 END $$;
 

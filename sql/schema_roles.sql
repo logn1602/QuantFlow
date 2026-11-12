@@ -33,8 +33,11 @@
 -- and takes every privilege from Supabase's anon and authenticated roles;
 -- step 8 does the same for the trending tables on a fresh install (on the
 -- live database, sql/migrations/002_trending.sql runs those statements);
--- step 9 checks. On the live database, steps 1 to 6 are done: run step 7 on
--- its own, then step 9.
+-- step 9 checks.
+--
+-- On the live database (2026-11-11): steps 1 to 10 are done, step 7 before
+-- sql/migrations/002_trending.sql and step 10 after it; steps 11 to 14
+-- wait for the owner.
 --
 -- Step 10 (2026-11-11): what postgres creates later grants Supabase's anon
 -- and authenticated nothing. Run on the live database by the owner after
@@ -227,9 +230,20 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
 ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
     REVOKE ALL ON FUNCTIONS FROM anon, authenticated;
 
+--    Check: postgres's default privileges in public name neither anon nor
+--    authenticated. Expected: no row.
+--
+-- SELECT d.defaclobjtype, acl.grantee::regrole
+-- FROM pg_default_acl d
+-- JOIN pg_namespace n ON n.oid = d.defaclnamespace
+-- CROSS JOIN LATERAL aclexplode(d.defaclacl) AS acl
+-- WHERE d.defaclrole = 'postgres'::regrole AND n.nspname = 'public'
+--   AND acl.grantee IN ('anon'::regrole, 'authenticated'::regrole);
+
 -- 11. quantflow_trending: a login that can reach the database and the
---     public schema, and do nothing there until step 13. Five connections:
---     a run uses one at a time, and a local run may overlap the workflow's.
+--     public schema, and do nothing there until step 13. Five connections,
+--     a margin over the one a run uses at a time (trending.yml runs one run
+--     at a time; a local run logs in as DB_USER, not as this role).
 --     A statement stuck behind a lock (a migration's, say) fails after two
 --     minutes rather than hold the run to the job's 30-minute timeout; no
 --     statement of a run takes more than seconds, and none leaves a
@@ -272,7 +286,12 @@ GRANT USAGE ON SCHEMA public TO quantflow_trending;
 --     migration grants it. One transaction: a failure leaves nothing
 --     changed, and a second run stops at its first CREATE POLICY ("already
 --     exists"). As in step 7, the lock timeout stops it rather than leave it
---     queued behind a long read; run it again once the read is done.
+--     queued behind a long read; run it again once the read is done. Run it
+--     outside the daily refresh and the trending run after it (weekdays
+--     from 22:30 UTC until trending.yml has finished): a run's
+--     transactions lock tickers last and this step locks it first, so the
+--     two can deadlock rather than wait, and if Postgres ends the run's
+--     transaction, the run ends red.
 BEGIN;
 SET LOCAL lock_timeout = '10s';
 
@@ -367,3 +386,38 @@ COMMIT;
 -- FROM pg_policies
 -- WHERE schemaname = 'public' AND 'quantflow_trending' = ANY (roles)
 -- ORDER BY tablename, policyname;
+
+-- 15. Undo, by hand, only if the role must go (as postgres). The role owns
+--     nothing, so no row is at stake, but DROP ROLE fails while any grant or
+--     policy still names it.
+--       a. First put trending.yml's run step back on secrets.DB_USER and
+--          secrets.DB_PASSWORD, merged, or every run after this fails at
+--          login.
+--       b. Then, in one transaction (the lock timeout as in step 13, and
+--          outside the same window):
+--
+-- BEGIN;
+-- SET LOCAL lock_timeout = '10s';
+-- DROP POLICY quantflow_trending_read ON tickers;
+-- DROP POLICY quantflow_trending_read ON trending_prices;
+-- DROP POLICY quantflow_trending_read ON trending_snapshots;
+-- DROP POLICY quantflow_trending_read ON trending_fetches;
+-- DROP POLICY quantflow_trending_read ON trending_news;
+-- DROP POLICY quantflow_trending_insert ON tickers;
+-- DROP POLICY quantflow_trending_insert ON trending_prices;
+-- DROP POLICY quantflow_trending_insert ON trending_snapshots;
+-- DROP POLICY quantflow_trending_insert ON trending_fetches;
+-- DROP POLICY quantflow_trending_insert ON trending_news;
+-- DROP POLICY quantflow_trending_update ON tickers;
+-- DROP POLICY quantflow_trending_delete ON trending_prices;
+-- REVOKE ALL ON tickers, trending_prices, trending_snapshots, trending_fetches,
+--     trending_news FROM quantflow_trending;
+-- REVOKE ALL ON SEQUENCE trending_news_id_seq FROM quantflow_trending;
+-- REVOKE CONNECT ON DATABASE postgres FROM quantflow_trending;
+-- REVOKE USAGE ON SCHEMA public FROM quantflow_trending;
+-- COMMIT;
+--
+--       c. Then DROP ROLE quantflow_trending; on its own (REVOKE ALL ON a
+--          table takes its column grants too). Step 14's queries then find
+--          no row for it. tests/integration/test_trending_on_postgres.py runs
+--          steps 11 and 13 and this undo, and the DROP ROLE must succeed.
