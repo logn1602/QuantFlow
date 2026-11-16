@@ -17,7 +17,11 @@ authors         = [{ name = "Shubh Dave" }]
 
 # Upper bound is not stylistic: numpy is hard-pinned to 1.26.4, which publishes
 # no wheels for 3.13. Raising the ceiling means unpinning numpy first.
-requires-python = ">=3.11,<3.13"
+# The floor is 3.11.5 because soupsieve (Beautiful Soup's selector engine, via
+# yfinance) requires it from 3.0.2, the first release series that fixes its
+# 2026 advisories: earlier 3.11 releases have broken possessive quantifiers in
+# `re`. Every environment already runs a later 3.11 (Docker 3.11.15).
+requires-python = ">=3.11.5,<3.13"
 
 dependencies = [
     # Ingestion
