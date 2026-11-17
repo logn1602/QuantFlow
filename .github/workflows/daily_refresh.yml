@@ -1,15 +1,24 @@
 name: QuantFlow Daily Data Refresh
 
 on:
-  # Run daily at 22:30 UTC (6:30 PM ET, after market close)
+  # Run daily at 22:30 UTC (6:30 PM ET, after market close), with a backup
+  # at 03:17 UTC the next morning (Tue-Sat, so Mon-Fri sessions). GitHub
+  # says a scheduled run can be dropped when it is busy, and the forward
+  # test of the news needs a fetch every trading day. The gate job below
+  # stops whichever run comes second once the other has succeeded for the
+  # session, so the backup refreshes only after a dropped or failed run.
+  # 03:17 leaves room for GitHub's delays (up to 8 hours seen) before the
+  # 12:00 UTC news cutoff (D7, docs/evaluation.md, section 4).
   schedule:
     - cron: '30 22 * * 1-5'   # Mon-Fri only (weekdays)
+    - cron: '17 3 * * 2-6'    # backup: Tue-Sat, the session of the night before
 
   # Allow manual trigger from GitHub Actions tab
   workflow_dispatch:
 
-# GITHUB_TOKEN is only used for the actions/checkout clone. Nothing in this
-# workflow pushes, opens PRs, uploads artifacts, or calls the gh CLI.
+# GITHUB_TOKEN is used for the actions/checkout clones, and by the gate job
+# to read this workflow's own runs (actions: read, that job only). Nothing in
+# this workflow pushes, opens PRs, uploads artifacts, or calls the gh CLI.
 permissions:
   contents: read
 
@@ -21,7 +30,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Whether this run still has work to do (scripts/workflow_gate.py). A
+  # scheduled run that finds a run of this workflow already succeeded since
+  # the latest session's close (17:00 New York) stops here; by hand, always
+  # runs. The concurrency group above holds a second run until the first has
+  # finished, so the gate sees its result. Standard library only: nothing
+  # installed, no database secret. Fails open: if it cannot read the runs,
+  # the refresh goes ahead.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - name: Check out the gate script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Decide whether this run has work to do
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/workflow_gate.py daily_refresh.yml
+
   refresh-data:
+    needs: gate
+    # Runs unless the gate said there is nothing to do: a gate job that
+    # failed outright leaves no output, and the refresh still runs.
+    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -101,7 +141,9 @@ jobs:
       # The daily bar carries Yahoo's official close and full-day volume; the
       # loaders only build a day from 15-min bars where no daily bar exists.
       # 22:30 UTC is after 17:00 New York in both EST and EDT, so today's bar
-      # is final by the time this runs. Five days heals any missed run.
+      # is final by the time this runs. Five days heals any missed run; the
+      # backup schedule's run, a few hours later, heals a dropped one the
+      # same night.
       - name: Fetch daily bars
         id: fetch_daily
         env:

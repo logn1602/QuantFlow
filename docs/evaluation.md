@@ -487,6 +487,9 @@ gets its test on dates still to come, with the plan fixed before any of them exi
   missing. Since 2026-11-12 the news step runs once the tests have passed, even when
   a data step before it failed, each feed read has a 20-second timeout, and the step
   turns the run red when every feed failed, so a lost day shows the night it happens.
+  Since 2026-11-16 a backup schedule at 03:17 UTC refreshes again when the 22:30 run
+  was dropped or failed, and stops at its gate otherwise (`scripts/workflow_gate.py`);
+  started up to 8 hours late, it still fetches before the 12:00 UTC cutoff.
 - **Comparison**: the boosters with and without the sentiment features (R6's pair), on
   the code of that day, against each other with the primary test of section 3
   (per-origin APE difference, Newey-West, Holm across the two boosters), and both

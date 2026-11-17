@@ -19,8 +19,9 @@ on:
   # Allow a manual run from the GitHub Actions tab.
   workflow_dispatch:
 
-# GITHUB_TOKEN is only used for the actions/checkout clone. Nothing here
-# pushes, opens PRs, uploads or downloads artifacts, or calls the gh CLI.
+# GITHUB_TOKEN is used for the actions/checkout clones, and by the gate job
+# to read this workflow's own runs (actions: read, that job only). Nothing
+# here pushes, opens PRs, uploads or downloads artifacts, or calls the gh CLI.
 permissions:
   contents: read
 
@@ -30,7 +31,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  trending:
+  # Whether this run still has work to do (scripts/workflow_gate.py): the
+  # refresh has a backup schedule, and every refresh that completes starts
+  # this workflow, the backup's included when it had nothing to do. A run
+  # started by a refresh stops here when a run of this workflow already
+  # succeeded since the latest session's close (17:00 New York), so the
+  # tier runs once a session, and again only after a failed run. By hand,
+  # always runs. Standard library only: nothing installed, no secret.
+  gate:
     # By hand, or after a refresh this repository ran on its own schedule or
     # by hand: a workflow_run event names the triggering run's repository and
     # event, so a run set off from a fork's branch never gets here.
@@ -38,6 +46,30 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.head_repository.full_name == github.repository &&
       contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - name: Check out the gate script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Decide whether this run has work to do
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/workflow_gate.py trending.yml
+
+  trending:
+    # Only after the gate ran and found work to do: a gate skipped for a
+    # fork's refresh, or one that failed, skips the tier too.
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
