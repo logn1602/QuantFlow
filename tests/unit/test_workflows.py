@@ -225,7 +225,7 @@ def test_the_refresh_gives_the_database_secrets_to_the_steps_that_connect_alone(
     the test suite (full-diff review, 2026-11-12). Each step that connects
     now names all five itself, and no other step has any; the tests get
     CI's dummy password."""
-    assert "secrets." not in _job_header(DAILY_REFRESH)
+    assert "secrets." not in _job_header(DAILY_REFRESH, "refresh-data")
     connecting = [
         name for name, step in STEPS.items() if "python -m quantflow." in step
     ]
@@ -236,6 +236,41 @@ def test_the_refresh_gives_the_database_secrets_to_the_steps_that_connect_alone(
             given = f"{secret}: ${{{{ secrets.{secret} }}}}" in step
             assert given == (name in connecting), (name, secret)
     assert "DB_PASSWORD: ci-not-a-real-password" in STEPS["Run tests"]
+
+
+def test_the_refresh_has_a_backup_schedule_that_starts_before_the_news_cutoff():
+    """GitHub says a scheduled run can be dropped when it is busy, and the
+    forward test of the news needs a fetch every trading day. The backup runs
+    Tuesday to Saturday, for the session of the night before, early enough
+    that one started as late as GitHub has started the 22:30 run (8 hours,
+    docs/evaluation.md, D7) still begins before the news cutoff, 12:00 UTC
+    the next day."""
+    from quantflow.utils.trading_calendar import NEWS_CUTOFF_AFTER_DATE
+
+    crons = re.findall(r"^    - cron: '([^']+)'", DAILY_REFRESH, re.MULTILINE)
+    assert crons == ["30 22 * * 1-5", "17 3 * * 2-6"]
+    minute, hour = (int(field) for field in crons[1].split()[:2])
+    cutoff_hour = NEWS_CUTOFF_AFTER_DATE.total_seconds() / 3600 - 24
+    assert hour + minute / 60 + 8 < cutoff_hour
+
+
+def test_the_refresh_runs_only_when_its_gate_finds_work_or_cannot_tell():
+    """Whichever run of a session comes second stops once the other has
+    succeeded (scripts/workflow_gate.py), so the backup does nothing on a
+    normal night. A gate job that failed outright leaves no answer, and the
+    refresh still runs: a session never fetched loses its news for good."""
+    gate = _job_text(DAILY_REFRESH, "gate")
+    assert "python3 scripts/workflow_gate.py daily_refresh.yml" in gate
+    assert re.search(
+        r"^    outputs:\n      run: \$\{\{ steps.gate.outputs.run \}\}$", gate, re.M
+    )
+    refresh = _job_header(DAILY_REFRESH, "refresh-data")
+    assert re.search(r"^    needs: gate$", refresh, re.M)
+    assert re.search(
+        r"^    if: \$\{\{ !cancelled\(\) && needs.gate.outputs.run != 'false' \}\}$",
+        refresh,
+        re.M,
+    )
 
 
 def test_every_workflow_runs_the_same_pinned_uv():
@@ -437,9 +472,18 @@ def test_trending_starts_when_the_daily_refresh_completes_or_by_hand():
 TRENDING_STEPS = _steps(TRENDING)
 
 
-def _job_header(workflow):
-    """The job's own keys: between `jobs:` and its first step."""
-    return workflow.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[0]
+def _job_text(workflow, job):
+    """One job's text: from its `  <job>:` line under `jobs:` to the next job
+    or the comment above it."""
+    jobs = "\n" + workflow.split("\njobs:\n", 1)[1]
+    assert f"\n  {job}:\n" in jobs, f"no job {job}"
+    body = jobs.split(f"\n  {job}:\n", 1)[1]
+    return re.split(r"^  [\w-]+:$|^  # ", body, maxsplit=1, flags=re.MULTILINE)[0]
+
+
+def _job_header(workflow, job):
+    """A job's own keys: from its name to its first step."""
+    return _job_text(workflow, job).split("\n    steps:\n", 1)[0]
 
 
 @pytest.mark.trending
@@ -448,7 +492,7 @@ def test_trending_runs_only_for_this_repositorys_own_refreshes_or_by_hand():
     event: the job runs for a refresh this repository scheduled or started
     by hand, never for one a fork's branch set off."""
     condition = re.search(
-        r"^    if: >-\n((?:      .+\n)+)", _job_header(TRENDING), re.M
+        r"^    if: >-\n((?:      .+\n)+)", _job_header(TRENDING, "gate"), re.M
     )
     assert condition, "the trending job has no if:"
     text = " ".join(condition.group(1).split())
@@ -464,11 +508,43 @@ def test_trending_runs_only_for_this_repositorys_own_refreshes_or_by_hand():
 
 
 @pytest.mark.trending
+def test_trending_runs_once_a_session_through_its_gate():
+    """Every refresh that completes starts the tier, the backup's included
+    when it had nothing to do. The tier runs only when its own gate finds no
+    trending run succeeded since the session's close; a gate skipped for a
+    fork's refresh, or one that failed, skips it too."""
+    gate = _job_text(TRENDING, "gate")
+    assert "python3 scripts/workflow_gate.py trending.yml" in gate
+    trending = _job_header(TRENDING, "trending")
+    assert re.search(r"^    needs: gate$", trending, re.M)
+    assert re.search(r"^    if: needs.gate.outputs.run == 'true'$", trending, re.M)
+
+
+@pytest.mark.parametrize("name", ["daily_refresh.yml", "trending.yml"])
+def test_each_gate_reads_runs_only_installs_nothing_and_holds_no_secret(name):
+    """The gate is standard-library Python on the runner: no uv, no install,
+    no database secret, and a checkout that keeps no token. Only its job may
+    read the workflow's runs; every other job keeps contents: read alone."""
+    workflow = (WORKFLOWS / name).read_text(encoding="utf-8")
+    gate = _job_text(workflow, "gate")
+    assert re.search(
+        r"^    permissions:\n      actions: read\n      contents: read$", gate, re.M
+    )
+    assert "GH_TOKEN: ${{ github.token }}" in gate
+    assert "secrets." not in gate
+    assert "uv " not in gate
+    assert "setup-uv" not in gate
+    assert re.search(r"^          persist-credentials: false$", gate, re.M)
+    assert re.search(r"^permissions:\n  contents: read\n\n", workflow, re.M)
+    assert len(re.findall(r"^\s+actions: read$", workflow, re.M)) == 1
+
+
+@pytest.mark.trending
 def test_trending_gives_the_database_secrets_to_the_run_step_alone():
     """The write credentials are in no step but the one that writes: not in
     the job's env, where setup-uv, the cache and the test suite would see
     them too. The tests get CI's dummy password."""
-    assert "secrets." not in _job_header(TRENDING)
+    assert "secrets." not in _job_header(TRENDING, "trending")
     holding = [name for name, step in TRENDING_STEPS.items() if "secrets." in step]
     assert holding == ["Run the trending tier"]
     run = TRENDING_STEPS["Run the trending tier"]
